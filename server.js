@@ -453,8 +453,20 @@ async function loginIfNeeded(page, controller) {
     return;
   }
 
-  const emailSelectors = ['input[type="email"]', 'input[name="email"]', 'input[type="text"]'];
-  const passSelectors = ['input[type="password"]', 'input[name="password"]'];
+  const emailSelectors = [
+    '#person_username_field_login',
+    'input[name="username"]',
+    'input[type="email"]',
+    'input[placeholder*="email" i]',
+    'input[name*="email" i]',
+    'input[id*="email" i]',
+    'input[name*="user" i]'
+  ];
+  const passSelectors = [
+    '#person_password_field_login',
+    'input[type="password"]',
+    'input[name="password"]'
+  ];
 
   const emailSelector = await waitForAnySelector(page, emailSelectors, 10000);
   const passSelector = await waitForAnySelector(page, passSelectors, 10000);
