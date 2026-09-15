@@ -68,6 +68,21 @@ Introduce la contraseña del panel (por defecto `momonga`; cámbiala con la vari
 
 ---
 
+## Actualizar en otra PC
+
+Para traer las últimas mejoras en otra máquina donde ya clonaste el repositorio:
+
+```bash
+git pull
+npm install
+```
+
+En Windows puedes usar el lanzador **`actualizar.bat`** (hace `git pull` + `npm install` con doble clic).
+
+> Tus datos locales (`config.json`, `profiles/`, `state.json`, `logs/`) **no** se modifican al actualizar, porque están en `.gitignore`.
+
+---
+
 ## Configuración (`config.json`)
 
 Es un **array** de perfiles:
