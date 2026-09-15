@@ -12,6 +12,8 @@ const CONFIG_PATH = path.join(__dirname, 'config.json');
 const STATE_PATH = path.join(__dirname, 'state.json');
 const PORT = process.env.PORT || 3000;
 const DEFAULT_URL = 'https://megapersonals.eu/';
+const MANAGE_POSTS_URL = 'https://megapersonals.eu/users/posts/list?publicDomain=megapersonals.eu';
+const NEW_POST_URL = 'https://megapersonals.eu/users/posts/new';
 
 const PANEL_PASSWORD = process.env.PANEL_PASSWORD || 'momonga';
 const AUTH_COOKIE = 'momonga_auth';
@@ -572,7 +574,7 @@ async function deleteAndRepost(page, controller) {
 
   try {
     controller.log('🗑️ Iniciando ciclo de borrado del anuncio actual...');
-    await page.goto('https://megapersonals.eu/users/posts', { waitUntil: 'networkidle2', timeout: 60000 });
+    await page.goto(MANAGE_POSTS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
     if (await checkForBlock(page, controller)) return false;
 
@@ -590,7 +592,7 @@ async function deleteAndRepost(page, controller) {
     }, { timeout: 5000 }).then(() => clickTextControl(page, ['confirm', '^yes$', '^sí$', '^si$', 'delete', 'borrar'], 3000)).catch(() => {});
 
     controller.log('📢 Publicando nuevo anuncio idéntico...');
-    await page.goto('https://megapersonals.eu/users/post/new', { waitUntil: 'networkidle2', timeout: 60000 });
+    await page.goto(NEW_POST_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
     if (await checkForBlock(page, controller)) return false;
 
@@ -691,6 +693,28 @@ function parseProxy(value) {
     username: (parts[2] || '').trim(),
     password: (parts[3] || '').trim()
   };
+}
+
+async function openFirstAdForEdit(page) {
+  const clicked = await page.evaluate(() => {
+    const candidates = Array.from(document.querySelectorAll('a, button'));
+    const target = candidates.find((el) => {
+      const text = (el.innerText || '').trim();
+      const href = el.getAttribute('href') || '';
+      return /edit|modify|editar/i.test(text) || /\/(posts|ads)\/[^/]+/i.test(href);
+    });
+    if (target) {
+      target.click();
+      return true;
+    }
+    return false;
+  });
+
+  if (clicked) {
+    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+    await sleep(1500);
+  }
+  return clicked;
 }
 
 async function scrapeActiveAdData(page) {
@@ -1288,7 +1312,8 @@ app.post('/api/profiles/:id/scrape', async (req, res) => {
   }
 
   try {
-    await controller.page.goto('https://megapersonals.eu/users/posts', { waitUntil: 'networkidle2', timeout: 60000 });
+    await controller.page.goto(MANAGE_POSTS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+    await openFirstAdForEdit(controller.page);
     const data = await scrapeActiveAdData(controller.page);
     controller.log('📥 Datos del anuncio copiados desde el navegador.');
 
