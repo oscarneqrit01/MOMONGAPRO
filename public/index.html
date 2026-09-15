@@ -813,6 +813,8 @@
 
   <script>
     const socket = io();
+    const profileStates = {};
+    const profileStats = {};
     const profilesEl = document.getElementById('profiles');
     const activeCountEl = document.getElementById('active-count');
     const addModal = document.getElementById('addModal');
@@ -845,6 +847,7 @@
       for (const profile of profiles) {
         const card = document.createElement('div');
         card.className = 'profile-card';
+        card.dataset.cardId = profile.id;
         const proxyValue = profile.proxy
           ? `${profile.proxy.host}:${profile.proxy.port}${profile.proxy.username ? `:${profile.proxy.username}:${profile.proxy.password || ''}` : ''}`
           : '';
@@ -856,6 +859,7 @@
 
           <div class="profile-name">
             <strong>${profile.id}</strong>
+            <span data-state-id="${profile.id}" style="font-size:12px; font-weight:bold; color:#888; margin-left:8px;">● Detenido</span>
           </div>
 
           <div class="profile-meta">
@@ -875,7 +879,7 @@
             <div class="subpanel-top">
               <div class="subpanel-title"><span class="small-dot"></span> MOMONGA PRO - ${profile.id}</div>
               <div class="subpanel-meta">
-                <span class="meta-pill">Datos de publicaciones: aún no disponibles</span>
+                <span class="meta-pill" data-stats-id="${profile.id}">Bumps hoy: 0 · Total: 0</span>
               </div>
             </div>
 
@@ -884,7 +888,7 @@
               <div class="timer" data-timer-id="${profile.id}">03:53</div>
             </div>
 
-            <div class="note">Publicaciones: todavía no hay publicaciones registradas</div>
+            <div class="note" data-lastbump-id="${profile.id}">Sin publicaciones registradas aún</div>
 
             <div class="checks">
               <label class="check-item">
@@ -1002,6 +1006,9 @@
 
         profilesEl.appendChild(card);
       }
+
+      for (const id of Object.keys(profileStates)) updateProfileState(id, profileStates[id]);
+      for (const id of Object.keys(profileStats)) updateStats(id, profileStats[id]);
 
       profilesEl.querySelectorAll('[data-action]').forEach(button => {
         button.addEventListener('click', () => {
@@ -1183,6 +1190,67 @@
 
     socket.on('profiles-updated', (profiles) => {
       renderProfiles(profiles);
+    });
+
+    function updateProfileState(profileId, state) {
+      profileStates[profileId] = state;
+      const card = document.querySelector(`[data-card-id="${profileId}"]`);
+      if (!card) return;
+
+      const labels = { running: '● Activo', paused: '● Pausado', stopped: '● Detenido' };
+      const colors = { running: '#4ecca3', paused: '#f5a623', stopped: '#888' };
+      const badge = card.querySelector(`[data-state-id="${profileId}"]`);
+      if (badge) {
+        badge.textContent = labels[state] || labels.stopped;
+        badge.style.color = colors[state] || colors.stopped;
+      }
+
+      card.querySelectorAll('[data-action="start"]').forEach(btn => { btn.disabled = state === 'running'; });
+      card.querySelectorAll('[data-action="pause"]').forEach(btn => {
+        btn.disabled = state === 'stopped';
+        btn.textContent = state === 'paused' ? 'Reanudar' : 'Pausar';
+      });
+      card.querySelectorAll('[data-action="stop"]').forEach(btn => { btn.disabled = state === 'stopped'; });
+      card.querySelectorAll('[data-action="publish"]').forEach(btn => { btn.disabled = state === 'stopped'; });
+    }
+
+    function updateStats(profileId, stats) {
+      profileStats[profileId] = stats;
+      const pill = document.querySelector(`[data-stats-id="${profileId}"]`);
+      if (pill) {
+        pill.textContent = `Bumps hoy: ${stats.bumpsToday || 0} · Total: ${stats.totalBumps || 0}`;
+      }
+      const note = document.querySelector(`[data-lastbump-id="${profileId}"]`);
+      if (note) {
+        note.textContent = stats.lastBumpAt
+          ? `Último bump: ${new Date(stats.lastBumpAt).toLocaleString()}`
+          : 'Sin publicaciones registradas aún';
+      }
+    }
+
+    socket.on('profile-state', (data) => {
+      updateProfileState(data.id, data.state);
+    });
+
+    socket.on('stats', (data) => {
+      updateStats(data.id, data.stats);
+    });
+
+    function showEmergencyBanner(reason) {
+      let banner = document.getElementById('emergency-banner');
+      if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'emergency-banner';
+        banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#e74c3c;color:#fff;padding:14px 16px;text-align:center;font-weight:bold;font-size:15px;box-shadow:0 4px 14px rgba(0,0,0,.5);';
+        document.body.appendChild(banner);
+      }
+      banner.textContent = `🚨 PARADA DE EMERGENCIA — ${reason} — Todos los perfiles detenidos.`;
+      clearTimeout(banner._hideTimer);
+      banner._hideTimer = setTimeout(() => banner.remove(), 30000);
+    }
+
+    socket.on('emergency-stop', (data) => {
+      showEmergencyBanner((data && data.reason) || 'Bloqueo detectado');
     });
 
     document.getElementById('startAllBtn').addEventListener('click', () => {

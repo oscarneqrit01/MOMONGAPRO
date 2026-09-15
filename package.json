@@ -1,7 +1,7 @@
 {
-  "name": "actualizador-pro",
+  "name": "momonga-pro",
   "version": "1.0.0",
-  "description": "Automatización multi-perfil para perfiles aislados con Chrome y Puppeteer.",
+  "description": "Panel multi-perfil de automatización (bumps/reposts) con Chrome, Puppeteer, proxy y resolución de captcha.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

@@ -9,6 +9,7 @@ const sharp = require('sharp');
 const { ProxyAgent, fetch: undiciFetch } = require('undici');
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
+const STATE_PATH = path.join(__dirname, 'state.json');
 const PORT = process.env.PORT || 3000;
 const DEFAULT_URL = 'https://megapersonals.eu/';
 
@@ -103,6 +104,108 @@ function loadConfig() {
     throw new Error('config.json debe contener un array de perfiles.');
   }
   return config;
+}
+
+const LOGS_DIR = path.join(__dirname, 'logs');
+
+function logToFile(prefix, text) {
+  try {
+    fs.mkdirSync(LOGS_DIR, { recursive: true });
+    const now = new Date();
+    const day = todayKey();
+    const stamp = now.toLocaleTimeString('es-ES', { hour12: false });
+    fs.appendFileSync(path.join(LOGS_DIR, `${day}.log`), `[${day} ${stamp}] [${prefix}] ${text}\n`, 'utf8');
+  } catch (_) {
+    // no romper la app por un fallo de logging
+  }
+}
+
+function serverLog(text) {
+  console.log('[server]', text);
+  logToFile('server', text);
+}
+
+function pruneLogs(maxDays = 30) {
+  try {
+    const files = fs.readdirSync(LOGS_DIR).filter((f) => f.endsWith('.log')).sort();
+    while (files.length > maxDays) {
+      fs.unlinkSync(path.join(LOGS_DIR, files.shift()));
+    }
+  } catch (_) {
+    // sin logs que rotar
+  }
+}
+
+async function notify(message) {
+  const text = `MOMONGA PRO\n${message}`;
+  const tasks = [];
+
+  const tgToken = process.env.TELEGRAM_BOT_TOKEN;
+  const tgChat = process.env.TELEGRAM_CHAT_ID;
+  if (tgToken && tgChat) {
+    tasks.push(undiciFetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: tgChat, text })
+    }).catch(() => {}));
+  }
+
+  const discord = process.env.DISCORD_WEBHOOK_URL;
+  if (discord) {
+    tasks.push(undiciFetch(discord, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: text })
+    }).catch(() => {}));
+  }
+
+  await Promise.all(tasks);
+}
+
+async function validateProxy(proxy, timeoutMs = 15000) {
+  if (!proxy || !proxy.host) return { skipped: true };
+
+  const dispatcher = buildProxyDispatcher(proxy);
+  if (!dispatcher) return { skipped: true };
+
+  try {
+    const res = await undiciFetch('https://api.ipify.org?format=json', {
+      dispatcher,
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+    const data = await res.json().catch(() => ({}));
+    return { ok: true, ip: data.ip };
+  } catch (error) {
+    return { ok: false, reason: error.message };
+  } finally {
+    await dispatcher.close().catch(() => {});
+  }
+}
+
+function loadState() {
+  try {
+    return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
+  } catch (_) {
+    return {};
+  }
+}
+
+function todayKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function saveState() {
+  try {
+    const state = {};
+    for (const [id, controller] of controllers.entries()) {
+      state[id] = { active: Boolean(controller.started), stats: controller.stats };
+    }
+    fs.writeFileSync(STATE_PATH, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  } catch (error) {
+    console.error('No se pudo guardar state.json:', error.message);
+  }
 }
 
 function mmss(ms) {
@@ -270,6 +373,80 @@ async function handleCaptchaIfPresent(page, controller) {
   return solved;
 }
 
+const BLOCK_PATTERNS = [
+  /account[^.]{0,40}(suspended|banned|blocked|disabled)/i,
+  /(suspended|banned|blocked|disabled)[^.]{0,40}account/i,
+  /access denied/i,
+  /cuenta\s+(suspendida|bloqueada|baneada)/i,
+  /your account (has been|was) (suspended|banned|blocked|disabled)/i,
+  /you (have been|are) (suspended|banned|blocked)/i,
+  /\bsuspended\b/i,
+  /\bbanned\b/i,
+  /\bblocked\b/i
+];
+
+let emergencyActive = false;
+
+async function detectBlock(page) {
+  try {
+    return await page.evaluate((patternsSource) => {
+      const patterns = patternsSource.map((source) => new RegExp(source, 'i'));
+      const parts = [document.title || ''];
+
+      const selectors = [
+        'h1', 'h2', 'h3',
+        '[role="alert"]',
+        '.alert', '.error', '.error-message', '.notice-error',
+        '[class*="alert" i]', '[class*="error" i]', '[class*="suspend" i]', '[class*="banned" i]', '[class*="blocked" i]',
+        '[id*="alert" i]', '[id*="error" i]', '[id*="suspend" i]', '[id*="banned" i]'
+      ];
+
+      document.querySelectorAll(selectors.join(',')).forEach((el) => {
+        if (el && el.innerText) parts.push(el.innerText);
+      });
+
+      const haystack = parts.join('\n');
+      return patterns.some((re) => re.test(haystack));
+    }, BLOCK_PATTERNS.map((re) => re.source));
+  } catch (_) {
+    return false;
+  }
+}
+
+async function emergencyStop(reason, sourceId) {
+  if (emergencyActive) return;
+  emergencyActive = true;
+
+  const active = [...controllers.values()].filter((c) => c.started);
+
+  console.error('');
+  console.error('\x1b[41m\x1b[1m\x1b[37m' + ' 🚨  PARADA DE EMERGENCIA  🚨 ' + '\x1b[0m');
+  console.error(`🚨 Bloqueo detectado${sourceId ? ` en "${sourceId}"` : ''}: ${reason}`);
+  console.error(`🚨 Deteniendo ${active.length} perfil(es) activo(s) para evitar riesgos.`);
+  console.error('');
+
+  io.emit('emergency-stop', { reason, sourceId, at: Date.now() });
+  notify(`🚨 PARADA DE EMERGENCIA${sourceId ? ` en "${sourceId}"` : ''}: ${reason}. ${active.length} perfil(es) detenido(s).`);
+
+  for (const controller of active) {
+    controller.log(`🚨 PARADA DE EMERGENCIA: ${reason} Deteniendo todos los perfiles.`);
+  }
+
+  for (const controller of active) {
+    await controller.stop().catch(() => {});
+  }
+
+  emergencyActive = false;
+}
+
+async function checkForBlock(page, controller) {
+  if (await detectBlock(page)) {
+    await emergencyStop('La página muestra señales de suspensión/bloqueo.', controller.id);
+    return true;
+  }
+  return false;
+}
+
 async function loginIfNeeded(page, controller) {
   if (!controller.cfg.email || !controller.cfg.password) {
     controller.log('Sin credenciales, se asume sesión ya abierta.');
@@ -294,6 +471,9 @@ async function loginIfNeeded(page, controller) {
 
   await page.keyboard.press('Enter');
   controller.log('Login enviado.');
+
+  await sleep(3000);
+  await checkForBlock(page, controller);
 }
 
 async function performBump(page, controller) {
@@ -313,6 +493,7 @@ async function performBump(page, controller) {
       await page.waitForSelector(selector, { timeout: 1500 });
       await page.locator(selector).click({ timeout: 8000 });
       controller.log('🚀 Bump ejecutado.');
+      controller.recordBump();
       return;
     } catch (_) {
       // seguir probando
@@ -320,35 +501,6 @@ async function performBump(page, controller) {
   }
 
   controller.log('No se encontró botón de bump/publicación.');
-}
-
-async function publishOnLatestPage(browser, controller) {
-  const pages = await browser.pages();
-  const page = pages[pages.length - 1];
-  if (!page) {
-    controller.log('No hay ninguna pestaña activa para publicar.');
-    return false;
-  }
-
-  const clicked = await page.evaluate(() => {
-    const buttons = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
-    const target = buttons.find(button => {
-      const text = `${button.innerText || ''} ${button.value || ''}`;
-      return /bump|boost|publish|post|update/i.test(text);
-    });
-
-    if (!target) return false;
-    target.click();
-    return true;
-  });
-
-  if (clicked) {
-    controller.log('Publicación ejecutada con éxito.');
-  } else {
-    controller.log('No se encontró el botón de publicación en la página actual.');
-  }
-
-  return clicked;
 }
 
 async function clickTextControl(page, patterns, timeout = 10000) {
@@ -410,6 +562,8 @@ async function deleteAndRepost(page, controller) {
     controller.log('🗑️ Iniciando ciclo de borrado del anuncio actual...');
     await page.goto('https://megapersonals.eu/users/posts', { waitUntil: 'networkidle2', timeout: 60000 });
 
+    if (await checkForBlock(page, controller)) return false;
+
     await page.evaluate(() => {
       const deleteBtn = Array.from(document.querySelectorAll('button, a, input[type="submit"]'))
         .find(el => /delete|borrar|eliminar/i.test(`${el.innerText || ''} ${el.value || ''}`));
@@ -425,6 +579,8 @@ async function deleteAndRepost(page, controller) {
 
     controller.log('📢 Publicando nuevo anuncio idéntico...');
     await page.goto('https://megapersonals.eu/users/post/new', { waitUntil: 'networkidle2', timeout: 60000 });
+
+    if (await checkForBlock(page, controller)) return false;
 
     await fillFirst(page, [
       'input[name="city"]', 'select[name="city"]', 'input[name*="city" i]', 'select[name*="city" i]'
@@ -462,11 +618,40 @@ async function deleteAndRepost(page, controller) {
     }
 
     controller.log('✅ ¡Anuncio republicado de forma idéntica con éxito!');
+    controller.recordBump();
     return true;
   } catch (error) {
     controller.log(`❌ Error en el ciclo de republicación: ${error.message}`);
     return false;
   }
+}
+
+const CHROME_CANDIDATES = [
+  process.env.CHROME_BIN,
+  process.env.GOOGLE_CHROME_BIN,
+  process.env.PUPPETEER_EXECUTABLE_PATH,
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Google\\Chrome\\Application\\chrome.exe') : null,
+  'C:\\Program Files\\Chromium\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Chromium\\Application\\chrome.exe',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser'
+].filter(Boolean);
+
+function detectChromeExecutable() {
+  for (const candidate of CHROME_CANDIDATES) {
+    try {
+      if (candidate && fs.existsSync(candidate)) return candidate;
+    } catch (_) {
+      // candidato inválido, seguir
+    }
+  }
+  return null;
 }
 
 function parseProxy(value) {
@@ -585,6 +770,8 @@ class ProfileController {
     this._nextRepostAt = 0;
     this.autoRepostActive = Boolean(cfg.autoRepostActive);
     this.repostInterval = Number(cfg.repostInterval) || 6;
+    this.state = 'stopped';
+    this.stats = { totalBumps: 0, bumpsToday: 0, lastBumpAt: 0, date: todayKey() };
     this.settings = {
       rotateAds: Boolean(cfg.settings?.rotateAds),
       randomizedDelay: Boolean(cfg.settings?.randomizedDelay),
@@ -594,6 +781,7 @@ class ProfileController {
 
   log(text) {
     console.log(`[${this.id}]`, text);
+    logToFile(this.id, text);
     io.emit('log', { id: this.id, text });
   }
 
@@ -603,6 +791,28 @@ class ProfileController {
       if (c.started && c.browser) active++;
     }
     io.emit('active-count', { active });
+  }
+
+  emitState(state) {
+    this.state = state;
+    io.emit('profile-state', { id: this.id, state });
+  }
+
+  emitStats() {
+    io.emit('stats', { id: this.id, stats: this.stats });
+  }
+
+  recordBump() {
+    const today = todayKey();
+    if (this.stats.date !== today) {
+      this.stats.date = today;
+      this.stats.bumpsToday = 0;
+    }
+    this.stats.bumpsToday += 1;
+    this.stats.totalBumps += 1;
+    this.stats.lastBumpAt = Date.now();
+    saveState();
+    this.emitStats();
   }
 
   async launchProfile() {
@@ -623,9 +833,16 @@ class ProfileController {
       this.log(`Usando proxy: ${proxy.host}:${proxy.port}`);
     }
 
+    const executablePath = detectChromeExecutable();
+    if (executablePath) {
+      this.log(`Chrome detectado: ${executablePath}`);
+    } else {
+      this.log('Chrome del sistema no encontrado; usando el navegador de Puppeteer.');
+    }
+
     const browser = await puppeteer.launch({
       headless: false,
-      executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      ...(executablePath ? { executablePath } : {}),
       args
     });
 
@@ -678,6 +895,17 @@ class ProfileController {
       return;
     }
 
+    const proxyCheck = await validateProxy(this.cfg.proxy);
+    if (!proxyCheck.skipped) {
+      if (proxyCheck.ok) {
+        this.log(`✅ Proxy OK (IP: ${proxyCheck.ip || 'desconocida'}).`);
+      } else {
+        this.log(`❌ Proxy no responde (${proxyCheck.reason}). Arranque cancelado para no gastar ciclos.`);
+        notify(`❌ Proxy no responde en "${this.id}": ${proxyCheck.reason}`);
+        return;
+      }
+    }
+
     this.started = true;
     this.paused = false;
 
@@ -693,6 +921,8 @@ class ProfileController {
       });
       this.log('¡Página cargada con éxito!');
 
+      if (await checkForBlock(page, this)) return;
+
       await loginIfNeeded(page, this);
       this.log('Perfil listo.');
 
@@ -705,8 +935,11 @@ class ProfileController {
       this.scheduleNext();
       this.scheduleRepost();
       this.emitActive();
+      this.emitState('running');
+      saveState();
     } catch (error) {
       this.log(`Error crítico: ${error.message}`);
+      notify(`❌ Error crítico en "${this.id}": ${error.message}`);
       await this.stop();
     }
   }
@@ -721,6 +954,7 @@ class ProfileController {
     this._countdownTimer = null;
     this._repostTimer = null;
     this.log('⏸ Pausado.');
+    this.emitState('paused');
   }
 
   resume() {
@@ -730,6 +964,7 @@ class ProfileController {
     this.startCountdown();
     this.scheduleNext();
     this.scheduleRepost();
+    this.emitState('running');
   }
 
   async stop() {
@@ -748,6 +983,8 @@ class ProfileController {
     this.page = null;
     this.log('🛑 Detenido.');
     this.emitActive();
+    this.emitState('stopped');
+    saveState();
   }
 
   startCountdown() {
@@ -789,6 +1026,8 @@ class ProfileController {
     } catch (error) {
       this.log(`Recarga fallida: ${error.message}`);
     }
+
+    if (await checkForBlock(this.page, this)) return;
 
     if (this.settings.rotateAds) {
       await deleteAndRepost(this.page, this);
@@ -836,12 +1075,28 @@ class ProfileController {
       this.log('Primero inicia el perfil para poder publicar.');
       return;
     }
-    this.log('Publicación manual solicitada.');
+
+    this.log('📢 Publicación manual solicitada...');
 
     try {
-      await publishOnLatestPage(this.browser, this);
+      await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+      this.log('Recarga completada.');
     } catch (error) {
-      this.log(`Error al publicar: ${error.message}`);
+      this.log(`Recarga fallida: ${error.message}`);
+    }
+
+    if (await checkForBlock(this.page, this)) return;
+
+    if (this.settings.rotateAds) {
+      await deleteAndRepost(this.page, this);
+    } else {
+      await performBump(this.page, this);
+    }
+
+    this.log('Publicación manual completada.');
+
+    if (!this.paused) {
+      this.scheduleNext();
     }
   }
 }
@@ -852,8 +1107,19 @@ function buildControllers() {
   controllers = new Map();
   try {
     const config = loadConfig();
+    const state = loadState();
+    const today = todayKey();
     for (const profile of config) {
-      controllers.set(profile.id, new ProfileController(profile));
+      const controller = new ProfileController(profile);
+      const saved = state[profile.id];
+      if (saved && saved.stats) {
+        controller.stats = { ...controller.stats, ...saved.stats };
+        if (controller.stats.date !== today) {
+          controller.stats.date = today;
+          controller.stats.bumpsToday = 0;
+        }
+      }
+      controllers.set(profile.id, controller);
     }
     return config;
   } catch (error) {
@@ -863,6 +1129,22 @@ function buildControllers() {
 }
 
 buildControllers();
+
+async function restoreActiveProfiles() {
+  if (process.env.AUTO_START === '0') return;
+
+  const state = loadState();
+  const ids = Object.keys(state).filter(id => state[id] && state[id].active && controllers.has(id));
+  if (ids.length === 0) return;
+
+  console.log(`♻️ Reanudando ${ids.length} perfil(es) que estaban activos...`);
+  for (const id of ids) {
+    const controller = controllers.get(id);
+    controller.log('♻️ Auto-arranque tras reinicio del servidor.');
+    controller.start().catch((error) => controller.log(`Auto-arranque falló: ${error.message}`));
+    await sleep(3000);
+  }
+}
 
 app.get('/api/profiles', (req, res) => {
   try {
@@ -1041,6 +1323,7 @@ app.delete('/api/profiles/:id', async (req, res) => {
     config.splice(index, 1);
     fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
     io.emit('profiles-updated', config);
+    saveState();
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -1085,6 +1368,8 @@ io.on('connection', (socket) => {
 
   for (const c of controllers.values()) {
     io.emit('timer', { id: c.id, time: mmss((c.cfg.intervalMinutes || 16) * 60 * 1000) });
+    io.emit('profile-state', { id: c.id, state: c.state });
+    io.emit('stats', { id: c.id, stats: c.stats });
   }
   let active = 0;
   for (const c of controllers.values()) {
@@ -1132,11 +1417,42 @@ io.on('connection', (socket) => {
 });
 
 server.listen(PORT, () => {
+  pruneLogs();
   console.log(`🚀 Servidor en http://localhost:${PORT}`);
   console.log(`📋 Perfiles cargados: ${controllers.size}`);
+  serverLog(`Servidor iniciado en puerto ${PORT} con ${controllers.size} perfil(es).`);
   if (!process.env.PANEL_PASSWORD) {
     console.warn('⚠️ Contraseña del panel por defecto: "momonga". Define PANEL_PASSWORD para cambiarla.');
   }
+  restoreActiveProfiles();
+});
+
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error('');
+    console.error(`❌ El puerto ${PORT} ya está en uso.`);
+    console.error('   Probablemente MOMONGA PRO ya está abierto en otra ventana.');
+    console.error('   Cierra esa ventana o cambia el puerto con:  set PORT=3001');
+    console.error('');
+    logToFile('server', `EADDRINUSE: el puerto ${PORT} ya está en uso.`);
+    process.exit(1);
+  }
+
+  console.error('❌ Error del servidor:', error.message);
+  logToFile('server', `Error del servidor: ${error.message}`);
+  process.exit(1);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('❌ Excepción no capturada:', error);
+  logToFile('server', `uncaughtException: ${error.stack || error.message}`);
+  notify(`❌ Excepción no capturada: ${error.message}`);
+});
+
+process.on('unhandledRejection', (reason) => {
+  const message = reason && reason.message ? reason.message : String(reason);
+  console.error('❌ Promesa rechazada sin manejar:', message);
+  logToFile('server', `unhandledRejection: ${message}`);
 });
 
 process.on('SIGINT', async () => {

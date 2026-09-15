@@ -6,6 +6,7 @@ profiles/
 
 # Configuración con datos sensibles (proxies, API keys, credenciales)
 config.json
+state.json
 .env
 .env.*
 
