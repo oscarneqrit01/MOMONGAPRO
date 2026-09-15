@@ -990,6 +990,7 @@ class ProfileController {
     this._countdownTimer = null;
     this._repostTimer = null;
     this.log('⏸ Pausado.');
+    io.emit('timer', { id: this.id, time: null });
     this.emitState('paused');
   }
 
@@ -1019,6 +1020,7 @@ class ProfileController {
     this.page = null;
     this.log('🛑 Detenido.');
     this.emitActive();
+    io.emit('timer', { id: this.id, time: null });
     this.emitState('stopped');
     saveState();
   }
@@ -1404,9 +1406,14 @@ io.on('connection', (socket) => {
   console.log('🔌 Interfaz conectada.');
 
   for (const c of controllers.values()) {
-    io.emit('timer', { id: c.id, time: mmss((c.cfg.intervalMinutes || 16) * 60 * 1000) });
     io.emit('profile-state', { id: c.id, state: c.state });
     io.emit('stats', { id: c.id, stats: c.stats });
+    if (c.started && !c.paused) {
+      const remaining = Math.max(0, c._nextBumpAt - Date.now());
+      io.emit('timer', { id: c.id, time: mmss(remaining) });
+    } else {
+      io.emit('timer', { id: c.id, time: null });
+    }
   }
   let active = 0;
   for (const c of controllers.values()) {

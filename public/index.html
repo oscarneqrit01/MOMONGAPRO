@@ -885,7 +885,7 @@
 
             <div class="timer-wrap">
               <div class="timer-label">Tiempo para el próximo bump</div>
-              <div class="timer" data-timer-id="${profile.id}">03:53</div>
+              <div class="timer" data-timer-id="${profile.id}">--:--</div>
             </div>
 
             <div class="note" data-lastbump-id="${profile.id}">Sin publicaciones registradas aún</div>
@@ -1170,7 +1170,7 @@
 
     socket.on('timer', (data) => {
       const timerNode = document.querySelector(`[data-timer-id="${data.id}"]`);
-      if (timerNode) timerNode.textContent = data.time;
+      if (timerNode) timerNode.textContent = data.time || '--:--';
     });
 
     socket.on('log', (data) => {
