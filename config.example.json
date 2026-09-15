@@ -1,0 +1,30 @@
+[
+  {
+    "id": "PerfilEjemplo",
+    "port": 9333,
+    "apiKey2Captcha": "TU_CLAVE_DE_2CAPTCHA",
+    "email": "",
+    "password": "",
+    "intervalMinutes": 16,
+    "url": "https://megapersonals.eu/",
+    "adDetails": {
+      "city": "Montreal",
+      "age": "",
+      "text": "",
+      "photosPath": ""
+    },
+    "proxy": {
+      "host": "IP_DEL_PROXY",
+      "port": 12345,
+      "username": "USUARIO",
+      "password": "CONTRASENA"
+    },
+    "settings": {
+      "rotateAds": false,
+      "randomizedDelay": true,
+      "publishOnStart": true
+    },
+    "autoRepostActive": false,
+    "repostInterval": 6
+  }
+]
