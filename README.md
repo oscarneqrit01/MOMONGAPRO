@@ -14,7 +14,7 @@ Panel multi-perfil para automatizar **bumps** y **reposts** en sitios tipo MegaP
 - **Auto-repost**: borra y republica cada N horas.
 - **Copia de anuncio**: extrae ciudad/edad/texto y descarga+limpia las fotos del anuncio actual (quita EXIF y altera ligeramente la imagen).
 - **Parada de emergencia**: si detecta señales de suspensión/bloqueo en cualquier perfil, detiene todos los perfiles.
-- **Auto-arranque**: al reiniciar el servidor, reanuda los perfiles que estaban activos.
+- **Auto-arranque (opcional)**: con `AUTO_START=1`, al reiniciar el servidor reanuda los perfiles que estaban activos. Por defecto está **desactivado**.
 - **Panel web** en tiempo real (Socket.IO): Iniciar/Pausar/Detener/Publicar, contadores, estado y registro en vivo.
 - **Estadísticas**: bumps de hoy, total y último bump.
 - **Logs a archivo** diarios con rotación (no se pierden al cerrar la terminal).
@@ -145,7 +145,7 @@ Es un **array** de perfiles:
 |---|---|---|
 | `PANEL_PASSWORD` | Contraseña del panel web. | `momonga` |
 | `PORT` | Puerto del servidor. | `3000` |
-| `AUTO_START` | `0` desactiva el auto-arranque de perfiles. | activado |
+| `AUTO_START` | `1` activa el auto-arranque de perfiles al iniciar. | desactivado |
 | `TELEGRAM_BOT_TOKEN` | Token del bot de Telegram. | — |
 | `TELEGRAM_CHAT_ID` | Chat/ID de destino en Telegram. | — |
 | `DISCORD_WEBHOOK_URL` | URL de webhook de Discord. | — |

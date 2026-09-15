@@ -1169,7 +1169,7 @@ function buildControllers() {
 buildControllers();
 
 async function restoreActiveProfiles() {
-  if (process.env.AUTO_START === '0') return;
+  if (process.env.AUTO_START !== '1') return;
 
   const state = loadState();
   const ids = Object.keys(state).filter(id => state[id] && state[id].active && controllers.has(id));
