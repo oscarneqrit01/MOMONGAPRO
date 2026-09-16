@@ -815,6 +815,7 @@
     const socket = io();
     const profileStates = {};
     const profileStats = {};
+    const profileRepostTimers = {};
     const profilesEl = document.getElementById('profiles');
     const activeCountEl = document.getElementById('active-count');
     const addModal = document.getElementById('addModal');
@@ -887,6 +888,11 @@
             <div class="timer-wrap">
               <div class="timer-label">Tiempo para el próximo bump</div>
               <div class="timer" data-timer-id="${profile.id}">--:--</div>
+            </div>
+
+            <div class="timer-wrap">
+              <div class="timer-label">Tiempo para borrar y republicar el anuncio</div>
+              <div class="timer" data-repost-timer-id="${profile.id}">--:--</div>
             </div>
 
             <div class="note" data-lastbump-id="${profile.id}">Sin publicaciones registradas aún</div>
@@ -1025,6 +1031,7 @@
 
       for (const id of Object.keys(profileStates)) updateProfileState(id, profileStates[id]);
       for (const id of Object.keys(profileStats)) updateStats(id, profileStats[id]);
+      for (const id of Object.keys(profileRepostTimers)) updateRepostTimer(id, profileRepostTimers[id]);
 
       profilesEl.querySelectorAll('[data-action]').forEach(button => {
         button.addEventListener('click', () => {
@@ -1196,6 +1203,16 @@
     socket.on('timer', (data) => {
       const timerNode = document.querySelector(`[data-timer-id="${data.id}"]`);
       if (timerNode) timerNode.textContent = data.time || '--:--';
+    });
+
+    function updateRepostTimer(profileId, time) {
+      profileRepostTimers[profileId] = time;
+      const node = document.querySelector(`[data-repost-timer-id="${profileId}"]`);
+      if (node) node.textContent = time || '--:--';
+    }
+
+    socket.on('repost-timer', (data) => {
+      updateRepostTimer(data.id, data.time);
     });
 
     socket.on('log', (data) => {

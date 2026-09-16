@@ -1192,6 +1192,7 @@ class ProfileController {
     this._repostTimer = null;
     this.log('⏸ Pausado.');
     io.emit('timer', { id: this.id, time: null });
+    io.emit('repost-timer', { id: this.id, time: null });
     this.emitState('paused');
   }
 
@@ -1222,6 +1223,7 @@ class ProfileController {
     this.log('🛑 Detenido.');
     this.emitActive();
     io.emit('timer', { id: this.id, time: null });
+    io.emit('repost-timer', { id: this.id, time: null });
     this.emitState('stopped');
     saveState();
   }
@@ -1232,6 +1234,9 @@ class ProfileController {
       if (!this.started || this.paused) return;
       const remaining = Math.max(0, this._nextBumpAt - Date.now());
       io.emit('timer', { id: this.id, time: mmss(remaining) });
+
+      const repostRemaining = this.autoRepostActive ? Math.max(0, this._nextRepostAt - Date.now()) : null;
+      io.emit('repost-timer', { id: this.id, time: repostRemaining === null ? null : mmss(repostRemaining) });
     }, 1000);
   }
 
@@ -1289,6 +1294,8 @@ class ProfileController {
     }
     if (this.autoRepostActive && this.started && !this.paused) {
       this.scheduleRepost();
+    } else if (!this.autoRepostActive) {
+      io.emit('repost-timer', { id: this.id, time: null });
     }
   }
 
@@ -1299,6 +1306,7 @@ class ProfileController {
     const waitMs = this.repostInterval * 60 * 60 * 1000;
     this._nextRepostAt = Date.now() + waitMs;
     this.log(`🔄 Ciclo de borrado/republicación en ${this.repostInterval} h.`);
+    io.emit('repost-timer', { id: this.id, time: mmss(waitMs) });
     this._repostTimer = setTimeout(() => this.repostCycle(), waitMs);
   }
 
@@ -1649,8 +1657,11 @@ io.on('connection', (socket) => {
     if (c.started && !c.paused) {
       const remaining = Math.max(0, c._nextBumpAt - Date.now());
       io.emit('timer', { id: c.id, time: mmss(remaining) });
+      const repostRemaining = c.autoRepostActive ? Math.max(0, c._nextRepostAt - Date.now()) : null;
+      io.emit('repost-timer', { id: c.id, time: repostRemaining === null ? null : mmss(repostRemaining) });
     } else {
       io.emit('timer', { id: c.id, time: null });
+      io.emit('repost-timer', { id: c.id, time: null });
     }
   }
   let active = 0;
