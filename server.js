@@ -1494,6 +1494,12 @@ app.post('/api/profiles/:id/scrape', async (req, res) => {
       const dispatcher = buildProxyDispatcher(controller.cfg.proxy);
       controller.log(`🖼️ Descargando y limpiando ${photoUrls.length} foto(s)${dispatcher ? ' vía proxy' : ''}...`);
       try {
+        // Reemplazar: borrar las fotos anteriores para dejar SOLO las del anuncio actual
+        if (fs.existsSync(targetDir)) {
+          for (const name of fs.readdirSync(targetDir)) {
+            try { fs.unlinkSync(path.join(targetDir, name)); } catch (_) {}
+          }
+        }
         for (const url of photoUrls) {
           const saved = await downloadAndSanitizePhoto(url, targetDir, controller.id, dispatcher);
           if (saved) photosSaved++;
