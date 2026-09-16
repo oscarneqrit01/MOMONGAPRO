@@ -1302,8 +1302,9 @@ emitActive() {
       waitMs = min * 60 * 1000;
       if (this.settings.randomizedDelay) {
         const jitter = (Math.random() * 2 - 1) * 0.2 * waitMs;
-        waitMs = Math.max(60 * 1000, Math.round(waitMs + jitter));
+        waitMs = Math.round(waitMs + jitter);
       }
+      waitMs = Math.max(min * 60 * 1000, waitMs);
     } else {
       waitMs = Math.round((min + Math.random() * (max - min)) * 60 * 1000);
     }
