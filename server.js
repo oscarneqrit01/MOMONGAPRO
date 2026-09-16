@@ -1494,6 +1494,10 @@ app.post('/api/profiles/:id/scrape', async (req, res) => {
   }
 
   try {
+    try {
+      fs.writeFileSync(path.join(LOGS_DIR, `dump-${controller.id}.html`), await controller.page.content(), 'utf8');
+    } catch (_) {}
+
     let data = await scrapeActiveAdData(controller.page);
 
     if (!data.city && !data.text) {
