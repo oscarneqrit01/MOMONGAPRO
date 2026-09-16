@@ -379,6 +379,16 @@
       font-size: 12px;
     }
 
+    .profile-repost {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #a9b9c9;
+      font-size: 11px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+
     .mini-dot {
       width: 8px;
       height: 8px;
@@ -878,6 +888,14 @@
             <span data-state-id="${profile.id}" style="font-size:12px; font-weight:bold; color:#888; margin-left:8px;">● Detenido</span>
           </div>
 
+          <div class="profile-repost">
+            <span>Tiempo para remover y republicar:</span>
+            <strong data-repost-timer-id="${profile.id}" style="color:#f5f7ff; font-weight:bold;">--:--</strong>
+            <input type="number" class="interval-input" min="1" max="43200" value="${profile.repostIntervalMin || ((profile.repostInterval || 6) * 60)}" data-repost-minutes="${profile.id}">
+            <span>min</span>
+            <button class="small-btn blue" data-action="save-repost" data-id="${profile.id}">OK</button>
+          </div>
+
           <div class="profile-meta">
             <span>Bump (min–max):</span>
             <input type="number" class="interval-input" min="1" max="10080" value="${profile.bumpMinMinutes || profile.intervalMinutes || 16}" data-bump-min="${profile.id}">
@@ -909,11 +927,6 @@
             <div class="timer-wrap">
               <div class="timer-label">Tiempo para el próximo bump</div>
               <div class="timer" data-timer-id="${profile.id}">--:--</div>
-            </div>
-
-            <div class="timer-wrap">
-              <div class="timer-label">Tiempo para borrar y republicar el anuncio</div>
-              <div class="timer" data-repost-timer-id="${profile.id}">--:--</div>
             </div>
 
             <div class="note" data-lastbump-id="${profile.id}">Sin publicaciones registradas aún</div>
@@ -1015,8 +1028,8 @@
                     <span style="font-size: 10px; color: #888;">Repetir este proceso automáticamente cada cierto tiempo:</span>
                   </div>
                   <div style="display: flex; align-items: center; gap: 8px;">
-                    <input type="number" id="interval-${profile.id}" value="${profile.repostInterval || 6}" min="1" max="72" style="width: 50px; background: #151522; border: 1px solid #444; color: #fff; text-align: center; padding: 5px; border-radius: 4px; font-size: 12px;">
-                    <span style="font-size: 11px; color: #ccc;">Horas</span>
+                    <input type="number" id="interval-${profile.id}" value="${profile.repostIntervalMin || ((profile.repostInterval || 6) * 60)}" min="1" max="43200" style="width: 60px; background: #151522; border: 1px solid #444; color: #fff; text-align: center; padding: 5px; border-radius: 4px; font-size: 12px;">
+                    <span style="font-size: 11px; color: #ccc;">min</span>
                     <button onclick="toggleAutoRepost('${profile.id}')" id="btn-repost-toggle-${profile.id}" data-active="${profile.autoRepostActive ? 'true' : 'false'}" style="background: ${profile.autoRepostActive ? '#e74c3c' : '#27ae60'}; color: #fff; border: none; padding: 6px 12px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 11px;">
                       ${profile.autoRepostActive ? '⏹️ Detener Ciclo' : '▶️ Activar Ciclo'}
                     </button>
@@ -1070,6 +1083,11 @@
             const min = Number(minInput && minInput.value) || 16;
             const max = Number(maxInput && maxInput.value) || min;
             socket.emit('update-interval', { id, min: Math.max(1, min), max: Math.max(min, max) });
+          }
+          if (action === 'save-repost') {
+            const minutesInput = document.querySelector(`[data-repost-minutes="${id}"]`);
+            const minutes = Number(minutesInput && minutesInput.value) || 360;
+            socket.emit('update-repost-interval', { id, minutes: Math.max(1, minutes) });
           }
         });
       });

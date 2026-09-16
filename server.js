@@ -999,6 +999,7 @@ class ProfileController {
     this._nextRepostAt = 0;
     this.autoRepostActive = Boolean(cfg.autoRepostActive);
     this.repostInterval = Number(cfg.repostInterval) || 6;
+    this.repostIntervalMin = Number(cfg.repostIntervalMin) || this.repostInterval * 60;
     this.state = 'stopped';
     this.stats = { totalBumps: 0, bumpsToday: 0, lastBumpAt: 0, date: todayKey() };
     this.settings = {
@@ -1014,7 +1015,7 @@ class ProfileController {
     io.emit('log', { id: this.id, text });
   }
 
-  emitActive() {
+emitActive() {
     let active = 0;
     for (const c of controllers.values()) {
       if (c.browser) active++;
@@ -1296,10 +1297,13 @@ class ProfileController {
     this.scheduleNext();
   }
 
-  setAutoRepost(active, interval) {
+  setAutoRepost(active, minutes) {
     this.autoRepostActive = Boolean(active);
-    if (interval !== undefined && interval !== null && interval !== '') {
-      this.repostInterval = Number(interval) || this.repostInterval;
+    if (minutes !== undefined && minutes !== null && minutes !== '') {
+      const val = Math.max(1, Math.round(Number(minutes) || this.repostIntervalMin || 360));
+      this.repostIntervalMin = val;
+      this.repostInterval = Math.round(val / 60) || 1;
+      this.cfg.repostIntervalMin = val;
     }
     if (this._repostTimer) {
       clearTimeout(this._repostTimer);
@@ -1316,9 +1320,10 @@ class ProfileController {
     if (!this.started || this.paused || !this.autoRepostActive) return;
     if (this._repostTimer) clearTimeout(this._repostTimer);
 
-    const waitMs = this.repostInterval * 60 * 60 * 1000;
+    const minutes = Math.max(1, Math.round(this.repostIntervalMin || this.repostInterval * 60));
+    const waitMs = minutes * 60 * 1000;
     this._nextRepostAt = Date.now() + waitMs;
-    this.log(`🔄 Ciclo de borrado/republicación en ${this.repostInterval} h.`);
+    this.log(`🔄 Ciclo de borrado/republicación en ${minutes} min.`);
     io.emit('repost-timer', { id: this.id, time: hhmmss(waitMs) });
     this._repostTimer = setTimeout(() => this.repostCycle(), waitMs);
   }
@@ -1648,11 +1653,12 @@ app.patch('/api/profiles/:id/autorepost', (req, res) => {
     }
 
     if (body.repostInterval !== undefined && body.repostInterval !== null && body.repostInterval !== '') {
-      const hours = Number(body.repostInterval);
-      if (!Number.isFinite(hours) || hours < 1 || hours > 72) {
-        return res.status(400).json({ success: false, error: 'El intervalo debe estar entre 1 y 72 horas.' });
+      const minutes = Number(body.repostInterval);
+      if (!Number.isFinite(minutes) || minutes < 1 || minutes > 43200) {
+        return res.status(400).json({ success: false, error: 'El intervalo debe estar entre 1 y 43200 minutos.' });
       }
-      profile.repostInterval = hours;
+      profile.repostIntervalMin = Math.round(minutes);
+      profile.repostInterval = Math.round(Number(minutes) / 60) || 1;
     }
 
     fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
@@ -1660,9 +1666,9 @@ app.patch('/api/profiles/:id/autorepost', (req, res) => {
     const controller = controllers.get(profile.id);
     if (controller) {
       controller.cfg = profile;
-      controller.setAutoRepost(profile.autoRepostActive, profile.repostInterval);
+      controller.setAutoRepost(profile.autoRepostActive, profile.repostIntervalMin || profile.repostInterval * 60);
     }
-    res.json({ success: true, autoRepostActive: Boolean(profile.autoRepostActive), repostInterval: Number(profile.repostInterval) || 6 });
+    res.json({ success: true, autoRepostActive: Boolean(profile.autoRepostActive), repostInterval: Number(profile.repostIntervalMin) || Number(profile.repostInterval) * 60 || 360 });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -1752,6 +1758,22 @@ io.on('connection', (socket) => {
     Object.assign(controller.cfg, { bumpMinMinutes: minVal, bumpMaxMinutes: maxVal });
     if (controller.started && !controller.paused) controller.scheduleNext();
     controller.log(`⏱️ Intervalo de bumps actualizado: ${minVal}–${maxVal} min.`);
+  });
+
+  socket.on('update-repost-interval', ({ id, minutes }) => {
+    const controller = controllers.get(id);
+    if (!controller) return;
+    const val = Math.max(1, Math.round(Number(minutes) || 360));
+    const config = loadConfig();
+    const profile = config.find(p => p.id === id);
+    if (profile) {
+      profile.repostIntervalMin = val;
+      profile.repostInterval = Math.round(val / 60) || 1;
+      fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+    }
+    Object.assign(controller.cfg, { repostIntervalMin: val, repostInterval: Math.round(val / 60) || 1 });
+    if (controller.autoRepostActive && controller.started && !controller.paused) controller.scheduleRepost();
+    controller.log(`⏱️ Ciclo de borrado/republicación: ${val} min.`);
   });
 
 });
