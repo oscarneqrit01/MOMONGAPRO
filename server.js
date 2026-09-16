@@ -498,28 +498,70 @@ async function loginIfNeeded(page, controller) {
   await checkForBlock(page, controller);
 }
 
-async function performBump(page, controller) {
+async function clickBumpButton(page, controller) {
   const selectors = [
+    '#managePublishAd',
+    'a.manage-button:has-text("Bump")',
+    'a:has-text("Bump to Top")',
+    'button:has-text("Bump to Top")',
+    'a:has-text("Bump")',
     'button:has-text("Bump")',
     'button:has-text("Boost")',
-    'button:has-text("Publish")',
-    'button:has-text("Update")',
-    'button:has-text("Post")',
-    'a:has-text("Bump")',
     'a:has-text("Boost")',
+    'button:has-text("Publish")',
     'a:has-text("Publish")'
   ];
 
   for (const selector of selectors) {
     try {
-      await page.waitForSelector(selector, { timeout: 1500 });
-      await page.locator(selector).click({ timeout: 8000 });
-      controller.log('🚀 Bump ejecutado.');
-      controller.recordBump();
-      return;
+      await page.waitForSelector(selector, { timeout: 2000 });
+      await page.locator(selector).click({ timeout: 4000 });
+      return true;
     } catch (_) {
       // seguir probando
     }
+  }
+
+  try {
+    const clicked = await page.evaluate(() => {
+      const controls = Array.from(document.querySelectorAll('a, button'));
+      const target = controls.find(el =>
+        (el.innerText || '').trim().toLowerCase().includes('bump') && el.offsetParent !== null
+      );
+      if (target) {
+        target.click();
+        return true;
+      }
+      return false;
+    });
+    if (clicked) return true;
+  } catch (_) {}
+
+  return false;
+}
+
+async function performBump(page, controller) {
+  if (await clickBumpButton(page, controller)) {
+    controller.log('🚀 Bump ejecutado.');
+    controller.recordBump();
+    return;
+  }
+
+  controller.log('Buscando el anuncio en Mis Anuncios...');
+  try {
+    await page.goto(MANAGE_POSTS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+  } catch (error) {
+    controller.log(`No se pudo abrir Mis Anuncios: ${error.message}`);
+    controller.log('No se encontró botón de bump/publicación.');
+    return;
+  }
+
+  if (await checkForBlock(page, controller)) return;
+
+  if (await clickBumpButton(page, controller)) {
+    controller.log('🚀 Bump ejecutado.');
+    controller.recordBump();
+    return;
   }
 
   controller.log('No se encontró botón de bump/publicación.');
