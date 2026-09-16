@@ -500,10 +500,6 @@ async function loginIfNeeded(page, controller) {
 
 async function performBump(page, controller) {
   const selectors = [
-    '#managePublishAd',
-    'a#managePublishAd',
-    'button:has-text("Bump to Top")',
-    'a:has-text("Bump to Top")',
     'button:has-text("Bump")',
     'button:has-text("Boost")',
     'button:has-text("Publish")',
@@ -516,9 +512,8 @@ async function performBump(page, controller) {
 
   for (const selector of selectors) {
     try {
-      const locator = page.locator(selector);
-      await locator.waitFor({ state: 'visible', timeout: 2000 });
-      await locator.click({ timeout: 8000, force: true });
+      await page.waitForSelector(selector, { timeout: 1500 });
+      await page.locator(selector).click({ timeout: 8000 });
       controller.log('🚀 Bump ejecutado.');
       controller.recordBump();
       return;
@@ -1003,8 +998,7 @@ class ProfileController {
     this._repostTimer = null;
     this._nextRepostAt = 0;
     this.autoRepostActive = Boolean(cfg.autoRepostActive);
-    this.repostMinHours = Math.max(16, Number(cfg.repostMinHours) || 16);
-    this.repostMaxHours = Math.max(this.repostMinHours, Number(cfg.repostMaxHours) || (Number(cfg.repostInterval) || 24));
+    this.repostInterval = Number(cfg.repostInterval) || 6;
     this.state = 'stopped';
     this.stats = { totalBumps: 0, bumpsToday: 0, lastBumpAt: 0, date: todayKey() };
     this.settings = {
@@ -1258,8 +1252,7 @@ class ProfileController {
     if (!this.started || this.paused) return;
     if (this._cycleTimer) clearTimeout(this._cycleTimer);
 
-    const safeIntervalMinutes = Math.max(1, Number(this.cfg.intervalMinutes) || 1);
-    const baseMs = safeIntervalMinutes * 60 * 1000;
+    const baseMs = (this.cfg.intervalMinutes || 16) * 60 * 1000;
     let waitMs = baseMs;
 
     if (this.settings.randomizedDelay) {
@@ -1298,13 +1291,10 @@ class ProfileController {
     this.scheduleNext();
   }
 
-  setAutoRepost(active, minHours, maxHours) {
+  setAutoRepost(active, interval) {
     this.autoRepostActive = Boolean(active);
-    if (minHours !== undefined && minHours !== null && minHours !== '') {
-      this.repostMinHours = Math.max(16, Number(minHours) || 16);
-    }
-    if (maxHours !== undefined && maxHours !== null && maxHours !== '') {
-      this.repostMaxHours = Math.max(this.repostMinHours, Number(maxHours) || this.repostMinHours);
+    if (interval !== undefined && interval !== null && interval !== '') {
+      this.repostInterval = Number(interval) || this.repostInterval;
     }
     if (this._repostTimer) {
       clearTimeout(this._repostTimer);
@@ -1321,12 +1311,9 @@ class ProfileController {
     if (!this.started || this.paused || !this.autoRepostActive) return;
     if (this._repostTimer) clearTimeout(this._repostTimer);
 
-    const minH = Math.max(16, Number(this.repostMinHours) || 16);
-    const maxH = Math.max(minH, Number(this.repostMaxHours) || minH);
-    const hours = minH + Math.random() * (maxH - minH);
-    const waitMs = Math.round(hours * 3600 * 1000);
+    const waitMs = this.repostInterval * 60 * 60 * 1000;
     this._nextRepostAt = Date.now() + waitMs;
-    this.log(`🔄 Ciclo de borrado/republicación en ${hours.toFixed(1)} h (aleatorio entre ${minH} y ${maxH} h).`);
+    this.log(`🔄 Ciclo de borrado/republicación en ${this.repostInterval} h.`);
     io.emit('repost-timer', { id: this.id, time: hhmmss(waitMs) });
     this._repostTimer = setTimeout(() => this.repostCycle(), waitMs);
   }
@@ -1433,7 +1420,7 @@ app.post('/api/profiles', (req, res) => {
       return res.status(400).json({ error: 'El nombre y el puerto válido son obligatorios.' });
     }
     if (!Number.isFinite(numericInterval) || numericInterval < 1) {
-      return res.status(400).json({ error: 'El intervalo debe ser mayor que 0 minutos.' });
+      return res.status(400).json({ error: 'El intervalo debe ser de al menos 1 minuto.' });
     }
 
     const config = loadConfig();
@@ -1530,27 +1517,6 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
       } else {
         profile.proxy = parsed;
       }
-    }
-
-    if ('intervalMinutes' in body) {
-      const interval = Number(body.intervalMinutes);
-      if (!Number.isFinite(interval) || interval < 5 || interval > 240) {
-        return res.status(400).json({ success: false, error: 'El intervalo del bump debe estar entre 5 y 240 minutos.' });
-      }
-      profile.intervalMinutes = interval;
-    }
-
-    if ('repostMinHours' in body || 'repostMaxHours' in body) {
-      const minH = 'repostMinHours' in body ? Number(body.repostMinHours) : Number(profile.repostMinHours || 16);
-      const maxH = 'repostMaxHours' in body ? Number(body.repostMaxHours) : Number(profile.repostMaxHours || minH);
-      if (!Number.isFinite(minH) || minH < 16 || minH > 720) {
-        return res.status(400).json({ success: false, error: 'El mínimo del ciclo debe estar entre 16 y 720 horas.' });
-      }
-      if (!Number.isFinite(maxH) || maxH > 720) {
-        return res.status(400).json({ success: false, error: 'El máximo del ciclo debe ser un número y no superar 720 horas.' });
-      }
-      profile.repostMinHours = Math.round(minH * 10) / 10;
-      profile.repostMaxHours = Math.round(Math.max(minH, maxH) * 10) / 10;
     }
 
     fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
@@ -1669,21 +1635,12 @@ app.patch('/api/profiles/:id/autorepost', (req, res) => {
       profile.autoRepostActive = Boolean(body.autoRepostActive);
     }
 
-    if (body.repostMinHours !== undefined && body.repostMinHours !== null && body.repostMinHours !== '') {
-      const minH = Number(body.repostMinHours);
-      if (!Number.isFinite(minH) || minH < 16 || minH > 720) {
-        return res.status(400).json({ success: false, error: 'El mínimo del ciclo debe estar entre 16 y 720 horas.' });
+    if (body.repostInterval !== undefined && body.repostInterval !== null && body.repostInterval !== '') {
+      const hours = Number(body.repostInterval);
+      if (!Number.isFinite(hours) || hours < 1 || hours > 72) {
+        return res.status(400).json({ success: false, error: 'El intervalo debe estar entre 1 y 72 horas.' });
       }
-      profile.repostMinHours = Math.round(Math.max(16, minH) * 10) / 10;
-    }
-
-    if (body.repostMaxHours !== undefined && body.repostMaxHours !== null && body.repostMaxHours !== '') {
-      const maxH = Number(body.repostMaxHours);
-      if (!Number.isFinite(maxH) || maxH > 720) {
-        return res.status(400).json({ success: false, error: 'El máximo del ciclo debe ser un número y no superar 720 horas.' });
-      }
-      const minH = Number(profile.repostMinHours) || 16;
-      profile.repostMaxHours = Math.round(Math.max(minH, maxH) * 10) / 10;
+      profile.repostInterval = hours;
     }
 
     fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
@@ -1691,14 +1648,9 @@ app.patch('/api/profiles/:id/autorepost', (req, res) => {
     const controller = controllers.get(profile.id);
     if (controller) {
       controller.cfg = profile;
-      controller.setAutoRepost(profile.autoRepostActive, profile.repostMinHours, profile.repostMaxHours);
+      controller.setAutoRepost(profile.autoRepostActive, profile.repostInterval);
     }
-    res.json({
-      success: true,
-      autoRepostActive: Boolean(profile.autoRepostActive),
-      repostMinHours: Number(profile.repostMinHours) || 16,
-      repostMaxHours: Number(profile.repostMaxHours) || 24
-    });
+    res.json({ success: true, autoRepostActive: Boolean(profile.autoRepostActive), repostInterval: Number(profile.repostInterval) || 6 });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
