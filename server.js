@@ -622,6 +622,34 @@ async function fillFieldByLabel(page, labelRegexSource, value) {
   }, labelRegexSource, value);
 }
 
+async function fillPhone(page, value) {
+  if (!value) return false;
+
+  return page.evaluate((val) => {
+    const setVal = (f) => {
+      if (!f || !('value' in f)) return false;
+      f.value = String(val);
+      f.dispatchEvent(new Event('input', { bubbles: true }));
+      f.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    };
+
+    const tel = document.querySelector('input[type="tel"]');
+    if (setVal(tel)) return true;
+
+    const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    const labels = Array.from(document.querySelectorAll('label, b, strong, span, td, th, p, div'));
+    for (const el of labels) {
+      const t = clean(el.textContent);
+      if (!t || t.length > 30 || !/^\s*phone/i.test(t)) continue;
+      const scope = el.parentElement || el;
+      const num = Array.from(scope.querySelectorAll('input:not([type="hidden"])')).find((i) => i.type !== 'checkbox');
+      if (setVal(num)) return true;
+    }
+    return false;
+  }, value);
+}
+
 async function deleteAndRepost(page, controller) {
   const details = controller.cfg.adDetails || {};
   if (!details.city || !details.text) {
@@ -659,7 +687,7 @@ async function deleteAndRepost(page, controller) {
     await fillFieldByLabel(page, '^\\s*body', details.text);
     await fillFieldByLabel(page, '^\\s*city', details.city);
     await fillFieldByLabel(page, '^\\s*location', details.location);
-    await fillFirst(page, ['input[type="tel"]', 'input[name*="phone" i]:not([type="hidden"])'], details.phone);
+    await fillPhone(page, details.phone);
 
     if (details.photosPath) {
       const photosDir = path.resolve(__dirname, details.photosPath);
@@ -809,7 +837,21 @@ async function scrapeActiveAdData(page) {
       text: readByLabel('^\\s*body') || readByName(['textarea[name="body"]', 'textarea[name*="text" i]', 'textarea[name*="description" i]', 'textarea']),
       city: readByLabel('^\\s*city') || readByName(['input[name="city"]', 'select[name="city"]', 'input[name*="city" i]:not([type="hidden"])']),
       location: readByLabel('^\\s*location') || readByLabel('area'),
-      phone: readByLabel('^\\s*phone') || readByName(['input[name*="phone" i]', 'input[type="tel"]'])
+      phone: (() => {
+        const tel = document.querySelector('input[type="tel"]');
+        if (tel && /\d{5,}/.test(tel.value || '')) return tel.value;
+        const re = /^\s*phone/i;
+        const candidates = Array.from(document.querySelectorAll('label, b, strong, span, td, th, p, div'));
+        for (const el of candidates) {
+          const text = clean(el.textContent);
+          if (!text || text.length > 30 || !re.test(text)) continue;
+          const scope = el.parentElement || el;
+          const inputs = Array.from(scope.querySelectorAll('input:not([type="hidden"])'));
+          const num = inputs.find((i) => /\d{5,}/.test(i.value || ''));
+          if (num) return num.value;
+        }
+        return '';
+      })()
     };
   });
 }
