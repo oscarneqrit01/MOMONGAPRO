@@ -217,6 +217,14 @@ function mmss(ms) {
   return `${m}:${s}`;
 }
 
+function hhmmss(ms) {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const h = String(Math.floor(total / 3600)).padStart(2, '0');
+  const m = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
+  const s = String(total % 60).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -1236,7 +1244,7 @@ class ProfileController {
       io.emit('timer', { id: this.id, time: mmss(remaining) });
 
       const repostRemaining = this.autoRepostActive ? Math.max(0, this._nextRepostAt - Date.now()) : null;
-      io.emit('repost-timer', { id: this.id, time: repostRemaining === null ? null : mmss(repostRemaining) });
+      io.emit('repost-timer', { id: this.id, time: repostRemaining === null ? null : hhmmss(repostRemaining) });
     }, 1000);
   }
 
@@ -1306,7 +1314,7 @@ class ProfileController {
     const waitMs = this.repostInterval * 60 * 60 * 1000;
     this._nextRepostAt = Date.now() + waitMs;
     this.log(`🔄 Ciclo de borrado/republicación en ${this.repostInterval} h.`);
-    io.emit('repost-timer', { id: this.id, time: mmss(waitMs) });
+    io.emit('repost-timer', { id: this.id, time: hhmmss(waitMs) });
     this._repostTimer = setTimeout(() => this.repostCycle(), waitMs);
   }
 
@@ -1658,7 +1666,7 @@ io.on('connection', (socket) => {
       const remaining = Math.max(0, c._nextBumpAt - Date.now());
       io.emit('timer', { id: c.id, time: mmss(remaining) });
       const repostRemaining = c.autoRepostActive ? Math.max(0, c._nextRepostAt - Date.now()) : null;
-      io.emit('repost-timer', { id: c.id, time: repostRemaining === null ? null : mmss(repostRemaining) });
+      io.emit('repost-timer', { id: c.id, time: repostRemaining === null ? null : hhmmss(repostRemaining) });
     } else {
       io.emit('timer', { id: c.id, time: null });
       io.emit('repost-timer', { id: c.id, time: null });
