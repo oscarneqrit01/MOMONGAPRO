@@ -712,7 +712,43 @@ function parseProxy(value) {
 
 async function scrapeActiveAdData(page) {
   return page.evaluate(() => {
-    const readValue = (selectors) => {
+    const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+
+    const readByLabel = (labelRegexSource) => {
+      const re = new RegExp(labelRegexSource, 'i');
+      const candidates = Array.from(document.querySelectorAll('label, b, strong, span, td, th, p, div'));
+      for (const el of candidates) {
+        const text = clean(el.textContent);
+        if (!text || text.length > 30) continue;
+        if (!re.test(text)) continue;
+
+        if (el.tagName === 'LABEL' && el.htmlFor) {
+          const f = document.getElementById(el.htmlFor);
+          if (f && 'value' in f) return f.value;
+        }
+
+        let field = el.querySelector('input:not([type="hidden"]), select, textarea');
+        if (field && 'value' in field) return field.value;
+
+        let sib = el.nextElementSibling;
+        while (sib) {
+          field = sib.matches('input:not([type="hidden"]), select, textarea')
+            ? sib
+            : sib.querySelector('input:not([type="hidden"]), select, textarea');
+          if (field && 'value' in field) return field.value;
+          sib = sib.nextElementSibling;
+        }
+
+        const parent = el.parentElement;
+        if (parent) {
+          field = parent.querySelector('input:not([type="hidden"]), select, textarea');
+          if (field && 'value' in field) return field.value;
+        }
+      }
+      return '';
+    };
+
+    const readByName = (selectors) => {
       for (const selector of selectors) {
         const el = document.querySelector(selector);
         if (el && 'value' in el && el.value) return el.value;
@@ -721,9 +757,9 @@ async function scrapeActiveAdData(page) {
     };
 
     return {
-      city: readValue(['input[name="city"]', 'select[name="city"]', 'input[name*="city" i]', 'select[name*="city" i]']),
-      age: readValue(['input[name="age"]', 'select[name="age"]', 'input[name*="age" i]']),
-      text: readValue(['textarea[name="body"]', 'textarea[name*="text" i]', 'textarea[name*="description" i]', 'textarea'])
+      city: readByLabel('^\\s*city') || readByName(['input[name="city"]', 'select[name="city"]', 'input[name*="city" i]:not([type="hidden"])']),
+      age: readByLabel('^\\s*age') || readByName(['input[name="age"]', 'select[name="age"]', 'input[name*="age" i]:not([type="hidden"])']),
+      text: readByLabel('^\\s*body') || readByName(['textarea[name="body"]', 'textarea[name*="text" i]', 'textarea[name*="description" i]', 'textarea'])
     };
   });
 }
@@ -1327,6 +1363,10 @@ app.post('/api/profiles/:id/scrape', async (req, res) => {
     controller.log(`📥 Leído de la página actual -> ciudad: "${data.city}", edad: "${data.age}", texto: ${data.text ? data.text.length + ' caracteres' : 'vacío'}`);
 
     if (!data.city && !data.text) {
+      const fields = await controller.page.evaluate(() => Array.from(document.querySelectorAll('input, select, textarea'))
+        .filter((el) => el.type !== 'password')
+        .map((el) => ({ tag: el.tagName.toLowerCase(), type: el.type, name: el.name, id: el.id })));
+      controller.log('🔎 Campos disponibles: ' + JSON.stringify(fields));
       controller.log('⚠️ No se encontraron campos de ciudad/texto. Abre el formulario del anuncio (Editar) en la ventana del perfil y vuelve a intentar.');
     }
 
