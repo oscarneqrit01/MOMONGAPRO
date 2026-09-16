@@ -498,18 +498,26 @@ async function loginIfNeeded(page, controller) {
   await checkForBlock(page, controller);
 }
 
-async function clickBumpButton(page, controller) {
+async function clickBumpButton(page) {
+  const rawClicked = await page.evaluate(() => {
+    const controls = Array.from(document.querySelectorAll('a, button'));
+    const el = document.getElementById('managePublishAd')
+      || controls.find(e => /bump\s*to\s*top/i.test(`${e.innerText || ''} ${e.id || ''}`.trim()) && e.offsetParent !== null);
+    if (el) {
+      el.click();
+      return true;
+    }
+    return false;
+  }).catch(() => false);
+  if (rawClicked) return true;
+
   const selectors = [
-    '#managePublishAd',
     'a.manage-button:has-text("Bump")',
-    'a:has-text("Bump to Top")',
-    'button:has-text("Bump to Top")',
     'a:has-text("Bump")',
+    'button:has-text("Bump to Top")',
     'button:has-text("Bump")',
     'button:has-text("Boost")',
-    'a:has-text("Boost")',
-    'button:has-text("Publish")',
-    'a:has-text("Publish")'
+    'a:has-text("Boost")'
   ];
 
   for (const selector of selectors) {
@@ -522,30 +530,28 @@ async function clickBumpButton(page, controller) {
     }
   }
 
-  try {
-    const clicked = await page.evaluate(() => {
-      const controls = Array.from(document.querySelectorAll('a, button'));
-      const target = controls.find(el =>
-        (el.innerText || '').trim().toLowerCase().includes('bump') && el.offsetParent !== null
-      );
-      if (target) {
-        target.click();
-        return true;
-      }
-      return false;
-    });
-    if (clicked) return true;
-  } catch (_) {}
-
   return false;
 }
 
+async function doBump(page, controller) {
+  if (!(await clickBumpButton(page))) return false;
+
+  controller.log('🚀 Bump ejecutado.');
+  controller.recordBump();
+  await sleep(2000);
+
+  try {
+    const currentUrl = page.url();
+    if (!currentUrl.includes('/users/posts/list')) {
+      await page.goto(MANAGE_POSTS_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    }
+  } catch (_) {}
+
+  return true;
+}
+
 async function performBump(page, controller) {
-  if (await clickBumpButton(page, controller)) {
-    controller.log('🚀 Bump ejecutado.');
-    controller.recordBump();
-    return;
-  }
+  if (await doBump(page, controller)) return;
 
   controller.log('Buscando el anuncio en Mis Anuncios...');
   try {
@@ -558,11 +564,7 @@ async function performBump(page, controller) {
 
   if (await checkForBlock(page, controller)) return;
 
-  if (await clickBumpButton(page, controller)) {
-    controller.log('🚀 Bump ejecutado.');
-    controller.recordBump();
-    return;
-  }
+  if (await doBump(page, controller)) return;
 
   controller.log('No se encontró botón de bump/publicación.');
 }
