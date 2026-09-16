@@ -858,15 +858,30 @@ async function scrapeActiveAdData(page) {
 
 async function scrapeActiveAdPhotos(page) {
   return page.evaluate(() => {
-    const urls = [];
-    document.querySelectorAll('img').forEach((img) => {
-      const src = img.currentSrc || img.src;
-      if (!src || !/^https?:/i.test(src)) return;
-      if (img.naturalWidth >= 300 && img.naturalHeight >= 300) {
-        urls.push(src);
-      }
-    });
-    return [...new Set(urls)];
+    const urls = new Set();
+
+    const collect = (root) => {
+      root.querySelectorAll('img').forEach((img) => {
+        const src = img.currentSrc || img.src;
+        if (!src || !/^https?:/i.test(src)) return;
+        if (img.naturalWidth < 200 || img.naturalHeight < 200) return;
+
+        const meta = `${img.className || ''} ${img.id || ''} ${img.alt || ''} ${src}`.toLowerCase();
+        if (/(logo|icon|sprite|banner|avatar|emoji|flag|placeholder|loader|spinner)/.test(meta)) return;
+
+        urls.add(src);
+      });
+    };
+
+    const galleries = document.querySelectorAll(
+      '[class*="photo" i], [class*="gallery" i], [class*="pic" i], [class*="upload" i], [class*="image" i], ' +
+      '[id*="photo" i], [id*="gallery" i], [id*="upload" i], [id*="image" i]'
+    );
+    galleries.forEach(collect);
+
+    if (urls.size === 0) collect(document);
+
+    return [...urls];
   });
 }
 
