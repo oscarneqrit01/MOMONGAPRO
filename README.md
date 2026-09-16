@@ -119,7 +119,8 @@ Es un **array** de perfiles:
       "publishOnStart": true
     },
     "autoRepostActive": false,
-    "repostInterval": 6
+    "repostMinHours": 16,
+    "repostMaxHours": 24
   }
 ]
 ```
@@ -137,7 +138,7 @@ Es un **array** de perfiles:
 | `settings.rotateAds` | Si está activo, el ciclo hace borrar+republicar en vez de bump. |
 | `settings.randomizedDelay` | Añade ±20% de variación al intervalo. |
 | `settings.publishOnStart` | Publica al pulsar Iniciar. |
-| `autoRepostActive` / `repostInterval` | Ciclo automático de borrado+republicación cada N horas. |
+| `autoRepostActive` / `repostMinHours` / `repostMaxHours` | Ciclo automático de borrado+republicación: intervalo aleatorio entre mínimo y máximo (el mínimo no baja de 16 h). |
 
 > **Importante:** `config.json`, `state.json`, `profiles/` y `logs/` están en `.gitignore` y **no** se suben al repositorio (contienen datos sensibles y locales de cada máquina).
 

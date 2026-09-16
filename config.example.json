@@ -29,6 +29,7 @@
       "publishOnStart": true
     },
     "autoRepostActive": false,
-    "repostInterval": 6
+    "repostMinHours": 16,
+    "repostMaxHours": 24
   }
 ]
