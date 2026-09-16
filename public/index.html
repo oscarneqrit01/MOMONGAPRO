@@ -939,7 +939,18 @@
                   </div>
                 </div>
 
-                <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                  <div>
+                    <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">NAME / ALIAS</label>
+                    <input type="text" id="name-${profile.id}" placeholder="Ej: None" value="${profile.adDetails?.name || ''}" style="width: 100%; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                  </div>
+                  <div>
+                    <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">HEADLINE</label>
+                    <input type="text" id="headline-${profile.id}" placeholder="Título del anuncio" value="${profile.adDetails?.headline || ''}" style="width: 100%; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                  </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px;">
                   <div>
                     <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">CIUDAD / UBICACIÓN</label>
                     <input type="text" id="city-${profile.id}" placeholder="Ej: Montreal" value="${profile.adDetails?.city || ''}" style="width: 100%; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
@@ -947,6 +958,17 @@
                   <div>
                     <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">EDAD</label>
                     <input type="text" id="age-${profile.id}" placeholder="Ej: 25" value="${profile.adDetails?.age || ''}" style="width: 100%; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                  </div>
+                  <div>
+                    <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">LOCATION / AREA</label>
+                    <input type="text" id="location-${profile.id}" placeholder="Ej: Ashley Heights" value="${profile.adDetails?.location || ''}" style="width: 100%; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                  </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                  <div>
+                    <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">PHONE</label>
+                    <input type="text" id="phone-${profile.id}" placeholder="Ej: 7633218082" value="${profile.adDetails?.phone || ''}" style="width: 100%; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
                   </div>
                   <div>
                     <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">CARPETA FOTOS</label>
@@ -1088,9 +1110,13 @@
         const result = await res.json();
         if (!result.success) throw new Error(result.error || 'No se pudieron copiar los datos.');
 
-        const { city, age, text, photosPath, photosSaved } = result.data || {};
+        const { name, headline, city, age, location, phone, text, photosPath, photosSaved } = result.data || {};
+        if (name) document.getElementById(`name-${profileId}`).value = name;
+        if (headline) document.getElementById(`headline-${profileId}`).value = headline;
         if (city) document.getElementById(`city-${profileId}`).value = city;
         if (age) document.getElementById(`age-${profileId}`).value = age;
+        if (location) document.getElementById(`location-${profileId}`).value = location;
+        if (phone) document.getElementById(`phone-${profileId}`).value = phone;
         if (text) document.getElementById(`text-${profileId}`).value = text;
         if (photosPath) document.getElementById(`photos-${profileId}`).value = photosPath;
         if (photosSaved) alert(`📥 ${photosSaved} foto(s) copiadas y blindadas. Revisa y pulsa Guardar Cambios.`);
@@ -1134,8 +1160,12 @@
         email: document.getElementById(`email-${profileId}`).value,
         password: document.getElementById(`pass-${profileId}`).value,
         adDetails: {
+          name: document.getElementById(`name-${profileId}`).value,
+          headline: document.getElementById(`headline-${profileId}`).value,
           city: document.getElementById(`city-${profileId}`).value,
           age: document.getElementById(`age-${profileId}`).value,
+          location: document.getElementById(`location-${profileId}`).value,
+          phone: document.getElementById(`phone-${profileId}`).value,
           photosPath: document.getElementById(`photos-${profileId}`).value,
           text: document.getElementById(`text-${profileId}`).value
         }

@@ -98,8 +98,12 @@ Es un **array** de perfiles:
     "intervalMinutes": 16,
     "url": "https://megapersonals.eu/",
     "adDetails": {
+      "name": "None",
+      "headline": "Título del anuncio",
       "city": "Montreal",
       "age": "25",
+      "location": "Ashley Heights",
+      "phone": "7633218082",
       "text": "Texto del anuncio",
       "photosPath": "profiles/PerfilEjemplo/photos"
     },

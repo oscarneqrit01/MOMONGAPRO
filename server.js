@@ -570,6 +570,58 @@ async function fillFirst(page, selectors, value) {
   return false;
 }
 
+async function fillFieldByLabel(page, labelRegexSource, value) {
+  if (value === undefined || value === null || value === '') return false;
+
+  return page.evaluate((src, val) => {
+    const re = new RegExp(src, 'i');
+    const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+
+    const setVal = (field) => {
+      if (!field || !('value' in field)) return false;
+      if (field.tagName === 'SELECT') {
+        const opt = Array.from(field.options).find((o) =>
+          o.value === String(val) || o.textContent.trim().toLowerCase() === String(val).trim().toLowerCase()
+        );
+        if (!opt) return false;
+        field.value = opt.value;
+      } else {
+        field.value = String(val);
+      }
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+      field.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    };
+
+    const candidates = Array.from(document.querySelectorAll('label, b, strong, span, td, th, p, div'));
+    for (const el of candidates) {
+      const text = clean(el.textContent);
+      if (!text || text.length > 30 || !re.test(text)) continue;
+
+      if (el.tagName === 'LABEL' && el.htmlFor) {
+        const f = document.getElementById(el.htmlFor);
+        if (setVal(f)) return true;
+      }
+
+      let field = el.querySelector('input:not([type="hidden"]), select, textarea');
+      if (setVal(field)) return true;
+
+      let sib = el.nextElementSibling;
+      while (sib) {
+        field = sib.matches('input:not([type="hidden"]), select, textarea')
+          ? sib
+          : sib.querySelector('input:not([type="hidden"]), select, textarea');
+        if (setVal(field)) return true;
+        sib = sib.nextElementSibling;
+      }
+
+      const parent = el.parentElement;
+      if (parent && setVal(parent.querySelector('input:not([type="hidden"]), select, textarea'))) return true;
+    }
+    return false;
+  }, labelRegexSource, value);
+}
+
 async function deleteAndRepost(page, controller) {
   const details = controller.cfg.adDetails || {};
   if (!details.city || !details.text) {
@@ -601,19 +653,13 @@ async function deleteAndRepost(page, controller) {
 
     if (await checkForBlock(page, controller)) return false;
 
-    await fillFirst(page, [
-      'input[name="city"]', 'select[name="city"]', 'input[name*="city" i]', 'select[name*="city" i]'
-    ], details.city);
-
-    if (details.age) {
-      await fillFirst(page, [
-        'input[name="age"]', 'select[name="age"]', 'input[name*="age" i]', 'select[name*="age" i]'
-      ], details.age);
-    }
-
-    await fillFirst(page, [
-      'textarea[name="body"]', 'textarea[name*="text" i]', 'textarea[name*="description" i]', 'textarea'
-    ], details.text);
+    await fillFieldByLabel(page, '^\\s*name', details.name);
+    await fillFieldByLabel(page, '^\\s*headline', details.headline);
+    await fillFieldByLabel(page, '^\\s*age', details.age);
+    await fillFieldByLabel(page, '^\\s*body', details.text);
+    await fillFieldByLabel(page, '^\\s*city', details.city);
+    await fillFieldByLabel(page, '^\\s*location', details.location);
+    await fillFirst(page, ['input[type="tel"]', 'input[name*="phone" i]:not([type="hidden"])'], details.phone);
 
     if (details.photosPath) {
       const photosDir = path.resolve(__dirname, details.photosPath);
@@ -757,9 +803,13 @@ async function scrapeActiveAdData(page) {
     };
 
     return {
-      city: readByLabel('^\\s*city') || readByName(['input[name="city"]', 'select[name="city"]', 'input[name*="city" i]:not([type="hidden"])']),
+      name: readByLabel('^\\s*name') || readByLabel('alias'),
+      headline: readByLabel('^\\s*headline') || readByLabel('^\\s*title'),
       age: readByLabel('^\\s*age') || readByName(['input[name="age"]', 'select[name="age"]', 'input[name*="age" i]:not([type="hidden"])']),
-      text: readByLabel('^\\s*body') || readByName(['textarea[name="body"]', 'textarea[name*="text" i]', 'textarea[name*="description" i]', 'textarea'])
+      text: readByLabel('^\\s*body') || readByName(['textarea[name="body"]', 'textarea[name*="text" i]', 'textarea[name*="description" i]', 'textarea']),
+      city: readByLabel('^\\s*city') || readByName(['input[name="city"]', 'select[name="city"]', 'input[name*="city" i]:not([type="hidden"])']),
+      location: readByLabel('^\\s*location') || readByLabel('area'),
+      phone: readByLabel('^\\s*phone') || readByName(['input[name*="phone" i]', 'input[type="tel"]'])
     };
   });
 }
@@ -1267,8 +1317,12 @@ app.post('/api/profiles', (req, res) => {
       intervalMinutes: numericInterval,
       url: String(url || DEFAULT_URL).trim() || DEFAULT_URL,
       adDetails: {
+        name: String(adDetails?.name || '').trim(),
+        headline: String(adDetails?.headline || '').trim(),
         city: String(adDetails?.city || '').trim(),
         age: String(adDetails?.age || '').trim(),
+        location: String(adDetails?.location || '').trim(),
+        phone: String(adDetails?.phone || '').trim(),
         text: String(adDetails?.text || ''),
         photosPath: String(adDetails?.photosPath || '').trim()
       }
@@ -1323,8 +1377,12 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
 
     if (body.adDetails && typeof body.adDetails === 'object') {
       profile.adDetails = {
+        name: String(body.adDetails.name || '').trim(),
+        headline: String(body.adDetails.headline || '').trim(),
         city: String(body.adDetails.city || '').trim(),
         age: String(body.adDetails.age || '').trim(),
+        location: String(body.adDetails.location || '').trim(),
+        phone: String(body.adDetails.phone || '').trim(),
         text: String(body.adDetails.text || ''),
         photosPath: String(body.adDetails.photosPath || '').trim()
       };

@@ -8,8 +8,12 @@
     "intervalMinutes": 16,
     "url": "https://megapersonals.eu/",
     "adDetails": {
+      "name": "",
+      "headline": "",
       "city": "Montreal",
       "age": "",
+      "location": "",
+      "phone": "",
       "text": "",
       "photosPath": ""
     },
