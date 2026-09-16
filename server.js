@@ -13,6 +13,7 @@ const STATE_PATH = path.join(__dirname, 'state.json');
 const PORT = process.env.PORT || 3000;
 const DEFAULT_URL = 'https://megapersonals.eu/';
 const MANAGE_POSTS_URL = 'https://megapersonals.eu/users/posts/list?publicDomain=megapersonals.eu';
+const LISTA_POSTS_URL = 'https://megapersonals.eu/users/posts/list';
 const NEW_POST_URL = 'https://megapersonals.eu/users/posts/create';
 
 const PANEL_PASSWORD = process.env.PANEL_PASSWORD || 'momonga';
@@ -538,16 +539,50 @@ async function doBump(page, controller) {
 
   controller.log('🚀 Bump ejecutado.');
   controller.recordBump();
-  await sleep(2000);
+
+  // Igual que la extensión: esperar y volver a la lista de posts
+  await sleep(3000);
+  await returnToPostsList(page, controller);
+  return true;
+}
+
+async function returnToPostsList(page, controller) {
+  const currentUrl = page.url();
+
+  if (currentUrl.includes('success_publish')) {
+    controller.log('✔ Anuncio republicado correctamente.');
+  } else if (currentUrl.includes('error-message')) {
+    controller.log('⚠ El anuncio dio error, volviendo a Mis Anuncios.');
+  }
+
+  if (currentUrl.includes('/users/posts/list')) {
+    return;
+  }
 
   try {
-    const currentUrl = page.url();
-    if (!currentUrl.includes('/users/posts/list')) {
-      await page.goto(MANAGE_POSTS_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    const myPostsClicked = await page.evaluate(() => {
+      const link = Array.from(document.querySelectorAll('a.manage-button'))
+        .find(a => a.offsetParent !== null && (a.innerText || '').trim().toLowerCase().includes('my posts'));
+      if (link) {
+        link.click();
+        return true;
+      }
+      return false;
+    }).catch(() => false);
+
+    if (myPostsClicked) {
+      await sleep(2000);
+      return;
     }
   } catch (_) {}
 
-  return true;
+  // Igual que la extensión: window.location.href = LISTA_POSTS
+  controller.log('Volviendo a Mis Anuncios...');
+  try {
+    await page.goto(LISTA_POSTS_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  } catch (error) {
+    controller.log(`No se pudo volver a Mis Anuncios: ${error.message}`);
+  }
 }
 
 async function performBump(page, controller) {
