@@ -518,13 +518,18 @@ async function performBump(page, controller) {
 }
 
 async function clickTextControl(page, patterns, timeout = 10000) {
-  const found = await page.waitForFunction((expectedPatterns) => {
-    const controls = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
-    return controls.some(control => {
-      const text = `${control.innerText || ''} ${control.value || ''}`.trim();
-      return expectedPatterns.some(pattern => new RegExp(pattern, 'i').test(text));
-    });
-  }, { timeout }, patterns);
+  let found = null;
+  try {
+    found = await page.waitForFunction((expectedPatterns) => {
+      const controls = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
+      return controls.some(control => {
+        const text = `${control.innerText || ''} ${control.value || ''}`.trim();
+        return expectedPatterns.some(pattern => new RegExp(pattern, 'i').test(text));
+      });
+    }, { timeout }, patterns);
+  } catch (_) {
+    return false;
+  }
 
   if (!found) return false;
   await page.evaluate((expectedPatterns) => {
@@ -633,6 +638,16 @@ async function deleteAndRepost(page, controller) {
 
     controller.log('✅ ¡Anuncio republicado de forma idéntica con éxito!');
     controller.recordBump();
+
+    // Volver a la lista de anuncios (MY POSTS)
+    const wentBack = await clickTextControl(page, ['my\\s+posts', 'mis\\s+anuncios'], 6000);
+    if (wentBack) {
+      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+    } else {
+      await page.goto(MANAGE_POSTS_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    }
+    await sleep(1000);
+
     return true;
   } catch (error) {
     controller.log(`❌ Error en el ciclo de republicación: ${error.message}`);
