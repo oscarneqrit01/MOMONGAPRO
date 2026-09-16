@@ -1187,6 +1187,7 @@
           <button class="btn btn-publish" id="publishAllBtn">Publicar en todos</button>
           <button class="btn btn-pause" id="pauseAllBtn">Pausar</button>
           <button class="btn btn-export" id="exportLogsBtn">Exportar logs</button>
+          <button class="btn btn-export" id="changePasswordBtn">Cambiar contraseña</button>
         </div>
 
         <div class="section-header">
@@ -1267,6 +1268,34 @@
     </form>
   </div>
 
+  <div class="modal-backdrop" id="passwordModal" role="dialog" aria-modal="true" aria-labelledby="passwordModalTitle">
+    <form class="modal" id="passwordForm">
+      <div class="modal-header">
+        <h2 id="passwordModalTitle">Cambiar contraseña del panel</h2>
+        <button class="modal-close" id="closePasswordModalBtn" type="button" aria-label="Cerrar">&times;</button>
+      </div>
+      <div class="form-grid">
+        <div class="form-field full">
+          <label for="currentPassword">Contraseña actual</label>
+          <input id="currentPassword" name="currentPassword" type="password" autocomplete="current-password" required />
+        </div>
+        <div class="form-field full">
+          <label for="newPassword">Nueva contraseña (mínimo 8 caracteres)</label>
+          <input id="newPassword" name="newPassword" type="password" autocomplete="new-password" minlength="8" required />
+        </div>
+        <div class="form-field full">
+          <label for="confirmPassword">Confirmar nueva contraseña</label>
+          <input id="confirmPassword" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" required />
+        </div>
+      </div>
+      <div class="form-error" id="passwordFormError" role="alert"></div>
+      <div class="modal-actions">
+        <button class="cancel-btn" id="cancelPasswordModalBtn" type="button">Cancelar</button>
+        <button class="save-btn" type="submit">Guardar contraseña</button>
+      </div>
+    </form>
+  </div>
+
   <script>
     const socket = io();
     const profileStates = {};
@@ -1278,6 +1307,9 @@
     const addModal = document.getElementById('addModal');
     const addProfileForm = document.getElementById('addProfileForm');
     const formError = document.getElementById('formError');
+    const passwordModal = document.getElementById('passwordModal');
+    const passwordForm = document.getElementById('passwordForm');
+    const passwordFormError = document.getElementById('passwordFormError');
 
     function openAddModal() {
       formError.textContent = '';
@@ -1287,6 +1319,17 @@
 
     function closeAddModal() {
       addModal.classList.remove('open');
+    }
+
+    function openPasswordModal() {
+      passwordFormError.textContent = '';
+      passwordForm.reset();
+      passwordModal.classList.add('open');
+      document.getElementById('currentPassword').focus();
+    }
+
+    function closePasswordModal() {
+      passwordModal.classList.remove('open');
     }
 
     async function loadProfiles() {
@@ -1847,6 +1890,45 @@
     document.getElementById('cancelModalBtn').addEventListener('click', closeAddModal);
     addModal.addEventListener('click', (event) => {
       if (event.target === addModal) closeAddModal();
+    });
+
+    document.getElementById('changePasswordBtn').addEventListener('click', openPasswordModal);
+    document.getElementById('closePasswordModalBtn').addEventListener('click', closePasswordModal);
+    document.getElementById('cancelPasswordModalBtn').addEventListener('click', closePasswordModal);
+    passwordModal.addEventListener('click', (event) => {
+      if (event.target === passwordModal) closePasswordModal();
+    });
+
+    passwordForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      passwordFormError.textContent = '';
+      const form = new FormData(passwordForm);
+      const currentPassword = String(form.get('currentPassword') || '');
+      const newPassword = String(form.get('newPassword') || '');
+      const confirmPassword = String(form.get('confirmPassword') || '');
+
+      if (newPassword !== confirmPassword) {
+        passwordFormError.textContent = 'Las contraseñas nuevas no coinciden.';
+        return;
+      }
+      if (newPassword.length < 8) {
+        passwordFormError.textContent = 'La nueva contraseña debe tener al menos 8 caracteres.';
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/security/password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ currentPassword, newPassword })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) throw new Error(result.error || 'No se pudo cambiar la contraseña.');
+        closePasswordModal();
+        alert('✅ Contraseña del panel actualizada.');
+      } catch (error) {
+        passwordFormError.textContent = error.message;
+      }
     });
 
     addProfileForm.addEventListener('submit', async (event) => {

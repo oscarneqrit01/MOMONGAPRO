@@ -24,9 +24,51 @@ function siteUrls(controller) {
   };
 }
 
-const PANEL_PASSWORD = process.env.PANEL_PASSWORD || 'momonga';
 const AUTH_COOKIE = 'momonga_auth';
-const AUTH_TOKEN = crypto.createHash('sha256').update(`momonga-pro:${PANEL_PASSWORD}`).digest('hex');
+const AUTH_STORE_PATH = process.env.PANEL_AUTH_PATH || path.join(__dirname, 'panel-auth.json');
+const DEFAULT_PANEL_PASSWORD = process.env.PANEL_PASSWORD || 'momonga';
+
+function hashPanelPassword(password, salt) {
+  return crypto.scryptSync(String(password), salt, 64).toString('hex');
+}
+
+function loadPanelAuth() {
+  try {
+    if (!fs.existsSync(AUTH_STORE_PATH)) return null;
+    const data = JSON.parse(fs.readFileSync(AUTH_STORE_PATH, 'utf8'));
+    if (data && typeof data.salt === 'string' && typeof data.hash === 'string') return data;
+  } catch (_) {
+    // almacén corrupto o inexistente: se usa la contraseña por defecto
+  }
+  return null;
+}
+
+let panelAuth = loadPanelAuth();
+
+function computeAuthToken() {
+  const secret = panelAuth ? panelAuth.hash : DEFAULT_PANEL_PASSWORD;
+  return crypto.createHash('sha256').update(`momonga-pro:${secret}`).digest('hex');
+}
+
+let AUTH_TOKEN = computeAuthToken();
+
+function verifyPanelPassword(password) {
+  const candidate = Buffer.from(String(password || ''));
+  if (panelAuth) {
+    const expected = Buffer.from(panelAuth.hash, 'hex');
+    const actual = Buffer.from(hashPanelPassword(candidate.toString(), panelAuth.salt), 'hex');
+    return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+  }
+  const expected = Buffer.from(DEFAULT_PANEL_PASSWORD);
+  return expected.length === candidate.length && crypto.timingSafeEqual(expected, candidate);
+}
+
+function savePanelPassword(newPassword) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  panelAuth = { salt, hash: hashPanelPassword(newPassword, salt) };
+  fs.writeFileSync(AUTH_STORE_PATH, `${JSON.stringify(panelAuth, null, 2)}\n`, 'utf8');
+  AUTH_TOKEN = computeAuthToken();
+}
 
 function parseCookies(header) {
   const cookies = {};
@@ -84,7 +126,7 @@ app.get('/login', (req, res) => {
 });
 
 app.post('/login', (req, res) => {
-  if (String(req.body?.password || '') === PANEL_PASSWORD) {
+  if (verifyPanelPassword(req.body?.password)) {
     res.setHeader('Set-Cookie', `${AUTH_COOKIE}=${AUTH_TOKEN}; HttpOnly; Path=/; Max-Age=2592000; SameSite=Lax`);
     return res.redirect('/');
   }
@@ -99,6 +141,29 @@ app.use((req, res, next) => {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
+
+app.post('/api/security/password', (req, res) => {
+  try {
+    const currentPassword = String(req.body?.currentPassword || '');
+    const newPassword = String(req.body?.newPassword || '');
+
+    if (!verifyPanelPassword(currentPassword)) {
+      return res.status(403).json({ success: false, error: 'La contraseña actual no es correcta.' });
+    }
+    if (newPassword.length < 8) {
+      return res.status(400).json({ success: false, error: 'La nueva contraseña debe tener al menos 8 caracteres.' });
+    }
+    if (newPassword === currentPassword) {
+      return res.status(400).json({ success: false, error: 'La nueva contraseña debe ser distinta a la actual.' });
+    }
+
+    savePanelPassword(newPassword);
+    res.setHeader('Set-Cookie', `${AUTH_COOKIE}=${AUTH_TOKEN}; HttpOnly; Path=/; Max-Age=2592000; SameSite=Lax`);
+    res.json({ success: true, message: 'Contraseña del panel actualizada.' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 io.use((socket, next) => {
   const cookies = parseCookies(socket.handshake.headers.cookie);

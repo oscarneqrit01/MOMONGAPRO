@@ -153,7 +153,8 @@ Es un **array** de perfiles:
 
 | Variable | Descripción | Por defecto |
 |---|---|---|
-| `PANEL_PASSWORD` | Contraseña del panel web. | `momonga` |
+| `PANEL_PASSWORD` | Contraseña del panel web (inicial; se puede cambiar desde el panel). | `momonga` |
+| `PANEL_AUTH_PATH` | Ruta del archivo donde se guarda la contraseña del panel (hash). | `panel-auth.json` |
 | `PORT` | Puerto del servidor. | `3000` |
 | `AUTO_START` | `1` activa el auto-arranque de perfiles al iniciar. | desactivado |
 | `TELEGRAM_BOT_TOKEN` | Token del bot de Telegram. | — |
@@ -188,6 +189,7 @@ MOMONGAPRO/
 ├── package.json
 ├── logs/                # (generado) registros diarios
 ├── profiles/            # (generado) sesiones de Chrome por perfil
+├── panel-auth.json      # (generado) hash de la contraseña del panel
 ├── state.json           # (generado) estado y estadísticas
 └── .gitignore
 ```
@@ -197,7 +199,8 @@ MOMONGAPRO/
 ## Seguridad
 
 - El panel requiere contraseña (`PANEL_PASSWORD`); se protege HTTP y Socket.IO.
-- `config.json` con proxies y claves **nunca** se sube al repositorio.
+- La contraseña se puede cambiar desde el panel con el botón **Cambiar contraseña**. Se guarda como hash (scrypt + salt) en `panel-auth.json`, nunca en texto plano.
+- `config.json`, `panel-auth.json` y `state.json` con proxies y claves **nunca** se suben al repositorio.
 - No ejecutes dos instancias a la vez: comparten `state.json` y las carpetas de perfiles.
 
 ---
