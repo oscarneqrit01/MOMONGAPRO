@@ -869,6 +869,7 @@
           </div>
 
           <div class="profile-row">
+            <button class="small-btn" data-action="open" data-id="${profile.id}" style="background:#6c5ce7;color:#fff;">Abrir Página</button>
             <button class="small-btn green" data-action="start" data-id="${profile.id}">Iniciar</button>
             <button class="small-btn orange" data-action="pause" data-id="${profile.id}">Pausar</button>
             <button class="small-btn red" data-action="stop" data-id="${profile.id}">Detener</button>
@@ -986,6 +987,7 @@
             </div>
 
             <div class="actions-bottom">
+              <button class="small-btn" data-action="open" data-id="${profile.id}" style="background:#6c5ce7;color:#fff;">Abrir Página</button>
               <button class="small-btn action-green" data-action="start" data-id="${profile.id}">Iniciar</button>
               <button class="small-btn action-orange" data-action="pause" data-id="${profile.id}">Pausar</button>
               <button class="small-btn action-red" data-action="stop" data-id="${profile.id}">Detener</button>
@@ -1015,6 +1017,7 @@
           const id = button.dataset.id;
           const action = button.dataset.action;
 
+          if (action === 'open') socket.emit('open-profile', id);
           if (action === 'start') socket.emit('start-profile', id);
           if (action === 'pause') socket.emit('pause-profile', id);
           if (action === 'stop') socket.emit('stop-profile', id);
@@ -1197,21 +1200,23 @@
       const card = document.querySelector(`[data-card-id="${profileId}"]`);
       if (!card) return;
 
-      const labels = { running: '● Activo', paused: '● Pausado', stopped: '● Detenido' };
-      const colors = { running: '#4ecca3', paused: '#f5a623', stopped: '#888' };
+      const labels = { running: '● Activo', paused: '● Pausado', ready: '● Abierto', stopped: '● Detenido' };
+      const colors = { running: '#4ecca3', paused: '#f5a623', ready: '#6c5ce7', stopped: '#888' };
       const badge = card.querySelector(`[data-state-id="${profileId}"]`);
       if (badge) {
         badge.textContent = labels[state] || labels.stopped;
         badge.style.color = colors[state] || colors.stopped;
       }
 
+      const hasBrowser = state !== 'stopped';
+      card.querySelectorAll('[data-action="open"]').forEach(btn => { btn.disabled = hasBrowser; });
       card.querySelectorAll('[data-action="start"]').forEach(btn => { btn.disabled = state === 'running'; });
       card.querySelectorAll('[data-action="pause"]').forEach(btn => {
-        btn.disabled = state === 'stopped';
+        btn.disabled = state === 'stopped' || state === 'ready';
         btn.textContent = state === 'paused' ? 'Reanudar' : 'Pausar';
       });
       card.querySelectorAll('[data-action="stop"]').forEach(btn => { btn.disabled = state === 'stopped'; });
-      card.querySelectorAll('[data-action="publish"]').forEach(btn => { btn.disabled = state === 'stopped'; });
+      card.querySelectorAll('[data-action="publish"]').forEach(btn => { btn.disabled = state === 'stopped' || state === 'ready'; });
     }
 
     function updateStats(profileId, stats) {

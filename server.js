@@ -817,7 +817,7 @@ class ProfileController {
   emitActive() {
     let active = 0;
     for (const c of controllers.values()) {
-      if (c.started && c.browser) active++;
+      if (c.browser) active++;
     }
     io.emit('active-count', { active });
   }
@@ -914,14 +914,10 @@ class ProfileController {
     return { browser, page };
   }
 
-  async start() {
-    if (this.started) {
-      if (this.paused) {
-        this.resume();
-      } else {
-        this.log('Ya está en ejecución.');
-      }
-      return;
+  async open() {
+    if (this.browser) {
+      this.log('La página ya está abierta.');
+      return true;
     }
 
     const proxyCheck = await validateProxy(this.cfg.proxy);
@@ -931,12 +927,9 @@ class ProfileController {
       } else {
         this.log(`❌ Proxy no responde (${proxyCheck.reason}). Arranque cancelado para no gastar ciclos.`);
         notify(`❌ Proxy no responde en "${this.id}": ${proxyCheck.reason}`);
-        return;
+        return false;
       }
     }
-
-    this.started = true;
-    this.paused = false;
 
     try {
       const { browser, page } = await this.launchProfile();
@@ -950,27 +943,50 @@ class ProfileController {
       });
       this.log('¡Página cargada con éxito!');
 
-      if (await checkForBlock(page, this)) return;
+      if (await checkForBlock(page, this)) return false;
 
       await loginIfNeeded(page, this);
-      this.log('Perfil listo.');
-
-      if (this.settings.publishOnStart) {
-        this.log('Publicación al iniciar activada.');
-        await performBump(page, this);
-      }
-
-      this.startCountdown();
-      this.scheduleNext();
-      this.scheduleRepost();
+      this.log('Página lista. Pulsa Iniciar para comenzar el conteo.');
+      this.emitState('ready');
       this.emitActive();
-      this.emitState('running');
-      saveState();
+      return true;
     } catch (error) {
       this.log(`Error crítico: ${error.message}`);
       notify(`❌ Error crítico en "${this.id}": ${error.message}`);
       await this.stop();
+      return false;
     }
+  }
+
+  async start() {
+    if (this.started) {
+      if (this.paused) {
+        this.resume();
+      } else {
+        this.log('Ya está en ejecución.');
+      }
+      return;
+    }
+
+    if (!this.browser) {
+      const opened = await this.open();
+      if (!opened) return;
+    }
+
+    this.started = true;
+    this.paused = false;
+
+    if (this.settings.publishOnStart) {
+      this.log('Publicación al iniciar activada.');
+      await performBump(this.page, this);
+    }
+
+    this.startCountdown();
+    this.scheduleNext();
+    this.scheduleRepost();
+    this.emitActive();
+    this.emitState('running');
+    saveState();
   }
 
   pause() {
@@ -1408,9 +1424,18 @@ io.on('connection', (socket) => {
   }
   let active = 0;
   for (const c of controllers.values()) {
-    if (c.started && c.browser) active++;
+    if (c.browser) active++;
   }
   io.emit('active-count', { active });
+
+  socket.on('open-all', () => {
+    for (const c of controllers.values()) c.open();
+  });
+
+  socket.on('open-profile', (id) => {
+    const controller = controllers.get(id);
+    if (controller) controller.open();
+  });
 
   socket.on('start-all', () => {
     for (const c of controllers.values()) c.start();

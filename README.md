@@ -15,7 +15,7 @@ Panel multi-perfil para automatizar **bumps** y **reposts** en sitios tipo MegaP
 - **Copia de anuncio**: extrae ciudad/edad/texto y descarga+limpia las fotos del anuncio actual (quita EXIF y altera ligeramente la imagen).
 - **Parada de emergencia**: si detecta señales de suspensión/bloqueo en cualquier perfil, detiene todos los perfiles.
 - **Auto-arranque (opcional)**: con `AUTO_START=1`, al reiniciar el servidor reanuda los perfiles que estaban activos. Por defecto está **desactivado**.
-- **Panel web** en tiempo real (Socket.IO): Iniciar/Pausar/Detener/Publicar, contadores, estado y registro en vivo.
+- **Panel web** en tiempo real (Socket.IO): **Abrir Página** / Iniciar / Pausar / Detener / Publicar, contadores, estado y registro en vivo. "Abrir Página" solo abre el navegador; el conteo empieza únicamente al pulsar **Iniciar**.
 - **Estadísticas**: bumps de hoy, total y último bump.
 - **Logs a archivo** diarios con rotación (no se pierden al cerrar la terminal).
 - **Notificaciones** por Telegram y/o Discord ante fallos y paradas de emergencia.
