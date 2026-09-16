@@ -552,16 +552,13 @@ async function returnToPostsList(page, controller) {
   if (currentUrl.includes('success_publish')) {
     controller.log('✔ Anuncio republicado correctamente.');
   } else if (currentUrl.includes('error-message')) {
-    controller.log('⚠ El anuncio dio error, volviendo a Mis Anuncios.');
+    controller.log('⚠ El anuncio dio error.');
   }
 
-  if (currentUrl.includes('/users/posts/list')) {
-    return;
-  }
-
+  // 1) Pulsar el botón "My Posts" visible si existe (igual que el flujo de la extensión)
   try {
     const myPostsClicked = await page.evaluate(() => {
-      const link = Array.from(document.querySelectorAll('a.manage-button'))
+      const link = Array.from(document.querySelectorAll('a.manage-button, a[href*="users/posts/list"]'))
         .find(a => a.offsetParent !== null && (a.innerText || '').trim().toLowerCase().includes('my posts'));
       if (link) {
         link.click();
@@ -571,12 +568,18 @@ async function returnToPostsList(page, controller) {
     }).catch(() => false);
 
     if (myPostsClicked) {
+      controller.log('↩️ Volviendo a Mis Anuncios (My Posts)...');
       await sleep(2000);
       return;
     }
   } catch (_) {}
 
-  // Igual que la extensión: window.location.href = LISTA_POSTS
+  // 2) Si ya está en la lista de posts, no hacer nada
+  if (currentUrl.includes('/users/posts/list')) {
+    return;
+  }
+
+  // 3) Igual que la extensión: window.location.href = LISTA_POSTS
   controller.log('Volviendo a Mis Anuncios...');
   try {
     await page.goto(LISTA_POSTS_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
