@@ -856,6 +856,26 @@ async function scrapeActiveAdData(page) {
   });
 }
 
+async function scrapeActiveAdFromText(page) {
+  return page.evaluate(() => {
+    const text = (document.body ? document.body.innerText : '') || '';
+    const grab = (re) => {
+      const m = text.match(re);
+      return m ? m[1].trim() : '';
+    };
+
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+
+    return {
+      phone: grab(/phone\s*:\s*([+\d][\d\s().-]{5,})/i),
+      age: grab(/age\s*:\s*(\d{1,3})/i),
+      city: grab(/city\s*:\s*([^\n\r]+)/i),
+      location: grab(/location\s*:\s*([^\n\r]+)/i),
+      headline: lines.length ? lines[0] : ''
+    };
+  });
+}
+
 async function scrapeActiveAdPhotos(page) {
   return page.evaluate(() => {
     const urls = new Set();
@@ -1474,7 +1494,20 @@ app.post('/api/profiles/:id/scrape', async (req, res) => {
   }
 
   try {
-    const data = await scrapeActiveAdData(controller.page);
+    let data = await scrapeActiveAdData(controller.page);
+
+    if (!data.city && !data.text) {
+      const textData = await scrapeActiveAdFromText(controller.page);
+      data = {
+        ...data,
+        phone: data.phone || textData.phone,
+        age: data.age || textData.age,
+        city: data.city || textData.city,
+        location: data.location || textData.location,
+        headline: data.headline || textData.headline
+      };
+    }
+
     controller.log(`📥 Leído de la página actual -> ciudad: "${data.city}", edad: "${data.age}", texto: ${data.text ? data.text.length + ' caracteres' : 'vacío'}`);
 
     if (!data.city && !data.text) {
@@ -1482,7 +1515,7 @@ app.post('/api/profiles/:id/scrape', async (req, res) => {
         .filter((el) => el.type !== 'password')
         .map((el) => ({ tag: el.tagName.toLowerCase(), type: el.type, name: el.name, id: el.id })));
       controller.log('🔎 Campos disponibles: ' + JSON.stringify(fields));
-      controller.log('⚠️ No se encontraron campos de ciudad/texto. Abre el formulario del anuncio (Editar) en la ventana del perfil y vuelve a intentar.');
+      controller.log('⚠️ No se encontraron campos de ciudad/texto. Abre el formulario del anuncio (Editar) o la página del anuncio en la ventana del perfil y vuelve a intentar.');
     }
 
     const photoUrls = (data.city || data.text) ? await scrapeActiveAdPhotos(controller.page) : [];
