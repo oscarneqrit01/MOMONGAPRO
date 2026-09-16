@@ -13,7 +13,7 @@ const STATE_PATH = path.join(__dirname, 'state.json');
 const PORT = process.env.PORT || 3000;
 const DEFAULT_URL = 'https://megapersonals.eu/';
 const MANAGE_POSTS_URL = 'https://megapersonals.eu/users/posts/list?publicDomain=megapersonals.eu';
-const NEW_POST_URL = 'https://megapersonals.eu/users/posts/new';
+const NEW_POST_URL = 'https://megapersonals.eu/users/posts/create';
 
 const PANEL_PASSWORD = process.env.PANEL_PASSWORD || 'momonga';
 const AUTH_COOKIE = 'momonga_auth';
@@ -788,6 +788,35 @@ async function scrapeActiveAdData(page) {
   return page.evaluate(() => {
     const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
 
+    // --- Vista "Manage Posts": anuncio con post_title_caption / post_preview_* ---
+    const titleEl = document.querySelector('.post_title_caption');
+    const contentEl = document.querySelector('.post_preview_content');
+    if (titleEl || contentEl) {
+      const spans = Array.from(document.querySelectorAll('.post_preview_info span'));
+      const readInfo = (label) => {
+        const idx = spans.findIndex((s) => clean(s.textContent).toLowerCase().startsWith(label.toLowerCase()));
+        if (idx === -1) return '';
+        const parts = [];
+        for (let i = idx + 1; i < spans.length; i++) {
+          const t = clean(spans[i].textContent);
+          if (!t) continue;
+          if (/:$/.test(t)) break;
+          parts.push(t);
+        }
+        return parts.join(' ').trim();
+      };
+
+      return {
+        name: '',
+        headline: clean(titleEl ? titleEl.textContent : ''),
+        age: readInfo('Age'),
+        text: contentEl ? contentEl.textContent.trim() : '',
+        city: readInfo('City'),
+        location: readInfo('Location'),
+        phone: readInfo('Phone')
+      };
+    }
+
     const readByLabel = (labelRegexSource) => {
       const re = new RegExp(labelRegexSource, 'i');
       const candidates = Array.from(document.querySelectorAll('label, b, strong, span, td, th, p, div'));
@@ -880,26 +909,26 @@ async function scrapeActiveAdPhotos(page) {
   return page.evaluate(() => {
     const urls = new Set();
 
-    const collect = (root) => {
-      root.querySelectorAll('img').forEach((img) => {
-        const src = img.currentSrc || img.src;
-        if (!src || !/^https?:/i.test(src)) return;
-        if (img.naturalWidth < 200 || img.naturalHeight < 200) return;
-
-        const meta = `${img.className || ''} ${img.id || ''} ${img.alt || ''} ${src}`.toLowerCase();
-        if (/(logo|icon|sprite|banner|avatar|emoji|flag|placeholder|loader|spinner)/.test(meta)) return;
-
-        urls.add(src);
-      });
+    const add = (img) => {
+      const src = img.currentSrc || img.src;
+      if (!src || !/^https?:/i.test(src)) return;
+      if (img.naturalWidth < 200 || img.naturalHeight < 200) return;
+      const meta = `${img.className || ''} ${img.id || ''} ${img.alt || ''} ${src}`.toLowerCase();
+      if (/(logo|icon|sprite|banner|avatar|emoji|flag|placeholder|loader|spinner)/.test(meta)) return;
+      urls.add(src);
     };
 
-    const galleries = document.querySelectorAll(
-      '[class*="photo" i], [class*="gallery" i], [class*="pic" i], [class*="upload" i], [class*="image" i], ' +
-      '[id*="photo" i], [id*="gallery" i], [id*="upload" i], [id*="image" i]'
-    );
-    galleries.forEach(collect);
+    document.querySelectorAll('.post_preview_media img, .media-wrapper img').forEach(add);
 
-    if (urls.size === 0) collect(document);
+    if (urls.size === 0) {
+      const galleries = document.querySelectorAll(
+        '[class*="photo" i], [class*="gallery" i], [class*="pic" i], [class*="upload" i], [class*="image" i], [class*="media" i], ' +
+        '[id*="photo" i], [id*="gallery" i], [id*="upload" i], [id*="image" i]'
+      );
+      galleries.forEach((g) => g.querySelectorAll('img').forEach(add));
+    }
+
+    if (urls.size === 0) document.querySelectorAll('img').forEach(add);
 
     return [...urls];
   });
