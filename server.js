@@ -1820,8 +1820,8 @@ io.on('connection', (socket) => {
   socket.on('update-interval', ({ id, min, max }) => {
     const controller = controllers.get(id);
     if (!controller) return;
-    const minVal = Math.max(1, Math.round(Number(min) || 1));
-    const maxVal = Math.max(minVal, Math.round(Number(max) || minVal));
+    const minVal = Math.max(1, Math.floor(Number(min) || 1));
+    const maxVal = Math.max(minVal, Math.floor(Number(max) || minVal));
     const config = loadConfig();
     const profile = config.find(p => p.id === id);
     if (profile) {
@@ -1832,6 +1832,7 @@ io.on('connection', (socket) => {
     Object.assign(controller.cfg, { bumpMinMinutes: minVal, bumpMaxMinutes: maxVal });
     if (controller.started && !controller.paused) controller.scheduleNext();
     controller.log(`⏱️ Intervalo de bumps actualizado: ${minVal}–${maxVal} min.`);
+    io.emit('profiles-updated', loadConfig());
   });
 
   socket.on('update-repost-interval', ({ id, minutes }) => {
