@@ -6,6 +6,8 @@
     "email": "",
     "password": "",
     "intervalMinutes": 16,
+    "bumpMinMinutes": 16,
+    "bumpMaxMinutes": 30,
     "url": "https://megapersonals.eu/",
     "adDetails": {
       "name": "",

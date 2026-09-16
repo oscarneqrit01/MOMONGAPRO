@@ -368,6 +368,17 @@
       margin-bottom: 8px;
     }
 
+    .interval-input {
+      width: 58px;
+      background: #151522;
+      border: 1px solid #444;
+      color: #f5f7ff;
+      text-align: center;
+      padding: 4px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
     .mini-dot {
       width: 8px;
       height: 8px;
@@ -763,8 +774,12 @@
           <input id="profilePort" name="port" type="number" min="1024" max="65535" value="9334" required />
         </div>
         <div class="form-field">
-          <label for="profileInterval">Intervalo (minutos)</label>
-          <input id="profileInterval" name="intervalMinutes" type="number" min="1" value="16" required />
+          <label for="profileIntervalMin">Bump mín (minutos)</label>
+          <input id="profileIntervalMin" name="bumpMinMinutes" type="number" min="1" max="10080" value="16" required />
+        </div>
+        <div class="form-field">
+          <label for="profileIntervalMax">Bump máx (minutos)</label>
+          <input id="profileIntervalMax" name="bumpMaxMinutes" type="number" min="1" max="10080" value="16" required />
         </div>
         <div class="form-field">
           <label for="profileUrl">URL</label>
@@ -864,8 +879,14 @@
           </div>
 
           <div class="profile-meta">
-            <span>Intervalo entre bumps: <strong style="color:#f5f7ff;">${profile.intervalMinutes || 16}</strong> minutos</span>
-            <span>•</span>
+            <span>Bump (min–max):</span>
+            <input type="number" class="interval-input" min="1" max="10080" value="${profile.bumpMinMinutes || profile.intervalMinutes || 16}" data-bump-min="${profile.id}">
+            <span>–</span>
+            <input type="number" class="interval-input" min="1" max="10080" value="${profile.bumpMaxMinutes || profile.bumpMinMinutes || profile.intervalMinutes || 16}" data-bump-max="${profile.id}">
+            <span>min</span>
+            <button class="small-btn" data-action="save-interval" data-id="${profile.id}">Guardar</button>
+          </div>
+          <div class="profile-meta">
             <span>${profile.url}</span>
           </div>
 
@@ -1043,6 +1064,13 @@
           if (action === 'pause') socket.emit('pause-profile', id);
           if (action === 'stop') socket.emit('stop-profile', id);
           if (action === 'publish') socket.emit('publish-profile', id);
+          if (action === 'save-interval') {
+            const minInput = document.querySelector(`[data-bump-min="${id}"]`);
+            const maxInput = document.querySelector(`[data-bump-max="${id}"]`);
+            const min = Number(minInput && minInput.value) || 16;
+            const max = Number(maxInput && maxInput.value) || min;
+            socket.emit('update-interval', { id, min: Math.max(1, min), max: Math.max(min, max) });
+          }
         });
       });
 
@@ -1324,7 +1352,8 @@
       const body = {
         id: form.get('id'),
         port: Number(form.get('port')),
-        intervalMinutes: Number(form.get('intervalMinutes')),
+        bumpMinMinutes: Number(form.get('bumpMinMinutes')),
+        bumpMaxMinutes: Number(form.get('bumpMaxMinutes')),
         url: form.get('url'),
         adDetails: {
           city: form.get('adCity'),
@@ -1351,7 +1380,8 @@
         closeAddModal();
         addProfileForm.reset();
         document.getElementById('profilePort').value = '9334';
-        document.getElementById('profileInterval').value = '16';
+        document.getElementById('profileIntervalMin').value = '16';
+        document.getElementById('profileIntervalMax').value = '16';
         document.getElementById('profileUrl').value = 'https://megapersonals.eu/';
         await loadProfiles();
       } catch (error) {

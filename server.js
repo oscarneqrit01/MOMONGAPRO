@@ -1252,17 +1252,22 @@ class ProfileController {
     if (!this.started || this.paused) return;
     if (this._cycleTimer) clearTimeout(this._cycleTimer);
 
-    const baseMs = (this.cfg.intervalMinutes || 16) * 60 * 1000;
-    let waitMs = baseMs;
-
-    if (this.settings.randomizedDelay) {
-      const jitter = (Math.random() * 2 - 1) * 0.2 * baseMs;
-      waitMs = Math.max(60 * 1000, Math.round(baseMs + jitter));
+    const min = Math.max(1, this.cfg.bumpMinMinutes || this.cfg.intervalMinutes || 16);
+    const max = Math.max(min, this.cfg.bumpMaxMinutes || min);
+    let waitMs;
+    if (max <= min) {
+      waitMs = min * 60 * 1000;
+      if (this.settings.randomizedDelay) {
+        const jitter = (Math.random() * 2 - 1) * 0.2 * waitMs;
+        waitMs = Math.max(60 * 1000, Math.round(waitMs + jitter));
+      }
+    } else {
+      waitMs = Math.round((min + Math.random() * (max - min)) * 60 * 1000);
     }
 
     this._nextBumpAt = Date.now() + waitMs;
     const minutes = Math.round(waitMs / 60000);
-    this.log(`Próximo bump en ~${minutes} min${this.settings.randomizedDelay ? ' (intervalo aleatorio)' : ''}.`);
+    this.log(`Próximo bump en ~${minutes} min (rango ${min}–${max} min).`);
     io.emit('timer', { id: this.id, time: mmss(waitMs) });
 
     this._cycleTimer = setTimeout(() => this.bumpCycle(), waitMs);
@@ -1411,15 +1416,20 @@ app.get('/api/profiles', (req, res) => {
 
 app.post('/api/profiles', (req, res) => {
   try {
-    const { id, port, intervalMinutes, url, email, password, proxy, adDetails } = req.body || {};
+    const { id, port, intervalMinutes, bumpMinMinutes, bumpMaxMinutes, url, email, password, proxy, adDetails } = req.body || {};
     const cleanId = String(id || '').trim();
     const numericPort = Number(port);
-    const numericInterval = Number(intervalMinutes);
+    let minVal = Number(bumpMinMinutes);
+    let maxVal = Number(bumpMaxMinutes);
+    if (!Number.isFinite(minVal) || minVal < 1) minVal = Number(intervalMinutes) || 16;
+    if (!Number.isFinite(maxVal) || maxVal < 1) maxVal = minVal;
+    minVal = Math.min(10080, Math.round(minVal));
+    maxVal = Math.min(10080, Math.max(Math.round(maxVal), minVal));
 
     if (!cleanId || !Number.isInteger(numericPort) || numericPort < 1024 || numericPort > 65535) {
       return res.status(400).json({ error: 'El nombre y el puerto válido son obligatorios.' });
     }
-    if (!Number.isFinite(numericInterval) || numericInterval < 1) {
+    if (minVal < 1) {
       return res.status(400).json({ error: 'El intervalo debe ser de al menos 1 minuto.' });
     }
 
@@ -1436,7 +1446,9 @@ app.post('/api/profiles', (req, res) => {
       port: numericPort,
       email: String(email || '').trim(),
       password: String(password || ''),
-      intervalMinutes: numericInterval,
+      intervalMinutes: minVal,
+      bumpMinMinutes: minVal,
+      bumpMaxMinutes: maxVal,
       url: String(url || DEFAULT_URL).trim() || DEFAULT_URL,
       adDetails: {
         name: String(adDetails?.name || '').trim(),
@@ -1724,6 +1736,24 @@ io.on('connection', (socket) => {
     const controller = controllers.get(id);
     if (controller) controller.publishNow();
   });
+
+  socket.on('update-interval', ({ id, min, max }) => {
+    const controller = controllers.get(id);
+    if (!controller) return;
+    const minVal = Math.max(1, Math.round(Number(min) || 1));
+    const maxVal = Math.max(minVal, Math.round(Number(max) || minVal));
+    const config = loadConfig();
+    const profile = config.find(p => p.id === id);
+    if (profile) {
+      profile.bumpMinMinutes = minVal;
+      profile.bumpMaxMinutes = maxVal;
+      fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+    }
+    Object.assign(controller.cfg, { bumpMinMinutes: minVal, bumpMaxMinutes: maxVal });
+    if (controller.started && !controller.paused) controller.scheduleNext();
+    controller.log(`⏱️ Intervalo de bumps actualizado: ${minVal}–${maxVal} min.`);
+  });
+
 });
 
 server.listen(PORT, () => {
