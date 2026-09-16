@@ -1324,9 +1324,13 @@ app.post('/api/profiles/:id/scrape', async (req, res) => {
 
   try {
     const data = await scrapeActiveAdData(controller.page);
-    controller.log('📥 Datos leídos de la página actual (solo lectura).');
+    controller.log(`📥 Leído de la página actual -> ciudad: "${data.city}", edad: "${data.age}", texto: ${data.text ? data.text.length + ' caracteres' : 'vacío'}`);
 
-    const photoUrls = await scrapeActiveAdPhotos(controller.page);
+    if (!data.city && !data.text) {
+      controller.log('⚠️ No se encontraron campos de ciudad/texto. Abre el formulario del anuncio (Editar) en la ventana del perfil y vuelve a intentar.');
+    }
+
+    const photoUrls = (data.city || data.text) ? await scrapeActiveAdPhotos(controller.page) : [];
     let photosPath = '';
     let photosSaved = 0;
 
