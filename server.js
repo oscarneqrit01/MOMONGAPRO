@@ -1296,22 +1296,16 @@ emitActive() {
     if (this._cycleTimer) clearTimeout(this._cycleTimer);
 
     const min = Math.max(1, this.cfg.bumpMinMinutes || this.cfg.intervalMinutes || 16);
-    const max = Math.max(min, this.cfg.bumpMaxMinutes || min);
-    let waitMs;
-    if (max <= min) {
-      waitMs = min * 60 * 1000;
-      if (this.settings.randomizedDelay) {
-        const jitter = (Math.random() * 2 - 1) * 0.2 * waitMs;
-        waitMs = Math.round(waitMs + jitter);
-      }
-      waitMs = Math.max(min * 60 * 1000, waitMs);
-    } else {
-      waitMs = Math.round((min + Math.random() * (max - min)) * 60 * 1000);
-    }
+    let max = Math.max(min, this.cfg.bumpMaxMinutes || min);
+    const autoMax = max <= min;
+    if (autoMax) max = min * 2;
+
+    let waitMs = Math.round((min + Math.random() * (max - min)) * 60 * 1000);
+    waitMs = Math.max(min * 60 * 1000, waitMs);
 
     this._nextBumpAt = Date.now() + waitMs;
     const minutes = Math.round(waitMs / 60000);
-    this.log(`Próximo bump en ~${minutes} min (rango ${min}–${max} min).`);
+    this.log(`Próximo bump en ~${minutes} min (rango ${min}–${max} min${autoMax ? ' · automático' : ''}).`);
     io.emit('timer', { id: this.id, time: mmss(waitMs) });
 
     this._cycleTimer = setTimeout(() => this.bumpCycle(), waitMs);
