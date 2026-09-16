@@ -66,6 +66,12 @@ http://localhost:3000
 
 Introduce la contraseña del panel (por defecto `momonga`; cámbiala con la variable `PANEL_PASSWORD`).
 
+## Prueba local sin cuenta real
+
+Para probar el ciclo completo sin usar MegaPersonals, ejecuta `probar-local.bat`. Levanta un sitio simulado en `127.0.0.1:4100` y el panel en `http://localhost:3001` usando `config.test.json`.
+
+La prueba incluye lista de anuncios, bump, página `success_publish`, retorno a `My Posts` y formulario de republicación. No usa credenciales, proxies ni `config.json` real.
+
 ---
 
 ## Actualizar en otra PC

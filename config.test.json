@@ -1,0 +1,29 @@
+[
+  {
+    "id": "perfil-repost-prueba-2",
+    "port": 9339,
+    "email": "",
+    "password": "",
+    "intervalMinutes": 1,
+    "bumpMinMinutes": 1,
+    "bumpMaxMinutes": 5,
+    "url": "http://127.0.0.1:4100/",
+    "adDetails": {
+      "name": "Perfil de prueba",
+      "headline": "Anuncio de prueba",
+      "city": "Montreal",
+      "age": "25",
+      "location": "Test Area",
+      "phone": "5555555555",
+      "text": "Texto de prueba para validar el ciclo.",
+      "photosPath": ""
+    },
+    "settings": {
+      "rotateAds": true,
+      "randomizedDelay": true,
+      "publishOnStart": true
+    },
+    "autoRepostActive": false,
+    "repostIntervalMin": 2
+  }
+]

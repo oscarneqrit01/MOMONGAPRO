@@ -313,7 +313,9 @@
     }
 
     .profiles {
-      display: block;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
       margin-top: 4px;
     }
 
@@ -593,6 +595,178 @@
       overflow: hidden;
     }
 
+    .profile-card {
+      padding: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      margin-bottom: 0;
+    }
+
+    .profile-top,
+    .profile-name,
+    .profile-repost,
+    .profile-meta,
+    .profile-row,
+    .subpanel {
+      margin-left: 20px;
+      margin-right: 20px;
+    }
+
+    .profile-top {
+      margin: 0;
+      padding: 14px 20px 9px;
+      background: rgba(8, 10, 20, 0.3);
+    }
+
+    .profile-name {
+      margin-top: 0;
+      padding: 0 20px 12px;
+      margin-left: 0;
+      margin-right: 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .profile-repost,
+    .profile-meta {
+      margin-bottom: 7px;
+    }
+
+    .profile-repost {
+      margin-top: 14px;
+    }
+
+    .profile-row {
+      order: 5;
+      margin-top: 12px;
+      margin-bottom: 18px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+
+    .profile-row .small-btn {
+      min-height: 40px;
+      border-radius: 8px;
+      padding: 0 15px;
+    }
+
+    .subpanel {
+      order: 4;
+      margin-top: 8px;
+      padding: 12px 0 0;
+      border: 0;
+      border-top: 1px solid var(--line);
+      border-radius: 0;
+      background: transparent !important;
+      box-shadow: none;
+    }
+
+    .subpanel {
+      display: contents;
+    }
+
+    .subpanel-top,
+    .timer-wrap,
+    .note,
+    .checks,
+    .config-wrapper,
+    .logbox {
+      width: calc(100% - 40px);
+    }
+
+    .subpanel-top,
+    .timer-wrap,
+    .note {
+      order: 3;
+    }
+
+    .profile-row {
+      order: 4;
+    }
+
+    .logbox {
+      order: 5;
+    }
+
+    .checks {
+      order: 6;
+    }
+
+    .config-wrapper {
+      order: 7;
+    }
+
+    .subpanel-top,
+    .timer-wrap,
+    .note,
+    .checks,
+    .config-wrapper,
+    .logbox {
+      margin-left: 0;
+      margin-right: 0;
+    }
+
+    .subpanel-top {
+      padding: 0 0 10px;
+    }
+
+    .timer-wrap {
+      margin-top: 4px;
+      margin-bottom: 7px;
+      padding: 5px 0 2px;
+    }
+
+    .timer {
+      font-size: clamp(28px, 3vw, 48px);
+    }
+
+    .checks {
+      margin-top: 10px;
+      gap: 5px;
+      font-size: 12px;
+    }
+
+    .logbox {
+      margin-top: 10px;
+      min-height: 84px;
+      max-height: 112px;
+    }
+
+    .log-list {
+      max-height: 70px;
+    }
+
+    .cycle-strip {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin: 0 20px 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: rgba(8, 10, 20, 0.42);
+      color: var(--muted);
+      font-size: 11px;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+
+    .cycle-strip b {
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    .cycle-strip span {
+      color: var(--blue);
+      font-weight: 800;
+    }
+
+    .actions-bottom {
+      justify-content: flex-start;
+    }
+
     .log-header {
       display: flex;
       align-items: center;
@@ -710,6 +884,10 @@
     .save-btn { background: linear-gradient(180deg, var(--green), var(--green-2)); }
 
     @media (max-width: 980px) {
+      .profiles {
+        grid-template-columns: 1fr;
+      }
+
       .title {
         white-space: normal;
       }
@@ -726,6 +904,258 @@
         min-width: 0;
         flex: 1 1 180px;
       }
+    }
+    /* Visual refresh: graphite, electric blue and warm yellow palette. */
+    :root {
+      --bg-top: #090b14;
+      --bg-mid: #141625;
+      --panel: rgba(21, 24, 39, 0.96);
+      --panel-2: rgba(32, 35, 56, 0.96);
+      --card: rgba(25, 29, 47, 0.98);
+      --line: rgba(138, 156, 255, 0.22);
+      --muted: #a6a9bb;
+      --text: #f2f3fb;
+      --green: #8b9cff;
+      --green-2: #7184ed;
+      --red: #ff6b7a;
+      --red-2: #dc4f62;
+      --orange: #ffc857;
+      --orange-2: #d99b29;
+      --blue: #61d4ff;
+      --blue-2: #3299c6;
+      --shadow: 0 20px 45px rgba(0, 0, 0, 0.42);
+      --console: rgba(7, 9, 18, 0.9);
+    }
+
+    html, body {
+      background: radial-gradient(circle at 15% 0, #303552 0%, #141625 38%, #080912 100%);
+    }
+
+    .phone-shell,
+    .screen,
+    .app-wrap {
+      background: linear-gradient(180deg, rgba(12, 14, 25, 0.96), rgba(20, 22, 37, 0.96));
+    }
+
+    .active-box {
+      background: rgba(32, 39, 70, 0.9);
+      border-color: rgba(139, 156, 255, 0.55);
+      color: #b8c1ff;
+    }
+
+    .profile-card,
+    .subpanel,
+    .config-wrapper {
+      background: linear-gradient(145deg, #202338, #121522) !important;
+      border-color: var(--line) !important;
+    }
+
+    .profile-card {
+      box-shadow: var(--shadow);
+    }
+
+    .profile-top,
+    .subpanel-top,
+    .log-header {
+      border-color: var(--line) !important;
+    }
+
+    .timer,
+    .timer-wrap strong,
+    .profile-repost strong {
+      color: var(--blue) !important;
+    }
+
+    .btn-start,
+    .btn-publish,
+    .btn-pause,
+    .small-btn.green,
+    .small-btn.red,
+    .small-btn.orange,
+    .small-btn.blue {
+      filter: saturate(0.95);
+    }
+
+    .btn-start,
+    .small-btn.green {
+      background: linear-gradient(180deg, var(--green), var(--green-2));
+    }
+
+    .btn-pause,
+    .small-btn.orange {
+      background: linear-gradient(180deg, var(--orange), var(--orange-2));
+      color: #17120a;
+    }
+
+    .btn-publish,
+    .small-btn.red {
+      background: linear-gradient(180deg, var(--red), var(--red-2));
+    }
+
+    .small-btn.blue {
+      background: linear-gradient(180deg, var(--blue), var(--blue-2));
+    }
+
+    .logbox {
+      background: var(--console) !important;
+      border-color: var(--line) !important;
+    }
+
+    /* Match the approved preview composition while keeping all existing controls. */
+    .statusbar {
+      display: none;
+    }
+
+    .phone-shell {
+      padding-top: 20px;
+    }
+
+    .cycle-strip {
+      gap: 8px;
+      font-size: 0;
+    }
+
+    .cycle-strip b:first-child {
+      display: none;
+    }
+
+    .cycle-strip span {
+      display: inline-grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: #3b477e;
+      color: #dfe4ff;
+      font-size: 11px;
+    }
+
+    .cycle-strip span:nth-of-type(4) {
+      background: #705725;
+      color: #ffc857;
+    }
+
+    .cycle-strip em {
+      color: var(--muted);
+      font-size: 11px;
+      font-style: normal;
+    }
+
+    .cycle-strip b:not(:first-child) {
+      display: inline;
+      color: var(--line);
+      font-size: 12px;
+    }
+
+    .cycle-strip {
+      color: var(--muted);
+    }
+
+    .timer-wrap {
+      background: #080d16;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 13px 15px 11px;
+      text-align: left;
+    }
+
+    .timer-wrap .timer-label {
+      margin-bottom: 5px;
+      text-align: left;
+    }
+
+    .timer-wrap .timer {
+      text-align: right;
+      margin-top: -22px;
+    }
+
+    .subpanel-meta {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      width: 100%;
+    }
+
+    .meta-pill {
+      min-height: 44px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(16, 33, 40, 0.72);
+    }
+
+    .actions-bottom,
+    .profile-row {
+      gap: 8px;
+    }
+
+    .profile-row .small-btn {
+      flex: 1 1 130px;
+    }
+    /* Final polish layer. */
+    .profile-card {
+      transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .profile-card:hover {
+      border-color: rgba(97, 212, 255, 0.5);
+      transform: translateY(-2px);
+      box-shadow: 0 24px 50px rgba(0, 0, 0, 0.5);
+    }
+
+    .profile-name span[data-state-id] {
+      flex: 0 0 auto;
+      margin-left: auto !important;
+      padding: 6px 9px;
+      border: 1px solid rgba(139, 156, 255, 0.35);
+      border-radius: 999px;
+      background: rgba(59, 71, 126, 0.28);
+      color: #b8c1ff !important;
+      font-size: 10px !important;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .profile-repost,
+    .profile-meta {
+      padding: 7px 9px;
+      border: 1px solid rgba(138, 156, 255, 0.14);
+      border-radius: 8px;
+      background: rgba(8, 10, 20, 0.22);
+    }
+
+    .profile-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .profile-row .small-btn {
+      width: 100%;
+    }
+
+    .btn-export {
+      background: #292d43;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+
+    .cycle-strip [data-cycle-step].active {
+      background: var(--cyan);
+      color: #071014;
+      box-shadow: 0 0 14px rgba(97, 212, 255, 0.45);
+    }
+
+    .cycle-strip [data-cycle-step].done {
+      background: #3b7f70;
+      color: #d9fff0;
+    }
+
+    @media (max-width: 980px) {
+      .profile-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 560px) {
+      .profile-row { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -756,6 +1186,7 @@
           <button class="btn btn-start" id="startAllBtn">Iniciar todos</button>
           <button class="btn btn-publish" id="publishAllBtn">Publicar en todos</button>
           <button class="btn btn-pause" id="pauseAllBtn">Pausar</button>
+          <button class="btn btn-export" id="exportLogsBtn">Exportar logs</button>
         </div>
 
         <div class="section-header">
@@ -840,6 +1271,7 @@
     const socket = io();
     const profileStates = {};
     const profileStats = {};
+    const profileStages = {};
     const profileRepostTimers = {};
     const profilesEl = document.getElementById('profiles');
     const activeCountEl = document.getElementById('active-count');
@@ -880,12 +1312,16 @@
         card.innerHTML = `
           <div class="profile-top">
             <span>Perfil</span>
-            <span>${profile.proxy ? 'Proxy activo' : 'Sin proxy'}</span>
+            <span>${profile.settings?.rotateAds ? 'REMOVE & REPOST' : 'BUMP'} · ${profile.proxy ? 'Proxy activo' : 'Sin proxy'}</span>
           </div>
 
           <div class="profile-name">
             <strong>${profile.id}</strong>
             <span data-state-id="${profile.id}" style="font-size:12px; font-weight:bold; color:#888; margin-left:8px;">● Detenido</span>
+          </div>
+
+          <div class="cycle-strip" data-cycle-id="${profile.id}" aria-label="Flujo del ciclo">
+            <b>Flujo</b><span data-cycle-step="removing">1</span><em>Remover</em><b>→</b><span data-cycle-step="filling">2</span><em>Datos</em><b>→</b><span data-cycle-step="city">3</span><em>Ciudad</em><b>→</b><span data-cycle-step="photos">4</span><em>Fotos</em><b>→</b><span data-cycle-step="captcha">5</span><em>CAPTCHA</em><b>→</b><span data-cycle-step="publishing">6</span><em>Publicar</em>
           </div>
 
           <div class="profile-repost">
@@ -914,6 +1350,7 @@
             <button class="small-btn orange" data-action="pause" data-id="${profile.id}">Pausar</button>
             <button class="small-btn red" data-action="stop" data-id="${profile.id}">Detener</button>
             <button class="small-btn blue" data-action="publish" data-id="${profile.id}">Publicar Ya</button>
+            <button class="small-btn dark" data-action="retry" data-id="${profile.id}">Reintentar Paso</button>
           </div>
 
           <div class="subpanel">
@@ -1051,7 +1488,15 @@
             <div class="logbox">
               <div class="log-header">
                 <span>Registro de actividad en vivo</span>
-                <button class="clear-log" data-clear-id="${profile.id}">Limpiar</button>
+                <span>
+                  <select data-log-filter="${profile.id}" aria-label="Filtrar logs">
+                    <option value="all">Todos</option>
+                    <option value="success">OK</option>
+                    <option value="warning">Avisos</option>
+                    <option value="error">Errores</option>
+                  </select>
+                  <button class="clear-log" data-clear-id="${profile.id}">Limpiar</button>
+                </span>
               </div>
               <div class="log-list" data-log-id="${profile.id}">
                 <div>[Sistema] Interfaz lista y sincronizada con el backend.</div>
@@ -1077,6 +1522,7 @@
           if (action === 'pause') socket.emit('pause-profile', id);
           if (action === 'stop') socket.emit('stop-profile', id);
           if (action === 'publish') socket.emit('publish-profile', id);
+          if (action === 'retry') socket.emit('retry-profile', id);
           if (action === 'save-interval') {
             const minInput = document.querySelector(`[data-bump-min="${id}"]`);
             const maxInput = document.querySelector(`[data-bump-max="${id}"]`);
@@ -1097,6 +1543,16 @@
           const id = button.dataset.clearId;
           const log = document.querySelector(`[data-log-id="${id}"]`);
           if (log) log.innerHTML = '';
+        });
+      });
+
+      profilesEl.querySelectorAll('[data-log-filter]').forEach((select) => {
+        select.addEventListener('change', () => {
+          const log = document.querySelector(`[data-log-id="${select.dataset.logFilter}"]`);
+          if (!log) return;
+          log.querySelectorAll('[data-log-level]').forEach((line) => {
+            line.hidden = select.value !== 'all' && line.dataset.logLevel !== select.value;
+          });
         });
       });
 
@@ -1267,6 +1723,7 @@
         const line = document.createElement('div');
         const stamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         line.textContent = `[${stamp}] ${data.text}`;
+        line.dataset.logLevel = data.level || 'info';
         logBox.appendChild(line);
         logBox.scrollTop = logBox.scrollHeight;
       }
@@ -1326,6 +1783,26 @@
       updateStats(data.id, data.stats);
     });
 
+    function updateCycleStage(profileId, stage, detail) {
+      profileStages[profileId] = { stage, detail };
+      const strip = document.querySelector(`[data-cycle-id="${profileId}"]`);
+      if (!strip) return;
+      const order = ['removing', 'filling', 'city', 'photos', 'captcha', 'publishing', 'completed'];
+      const current = order.indexOf(stage);
+      strip.querySelectorAll('[data-cycle-step]').forEach((step) => {
+        const index = order.indexOf(step.dataset.cycleStep);
+        step.classList.toggle('active', step.dataset.cycleStep === stage);
+        step.classList.toggle('done', current >= 0 && index >= 0 && index < current);
+      });
+      const card = document.querySelector(`[data-card-id="${profileId}"]`);
+      const note = card?.querySelector(`[data-lastbump-id="${profileId}"]`);
+      if (note && detail) note.textContent = detail;
+    }
+
+    socket.on('cycle-stage', (data) => {
+      updateCycleStage(data.id, data.stage, data.detail);
+    });
+
     function showEmergencyBanner(reason) {
       let banner = document.getElementById('emergency-banner');
       if (!banner) {
@@ -1353,6 +1830,16 @@
 
     document.getElementById('pauseAllBtn').addEventListener('click', () => {
       socket.emit('pause-all');
+    });
+
+    document.getElementById('exportLogsBtn').addEventListener('click', () => {
+      const lines = Array.from(document.querySelectorAll('.log-list > div')).map((line) => line.textContent);
+      const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `momonga-logs-${new Date().toISOString().slice(0, 10)}.txt`;
+      link.click();
+      URL.revokeObjectURL(link.href);
     });
 
     document.querySelector('.add-btn').addEventListener('click', openAddModal);

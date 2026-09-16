@@ -8,13 +8,21 @@ const puppeteer = require('puppeteer');
 const sharp = require('sharp');
 const { ProxyAgent, fetch: undiciFetch } = require('undici');
 
-const CONFIG_PATH = path.join(__dirname, 'config.json');
+const CONFIG_PATH = process.env.CONFIG_PATH || path.join(__dirname, 'config.json');
 const STATE_PATH = path.join(__dirname, 'state.json');
 const PORT = process.env.PORT || 3000;
 const DEFAULT_URL = 'https://megapersonals.eu/';
-const MANAGE_POSTS_URL = 'https://megapersonals.eu/users/posts/list?publicDomain=megapersonals.eu';
-const LISTA_POSTS_URL = 'https://megapersonals.eu/users/posts/list';
-const NEW_POST_URL = 'https://megapersonals.eu/users/posts/create';
+
+function siteUrls(controller) {
+  const configuredUrl = controller?.cfg?.url || DEFAULT_URL;
+  const origin = new URL(configuredUrl).origin;
+  const hostname = new URL(configuredUrl).hostname;
+  return {
+    manage: `${origin}/users/posts/list?publicDomain=${encodeURIComponent(hostname)}`,
+    list: `${origin}/users/posts/list`,
+    create: `${origin}/users/posts/create`
+  };
+}
 
 const PANEL_PASSWORD = process.env.PANEL_PASSWORD || 'momonga';
 const AUTH_COOKIE = 'momonga_auth';
@@ -203,7 +211,14 @@ function saveState() {
   try {
     const state = {};
     for (const [id, controller] of controllers.entries()) {
-      state[id] = { active: Boolean(controller.started), stats: controller.stats };
+      state[id] = {
+        active: Boolean(controller.started),
+        stats: controller.stats,
+        cycleStage: controller.cycleStage,
+        cycleDetail: controller.cycleDetail,
+        cycleUpdatedAt: controller.cycleUpdatedAt,
+        cycleDeleteCompleted: Boolean(controller.cycleDeleteCompleted)
+      };
     }
     fs.writeFileSync(STATE_PATH, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
   } catch (error) {
@@ -370,11 +385,11 @@ async function solveCaptcha(apiKey, siteKey, pageUrl, page) {
 
 async function handleCaptchaIfPresent(page, controller) {
   const siteKey = await detectCaptchaSiteKey(page);
-  if (!siteKey) return false;
+  if (!siteKey) return true;
 
   const apiKey = controller.cfg.apiKey2Captcha;
-  if (!apiKey || /^AQUÍ/i.test(apiKey)) {
-    controller.log('CAPTCHA detectado pero falta apiKey2Captcha en config.json.');
+  if (!apiKey || /^AQU[IÍ]/i.test(apiKey)) {
+    controller.log('CAPTCHA detectado pero falta la clave apiKey2Captcha del perfil en la configuración.');
     return false;
   }
 
@@ -535,18 +550,32 @@ async function clickBumpButton(page) {
 }
 
 async function doBump(page, controller) {
+  controller.setCycleStage('publishing', 'Buscando el botón de bump.');
   if (!(await clickBumpButton(page))) return false;
 
-  controller.log('🚀 Bump ejecutado.');
+  const confirmed = await page.waitForFunction(
+    () => window.location.href.includes('success_publish'),
+    { timeout: 15000 }
+  ).then(() => true).catch(() => false);
+
+  if (!confirmed) {
+    controller.setCycleStage('error', 'No se confirmó success_publish.');
+    controller.log('⚠️ El botón respondió, pero no se confirmó la publicación en 15 segundos.');
+    return false;
+  }
+
+  controller.log(`🚀 Bump confirmado (${page.url()}).`);
+  controller.setCycleStage('completed', 'Bump confirmado.');
   controller.recordBump();
 
-  // Igual que la extensión: esperar y volver a la lista de posts
-  await sleep(3000);
+  // Igual que la extensión: esperar y volver a la lista de posts.
+  await sleep(1500);
   await returnToPostsList(page, controller);
   return true;
 }
 
 async function returnToPostsList(page, controller) {
+  const urls = siteUrls(controller);
   const currentUrl = page.url();
 
   if (currentUrl.includes('success_publish')) {
@@ -582,18 +611,19 @@ async function returnToPostsList(page, controller) {
   // 3) Igual que la extensión: window.location.href = LISTA_POSTS
   controller.log('Volviendo a Mis Anuncios...');
   try {
-    await page.goto(LISTA_POSTS_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(urls.list, { waitUntil: 'domcontentloaded', timeout: 30000 });
   } catch (error) {
     controller.log(`No se pudo volver a Mis Anuncios: ${error.message}`);
   }
 }
 
 async function performBump(page, controller) {
+  const urls = siteUrls(controller);
   if (await doBump(page, controller)) return;
 
   controller.log('Buscando el anuncio en Mis Anuncios...');
   try {
-    await page.goto(MANAGE_POSTS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+    await page.goto(urls.manage, { waitUntil: 'networkidle2', timeout: 60000 });
   } catch (error) {
     controller.log(`No se pudo abrir Mis Anuncios: ${error.message}`);
     controller.log('No se encontró botón de bump/publicación.');
@@ -613,6 +643,7 @@ async function clickTextControl(page, patterns, timeout = 10000) {
     found = await page.waitForFunction((expectedPatterns) => {
       const controls = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
       return controls.some(control => {
+        if (control.offsetParent === null || control.id === 'delete-post-id') return false;
         const text = `${control.innerText || ''} ${control.value || ''}`.trim();
         return expectedPatterns.some(pattern => new RegExp(pattern, 'i').test(text));
       });
@@ -625,6 +656,7 @@ async function clickTextControl(page, patterns, timeout = 10000) {
   await page.evaluate((expectedPatterns) => {
     const controls = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
     const target = controls.find(control => {
+      if (control.offsetParent === null || control.id === 'delete-post-id') return false;
       const text = `${control.innerText || ''} ${control.value || ''}`.trim();
       return expectedPatterns.some(pattern => new RegExp(pattern, 'i').test(text));
     });
@@ -666,22 +698,41 @@ async function fillFieldByLabel(page, labelRegexSource, value) {
   return page.evaluate((src, val) => {
     const re = new RegExp(src, 'i');
     const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    const normalize = (s) => clean(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const wanted = normalize(String(val));
 
     const setVal = (field) => {
       if (!field || !('value' in field)) return false;
       if (field.tagName === 'SELECT') {
-        const opt = Array.from(field.options).find((o) =>
-          o.value === String(val) || o.textContent.trim().toLowerCase() === String(val).trim().toLowerCase()
+        const opt = Array.from(field.options).find((o) => {
+          const optionValue = normalize(o.value);
+          const optionText = normalize(o.textContent);
+          return optionValue === wanted || optionText === wanted || optionText.includes(wanted) || wanted.includes(optionText);
+        }
         );
         if (!opt) return false;
         field.value = opt.value;
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        field.dispatchEvent(new Event('change', { bubbles: true }));
+        field.dispatchEvent(new Event('blur', { bubbles: true }));
+        return true;
       } else {
-        field.value = String(val);
+        const setter = Object.getOwnPropertyDescriptor(field.__proto__, 'value')?.set;
+        if (setter) setter.call(field, String(val));
+        else field.value = String(val);
       }
       field.dispatchEvent(new Event('input', { bubbles: true }));
       field.dispatchEvent(new Event('change', { bubbles: true }));
+      field.dispatchEvent(new Event('blur', { bubbles: true }));
       return true;
     };
+
+    const direct = Array.from(document.querySelectorAll('input, select, textarea')).find((field) => {
+      const meta = normalize(`${field.name || ''} ${field.id || ''} ${field.getAttribute('autocomplete') || ''}`);
+      return re.test(meta) || (src.toLowerCase().includes('city') && /city/.test(meta))
+        || (src.toLowerCase().includes('location') && /location|area/.test(meta));
+    });
+    if (setVal(direct)) return true;
 
     const candidates = Array.from(document.querySelectorAll('label, b, strong, span, td, th, p, div'));
     for (const el of candidates) {
@@ -706,7 +757,10 @@ async function fillFieldByLabel(page, labelRegexSource, value) {
       }
 
       const parent = el.parentElement;
-      if (parent && setVal(parent.querySelector('input:not([type="hidden"]), select, textarea'))) return true;
+      if (parent) {
+        const fields = parent.querySelectorAll('input:not([type="hidden"]), select, textarea');
+        if (fields.length === 1 && setVal(fields[0])) return true;
+      }
     }
     return false;
   }, labelRegexSource, value);
@@ -716,16 +770,25 @@ async function fillPhone(page, value) {
   if (!value) return false;
 
   return page.evaluate((val) => {
+    const raw = String(val).trim();
+    const digits = raw.replace(/\D/g, '');
+    const normalized = digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : raw.replace(/[\s().-]+/g, '');
+
     const setVal = (f) => {
       if (!f || !('value' in f)) return false;
-      f.value = String(val);
+      const setter = Object.getOwnPropertyDescriptor(f.__proto__, 'value')?.set;
+      if (setter) setter.call(f, normalized);
+      else f.value = normalized;
       f.dispatchEvent(new Event('input', { bubbles: true }));
       f.dispatchEvent(new Event('change', { bubbles: true }));
+      f.dispatchEvent(new Event('blur', { bubbles: true }));
       return true;
     };
 
-    const tel = document.querySelector('input[type="tel"]');
-    if (setVal(tel)) return true;
+    const direct = document.querySelector(
+      'input[type="tel"], input[name*="phone" i], input[id*="phone" i], input[autocomplete="tel"]'
+    );
+    if (setVal(direct)) return true;
 
     const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
     const labels = Array.from(document.querySelectorAll('label, b, strong, span, td, th, p, div'));
@@ -740,67 +803,361 @@ async function fillPhone(page, value) {
   }, value);
 }
 
-async function deleteAndRepost(page, controller) {
+async function fillExactField(page, selector, value) {
+  if (value === undefined || value === null || value === '') return false;
+  return page.evaluate((fieldSelector, fieldValue) => {
+    const field = document.querySelector(fieldSelector);
+    if (!field || !('value' in field)) return false;
+    const setter = Object.getOwnPropertyDescriptor(field.__proto__, 'value')?.set;
+    if (setter) setter.call(field, String(fieldValue));
+    else field.value = String(fieldValue);
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+    field.dispatchEvent(new Event('blur', { bubbles: true }));
+    return String(field.value).trim() === String(fieldValue).trim();
+  }, selector, value).catch(() => false);
+}
+
+async function selectCity(page, value, controller) {
+  if (!value) return false;
+
+  const selected = await page.waitForFunction((wantedValue) => {
+    const normalize = (text) => String(text || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const wanted = normalize(wantedValue);
+    const selects = Array.from(document.querySelectorAll('select')).filter((select) => {
+      const meta = normalize(`${select.name || ''} ${select.id || ''} ${select.getAttribute('aria-label') || ''}`);
+      const label = select.labels?.[0] ? normalize(select.labels[0].textContent) : '';
+      return /city|town|location/.test(`${meta} ${label}`) || Array.from(select.options).some((option) => normalize(option.textContent).includes(wanted));
+    });
+
+    for (const select of selects) {
+      const option = Array.from(select.options).find((item) => {
+        const text = normalize(item.textContent);
+        const optionValue = normalize(item.value);
+        return text === wanted || optionValue === wanted || text.includes(wanted) || wanted.includes(text);
+      });
+      if (!option) continue;
+      select.value = option.value;
+      select.dispatchEvent(new Event('input', { bubbles: true }));
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      select.dispatchEvent(new Event('blur', { bubbles: true }));
+      return select.value === option.value;
+    }
+    return false;
+  }, { timeout: 2500 }, value).catch(() => false);
+
+  if (selected) {
+    controller.log(`📍 Ciudad seleccionada: ${value}.`);
+    return true;
+  }
+
+  const [cityName, stateCode] = String(value).split(',').map((part) => part.trim());
+  const stateNames = {
+    AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California', CO: 'Colorado',
+    CT: 'Connecticut', DE: 'Delaware', FL: 'Florida', GA: 'Georgia', HI: 'Hawaii', ID: 'Idaho',
+    IL: 'Illinois', IN: 'Indiana', IA: 'Iowa', KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana',
+    ME: 'Maine', MD: 'Maryland', MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota',
+    MS: 'Mississippi', MO: 'Missouri', MT: 'Montana', NE: 'Nebraska', NV: 'Nevada',
+    NH: 'New Hampshire', NJ: 'New Jersey', NM: 'New Mexico', NY: 'New York', NC: 'North Carolina',
+    ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania',
+    RI: 'Rhode Island', SC: 'South Carolina', SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas',
+    UT: 'Utah', VT: 'Vermont', VA: 'Virginia', WA: 'Washington', WV: 'West Virginia',
+    WI: 'Wisconsin', WY: 'Wyoming'
+  };
+  const stateName = stateNames[stateCode] || stateCode || '';
+
+  const clickedCityField = await page.evaluate(() => {
+    const knownField = document.querySelector('#cityName');
+    if (knownField) {
+      knownField.click();
+      return true;
+    }
+
+    const normalize = (text) => String(text || '').toLowerCase();
+    const field = Array.from(document.querySelectorAll('select, input, button, [role="combobox"]')).find((item) => {
+      const meta = normalize(`${item.name || ''} ${item.id || ''} ${item.getAttribute('aria-label') || ''}`);
+      const label = item.labels?.[0] ? normalize(item.labels[0].textContent) : '';
+      return /city|town/.test(`${meta} ${label}`);
+    });
+    if (!field) return false;
+    field.click();
+    return true;
+  });
+
+  if (!clickedCityField) {
+    controller.log(`❌ No se encontró el selector visual de ciudad para "${value}".`);
+    return false;
+  }
+  controller.log(`📍 Abriendo selector de ubicación para ${value}.`);
+
+  const clickLocationChoice = async (choice, label) => {
+    controller.log(`📍 Seleccionando ${label}: ${choice}.`);
+    const clicked = await page.waitForFunction((wanted) => {
+      const normalize = (text) => String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const target = normalize(wanted);
+      const exactLabel = Array.from(document.querySelectorAll('label[for]')).find((label) =>
+        normalize(label.textContent) === target && label.offsetParent !== null
+      );
+      if (exactLabel) {
+        exactLabel.click();
+        return true;
+      }
+      const elements = Array.from(document.querySelectorAll('button, a, [role="button"], li, div, span'))
+        .filter((element) => element.offsetParent !== null)
+        .filter((element) => normalize(element.textContent) === target || normalize(element.textContent).startsWith(`${target} `));
+      const element = elements.sort((a, b) => a.textContent.length - b.textContent.length)[0];
+      if (!element) return false;
+      element.click();
+      return true;
+    }, { timeout: 6000 }, choice).catch(() => false);
+    if (!clicked) controller.log(`❌ No se encontró la opción ${label}: ${choice}.`);
+    return clicked;
+  };
+
+  const countryClicked = await page.evaluate(() => {
+    const countryLabel = document.querySelector('label[for="ac-United States"]');
+    if (!countryLabel || countryLabel.offsetParent === null) return false;
+    countryLabel.click();
+    return true;
+  }).catch(() => false) || await clickLocationChoice('United States', 'país');
+  if (!countryClicked) {
+    const countrySelected = await page.evaluate(() => {
+      const countryLabel = document.querySelector('label[for="ac-United States"]');
+      if (countryLabel && countryLabel.offsetParent !== null) {
+        countryLabel.click();
+        return true;
+      }
+      const select = document.querySelector('#countrySelect');
+      if (!select) return false;
+      const option = Array.from(select.options).find((item) => /united states/i.test(item.textContent || ''));
+      if (!option) return false;
+      select.value = option.value;
+      select.dispatchEvent(new Event('input', { bubbles: true }));
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    });
+    if (!countrySelected) {
+      controller.setCycleStage('error', 'No se encontró United States.');
+      return false;
+    }
+    controller.log('📍 United States seleccionado mediante #countrySelect.');
+  }
+  await sleep(1000);
+  if (stateName && !(await clickLocationChoice(stateName, 'estado'))) return false;
+  if (!(await clickLocationChoice(cityName, 'ciudad'))) return false;
+
+  const verified = await page.waitForFunction((wantedValue) => {
+    const normalize = (text) => String(text || '').trim().toLowerCase();
+    const wanted = normalize(wantedValue);
+    const knownField = document.querySelector('#cityName');
+    if (knownField) {
+      const knownValue = normalize(knownField.value);
+      if (knownValue === wanted || knownValue.includes(wanted)) return true;
+    }
+    return Array.from(document.querySelectorAll('select, input')).some((field) => {
+      const value = normalize(field.value);
+      const option = field.tagName === 'SELECT' ? field.selectedOptions[0] : null;
+      const optionText = normalize(option?.textContent);
+      return value === wanted || value.includes(wanted) || optionText === wanted || optionText.includes(wanted);
+    });
+  }, { timeout: 5000 }, cityName).catch(() => false);
+
+  if (!verified) {
+    controller.log(`❌ No se encontró la ciudad "${value}" entre las opciones del formulario.`);
+    return false;
+  }
+  controller.log(`📍 Ciudad seleccionada: ${value}.`);
+  return true;
+}
+
+async function clickNextStep(page, controller) {
+  const directClicked = await page.evaluate(() => {
+    const button = document.querySelector('#next_button_from_first_form_page');
+    if (!button || button.offsetParent === null) return false;
+    button.click();
+    return true;
+  }).catch(() => false);
+  const clicked = directClicked || await clickTextControl(page, ['^next$', 'continue', 'siguiente'], 8000);
+  if (!clicked) {
+    controller.log('❌ No se encontró el botón Next del formulario.');
+    return false;
+  }
+  await sleep(1500);
+  controller.setCycleStage('photos', 'Paso de fotos abierto.');
+  controller.log('➡️ Paso de fotos abierto.');
+  return true;
+}
+
+async function waitForManualCaptcha(page, controller) {
+  const captcha = await page.evaluate(() => {
+    const fields = Array.from(document.querySelectorAll('input, textarea'));
+    const field = fields.find((item) => /captcha|code from|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`));
+    const recaptcha = document.querySelector('textarea[name="g-recaptcha-response"], textarea#g-recaptcha-response');
+    return { imageField: Boolean(field), recaptcha: Boolean(recaptcha) };
+  });
+
+  if (!captcha.imageField && !captcha.recaptcha) return true;
+
+  if (captcha.recaptcha) {
+    controller.setCycleStage('captcha', 'Resolviendo CAPTCHA con 2Captcha.');
+    controller.log('🧩 CAPTCHA reCAPTCHA detectado. Intentando resolver automáticamente con 2Captcha...');
+    await handleCaptchaIfPresent(page, controller);
+    const tokenReady = await page.waitForFunction(() => {
+      const recaptcha = document.querySelector('textarea[name="g-recaptcha-response"], textarea#g-recaptcha-response');
+      return Boolean(recaptcha && recaptcha.value.trim());
+    }, { timeout: 10000 }).then(() => true).catch(() => false);
+    if (tokenReady) {
+      controller.setCycleStage('captcha', 'CAPTCHA resuelto automáticamente.');
+      controller.log('✅ CAPTCHA resuelto e inyectado automáticamente.');
+      return true;
+    }
+  }
+
+  controller.setCycleStage('captcha', 'Esperando CAPTCHA manual.');
+  controller.log('🧩 CAPTCHA detectado. Introduce el código manualmente en Chrome; el proceso esperará hasta 5 minutos.');
+  const solved = await page.waitForFunction(() => {
+    const fields = Array.from(document.querySelectorAll('input, textarea'));
+    const imageField = fields.find((item) => /captcha|code from|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`));
+    const recaptcha = document.querySelector('textarea[name="g-recaptcha-response"], textarea#g-recaptcha-response');
+    return Boolean((imageField && imageField.value.trim()) || (recaptcha && recaptcha.value.trim()));
+  }, { timeout: 300000 }).then(() => true).catch(() => false);
+
+  if (!solved) {
+    controller.setCycleStage('error', 'Tiempo agotado esperando CAPTCHA.');
+    controller.log('❌ Tiempo agotado esperando el CAPTCHA manual.');
+  }
+  return solved;
+}
+
+async function deleteAndRepost(page, controller, options = {}) {
+  const urls = siteUrls(controller);
   const details = controller.cfg.adDetails || {};
-  if (!details.city || !details.text) {
-    controller.log('Delete and Repost omitido: faltan ciudad o texto en adDetails.');
+  const configErrors = validateCycleConfig(controller.cfg);
+  if (configErrors.length > 0) {
+    controller.setCycleStage('error', `Configuración inválida: ${configErrors.join(', ')}.`);
+    controller.log(`Delete and Repost omitido: ${configErrors.join(', ')}.`);
     return false;
   }
 
   try {
-    controller.log('🗑️ Iniciando ciclo de borrado del anuncio actual...');
-    await page.goto(MANAGE_POSTS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+    if (!options.resume) {
+      controller.cycleDeleteCompleted = false;
+    }
 
-    if (await checkForBlock(page, controller)) return false;
+    if (!controller.cycleDeleteCompleted) {
+      controller.setCycleStage('removing', 'Abriendo Manage Posts.');
+      controller.log('🗑️ Iniciando ciclo de borrado del anuncio actual...');
+      await page.goto(urls.manage, { waitUntil: 'networkidle2', timeout: 60000 });
 
-    await page.evaluate(() => {
-      const deleteBtn = Array.from(document.querySelectorAll('button, a, input[type="submit"]'))
-        .find(el => /delete|borrar|eliminar/i.test(`${el.innerText || ''} ${el.value || ''}`));
-      if (deleteBtn) deleteBtn.click();
-    });
+      if (await checkForBlock(page, controller)) return false;
 
-    await sleep(3000);
+      const deleteClicked = await page.evaluate(() => {
+      const knownButton = document.querySelector('#delete-post-id');
+      if (knownButton && knownButton.offsetParent !== null) {
+        knownButton.click();
+        return true;
+      }
+      const fallback = Array.from(document.querySelectorAll('button, a, input[type="submit"]'))
+        .find((el) => el.offsetParent !== null && /delete|remove|borrar|eliminar/i.test(`${el.innerText || ''} ${el.value || ''}`));
+      if (!fallback) return false;
+      fallback.click();
+      return true;
+      });
+      if (!deleteClicked) {
+        controller.log('ℹ️ El post ya no aparece en Manage Posts; continúo directamente con Create Post.');
+      } else {
+        await sleep(3000);
 
-    await page.waitForFunction(() => {
-      const controls = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
-      return controls.some(control => /confirm|yes|sí|si|delete|borrar/i.test(`${control.innerText || ''} ${control.value || ''}`));
-    }, { timeout: 5000 }).then(() => clickTextControl(page, ['confirm', '^yes$', '^sí$', '^si$', 'delete', 'borrar'], 3000)).catch(() => {});
+        await page.waitForFunction(() => {
+          const controls = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
+          return controls.some(control => /confirm|yes|sí|si|delete|borrar/i.test(`${control.innerText || ''} ${control.value || ''}`));
+        }, { timeout: 5000 }).then(() => clickTextControl(page, ['confirm', '^yes$', '^sí$', '^si$', 'delete', 'remove', 'borrar'], 3000)).catch(() => {});
+        await sleep(1000);
+      }
+      controller.cycleDeleteCompleted = true;
+      saveState();
+    }
 
     controller.log('📢 Publicando nuevo anuncio idéntico...');
-    await page.goto(NEW_POST_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+    controller.setCycleStage('filling', 'Llenando datos del anuncio.');
+    await page.goto(urls.create, { waitUntil: 'networkidle2', timeout: 60000 });
 
     if (await checkForBlock(page, controller)) return false;
 
-    await fillFieldByLabel(page, '^\\s*name', details.name);
+    await fillExactField(page, '#name', details.name) || await fillFieldByLabel(page, '^\\s*name', details.name);
     await fillFieldByLabel(page, '^\\s*headline', details.headline);
-    await fillFieldByLabel(page, '^\\s*age', details.age);
+    await fillExactField(page, '#age', details.age) || await fillFieldByLabel(page, '^\\s*age', details.age);
     await fillFieldByLabel(page, '^\\s*body', details.text);
-    await fillFieldByLabel(page, '^\\s*city', details.city);
-    await fillFieldByLabel(page, '^\\s*location', details.location);
+    controller.setCycleStage('city', `Seleccionando ciudad: ${details.city}.`);
+    if (!(await selectCity(page, details.city, controller))) return false;
+    const locationFilled = await fillExactField(page, '#location', details.location)
+      || await fillFieldByLabel(page, '^\\s*location', details.location);
+    if (details.location && !locationFilled) {
+      controller.setCycleStage('error', `No se pudo escribir la ubicación: ${details.location}.`);
+      controller.log(`❌ No se pudo llenar Location/Area con "${details.location}".`);
+      return false;
+    }
+    if (locationFilled) controller.log(`📍 Location/Area escrito: ${details.location}.`);
     await fillPhone(page, details.phone);
 
+    if (!(await clickNextStep(page, controller))) return false;
+
     if (details.photosPath) {
+      controller.setCycleStage('photos', 'Cargando fotos.');
       const photosDir = path.resolve(__dirname, details.photosPath);
-      const photoInput = await page.$('input[type="file"]');
+      const photoInputs = await page.$$('input[type="file"]');
+      const photoInput = photoInputs.find((input) => input) || null;
+      if (!photoInput) {
+        controller.setCycleStage('error', 'No se encontró el campo de fotos.');
+        controller.log('❌ No se encontró el campo de fotos en el formulario.');
+        return false;
+      }
       if (photoInput && fs.existsSync(photosDir)) {
         const photos = fs.readdirSync(photosDir)
           .filter(name => /\.(jpg|jpeg|png|webp)$/i.test(name))
           .map(name => path.join(photosDir, name));
         if (photos.length > 0) {
-          await photoInput.uploadFile(...photos);
+          const acceptsMultiple = await photoInput.evaluate((input) => input.multiple);
+          if (acceptsMultiple) {
+            await photoInput.uploadFile(...photos);
+          } else {
+            for (const photo of photos) {
+              await photoInput.uploadFile(photo);
+              await sleep(800);
+            }
+          }
+          controller.log(`🖼️ ${photos.length} foto(s) cargadas en el formulario.`);
         } else {
-          controller.log('Aviso: no hay fotos en la carpeta configurada.');
+          controller.setCycleStage('error', 'La carpeta de fotos está vacía.');
+          controller.log('❌ No hay fotos en la carpeta configurada.');
+          return false;
         }
       }
     }
 
+    if (!(await waitForManualCaptcha(page, controller))) return false;
+
+    controller.setCycleStage('publishing', 'Publicando anuncio.');
     const published = await clickTextControl(page, ['publish', 'post\\s+ad', 'publicar', 'crear anuncio'], 10000);
     if (!published) {
       controller.log('No se encontró el botón final de publicación.');
       return false;
     }
 
+    const confirmed = await page.waitForFunction(
+      () => window.location.href.includes('success_publish'),
+      { timeout: 20000 }
+    ).then(() => true).catch(() => false);
+    if (!confirmed) {
+      controller.setCycleStage('error', 'No se confirmó success_publish.');
+      controller.log('❌ El formulario se envió, pero no apareció la confirmación success_publish.');
+      return false;
+    }
+
     controller.log('✅ ¡Anuncio republicado de forma idéntica con éxito!');
+    controller.setCycleStage('completed', 'Publicación confirmada.');
+    controller.cycleDeleteCompleted = false;
+    saveState();
     controller.recordBump();
 
     // Volver a la lista de anuncios (MY POSTS)
@@ -808,7 +1165,7 @@ async function deleteAndRepost(page, controller) {
     if (wentBack) {
       await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
     } else {
-      await page.goto(MANAGE_POSTS_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      await page.goto(urls.manage, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
     }
     await sleep(1000);
 
@@ -874,6 +1231,30 @@ function parseProxy(value) {
   };
 }
 
+function validateCycleConfig(profile) {
+  const details = profile.adDetails || {};
+  const errors = [];
+  const phoneDigits = String(details.phone || '').replace(/\D/g, '');
+
+  if (!String(details.city || '').trim()) errors.push('falta la ciudad');
+  if (!String(details.text || '').trim()) errors.push('falta el texto del anuncio');
+  if (details.phone && (phoneDigits.length < 7 || phoneDigits.length > 15)) errors.push('teléfono inválido');
+  if (details.age && (!Number.isInteger(Number(details.age)) || Number(details.age) < 18 || Number(details.age) > 100)) errors.push('edad inválida');
+
+  if (details.photosPath) {
+    const photosRoot = path.resolve(__dirname, 'profiles');
+    const photosDir = path.resolve(__dirname, details.photosPath);
+    const relative = path.relative(photosRoot, photosDir);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) errors.push('fotos fuera de profiles');
+    else if (!fs.existsSync(photosDir) || !fs.statSync(photosDir).isDirectory()) errors.push('carpeta de fotos inexistente');
+  }
+
+  const min = Number(profile.bumpMinMinutes || profile.intervalMinutes || 16);
+  const max = Number(profile.bumpMaxMinutes || min);
+  if (!Number.isFinite(min) || min < 1 || !Number.isFinite(max) || max < min) errors.push('intervalo de bump inválido');
+  return errors;
+}
+
 async function scrapeActiveAdData(page) {
   return page.evaluate(() => {
     const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
@@ -883,6 +1264,13 @@ async function scrapeActiveAdData(page) {
     const contentEl = document.querySelector('.post_preview_content');
     if (titleEl || contentEl) {
       const spans = Array.from(document.querySelectorAll('.post_preview_info span'));
+      const rows = Array.from(document.querySelectorAll('.post_preview_info > div, .post_preview_info li, .post_preview_info p'));
+      const readRow = (label) => {
+        const row = rows.find((item) => clean(item.querySelector('span')?.textContent).toLowerCase().startsWith(label.toLowerCase()));
+        if (!row) return '';
+        const values = Array.from(row.querySelectorAll('span')).slice(1).map((item) => clean(item.textContent)).filter(Boolean);
+        return values.join(' ').trim();
+      };
       const readInfo = (label) => {
         const idx = spans.findIndex((s) => clean(s.textContent).toLowerCase().startsWith(label.toLowerCase()));
         if (idx === -1) return '';
@@ -899,11 +1287,11 @@ async function scrapeActiveAdData(page) {
       return {
         name: '',
         headline: clean(titleEl ? titleEl.textContent : ''),
-        age: readInfo('Age'),
+        age: readRow('Age') || readInfo('Age'),
         text: contentEl ? contentEl.textContent.trim() : '',
-        city: readInfo('City'),
-        location: readInfo('Location'),
-        phone: readInfo('Phone')
+        city: readRow('City') || readInfo('City'),
+        location: readRow('Location') || readInfo('Location'),
+        phone: readRow('Phone') || readInfo('Phone')
       };
     }
 
@@ -1078,11 +1466,18 @@ class ProfileController {
     this._cycleTimer = null;
     this._countdownTimer = null;
     this._repostTimer = null;
+    this._openPromise = null;
+    this._startPromise = null;
+    this._operationPromise = null;
     this._nextRepostAt = 0;
     this.autoRepostActive = Boolean(cfg.autoRepostActive);
     this.repostInterval = Number(cfg.repostInterval) || 6;
     this.repostIntervalMin = Number(cfg.repostIntervalMin) || this.repostInterval * 60;
     this.state = 'stopped';
+    this.cycleStage = 'idle';
+    this.cycleDetail = '';
+    this.cycleUpdatedAt = 0;
+    this.cycleDeleteCompleted = false;
     this.stats = { totalBumps: 0, bumpsToday: 0, lastBumpAt: 0, date: todayKey() };
     this.settings = {
       rotateAds: Boolean(cfg.settings?.rotateAds),
@@ -1092,9 +1487,16 @@ class ProfileController {
   }
 
   log(text) {
+    const level = /❌|error|crítico|falló|inválid/i.test(text)
+      ? 'error'
+      : /⚠|aviso|esperando|omitido/i.test(text)
+        ? 'warning'
+        : /✅|confirmado|éxito|OK/i.test(text)
+          ? 'success'
+          : 'info';
     console.log(`[${this.id}]`, text);
     logToFile(this.id, text);
-    io.emit('log', { id: this.id, text });
+    io.emit('log', { id: this.id, text, level, at: Date.now() });
   }
 
 emitActive() {
@@ -1108,6 +1510,19 @@ emitActive() {
   emitState(state) {
     this.state = state;
     io.emit('profile-state', { id: this.id, state });
+  }
+
+  setCycleStage(stage, detail = '') {
+    this.cycleStage = stage;
+    this.cycleDetail = detail;
+    this.cycleUpdatedAt = Date.now();
+    io.emit('cycle-stage', {
+      id: this.id,
+      stage,
+      detail,
+      at: this.cycleUpdatedAt
+    });
+    saveState();
   }
 
   emitStats() {
@@ -1198,10 +1613,20 @@ emitActive() {
   }
 
   async open() {
+    if (this._openPromise) return this._openPromise;
+    this._openPromise = this._openInternal().finally(() => {
+      this._openPromise = null;
+    });
+    return this._openPromise;
+  }
+
+  async _openInternal() {
     if (this.browser) {
       this.log('La página ya está abierta.');
       return true;
     }
+
+    this.setCycleStage('opening', 'Abriendo navegador.');
 
     const proxyCheck = await validateProxy(this.cfg.proxy);
     if (!proxyCheck.skipped) {
@@ -1228,8 +1653,20 @@ emitActive() {
 
       if (await checkForBlock(page, this)) return false;
 
+      const sessionClosed = await page.evaluate(() => {
+        const hasLoginFields = Boolean(document.querySelector('input[type="password"], input[type="email"]'));
+        return hasLoginFields && /login|sign in|session expired|sesión/i.test(document.body?.innerText || '');
+      }).catch(() => false);
+      if (sessionClosed) {
+        this.setCycleStage('error', 'Sesión cerrada; inicia sesión manualmente.');
+        this.log('❌ La sesión está cerrada. Inicia sesión manualmente antes de continuar.');
+        this.emitState('error');
+        return false;
+      }
+
       await loginIfNeeded(page, this);
       this.log('Página lista. Pulsa Iniciar para comenzar el conteo.');
+      this.setCycleStage('ready', 'Página lista.');
       this.emitState('ready');
       this.emitActive();
       return true;
@@ -1242,6 +1679,14 @@ emitActive() {
   }
 
   async start() {
+    if (this._startPromise) return this._startPromise;
+    this._startPromise = this._startInternal().finally(() => {
+      this._startPromise = null;
+    });
+    return this._startPromise;
+  }
+
+  async _startInternal() {
     if (this.started) {
       if (this.paused) {
         this.resume();
@@ -1261,8 +1706,14 @@ emitActive() {
 
     if (this.settings.publishOnStart) {
       this.log('Publicación al iniciar activada.');
-      await performBump(this.page, this);
+      if (this.settings.rotateAds) {
+        await deleteAndRepost(this.page, this);
+      } else {
+        await performBump(this.page, this);
+      }
     }
+
+    this.setCycleStage('running', 'Conteo automático activo.');
 
     this.startCountdown();
     this.scheduleNext();
@@ -1311,6 +1762,7 @@ emitActive() {
     }
     this.browser = null;
     this.page = null;
+    this.setCycleStage('idle', 'Perfil detenido.');
     this.log('🛑 Detenido.');
     this.emitActive();
     io.emit('timer', { id: this.id, time: null });
@@ -1352,6 +1804,19 @@ emitActive() {
   }
 
   async bumpCycle() {
+    if (this._operationPromise) {
+      this.log('Ciclo omitido: ya hay una publicación en curso.');
+      return;
+    }
+    this._operationPromise = this._bumpCycleInternal();
+    try {
+      await this._operationPromise;
+    } finally {
+      this._operationPromise = null;
+    }
+  }
+
+  async _bumpCycleInternal() {
     if (!this.started || this.paused) return;
     this.log('Iniciando ciclo de bump...');
 
@@ -1407,9 +1872,19 @@ emitActive() {
 
   async repostCycle() {
     if (!this.started || this.paused || !this.autoRepostActive) return;
+    if (this._operationPromise) {
+      this.log('Republicación omitida: ya hay una publicación en curso.');
+      this.scheduleRepost();
+      return;
+    }
     this.log('🔄 Iniciando ciclo automático de borrado y republicación...');
-    await deleteAndRepost(this.page, this);
-    this.scheduleRepost();
+    this._operationPromise = deleteAndRepost(this.page, this);
+    try {
+      await this._operationPromise;
+    } finally {
+      this._operationPromise = null;
+    }
+    if (this.started && !this.paused && this.autoRepostActive) this.scheduleRepost();
   }
 
   async publishNow() {
@@ -1417,6 +1892,52 @@ emitActive() {
       this.log('Primero inicia el perfil para poder publicar.');
       return;
     }
+    if (this._operationPromise) {
+      this.log('Publicación manual omitida: ya hay una publicación en curso.');
+      return;
+    }
+
+    this._operationPromise = this._publishNowInternal();
+    try {
+      await this._operationPromise;
+    } finally {
+      this._operationPromise = null;
+    }
+  }
+
+  async retryCycle() {
+    if (!this.page) {
+      this.log('Reintento disponible después de abrir el navegador.');
+      return;
+    }
+    if (this.paused) {
+      this.log('Reintento no disponible mientras el perfil está pausado.');
+      return;
+    }
+    if (this._operationPromise) {
+      this.log('Reintento omitido: ya hay una operación en curso.');
+      return;
+    }
+
+    const wasStarted = this.started;
+    if (!this.started) {
+      this.started = true;
+      this.startCountdown();
+      this.emitActive();
+      this.emitState('running');
+    }
+
+    this._operationPromise = deleteAndRepost(this.page, this, { resume: true });
+    try {
+      await this._operationPromise;
+    } finally {
+      this._operationPromise = null;
+    }
+    if (this.started && !this.paused) this.scheduleNext();
+    if (!wasStarted && this.started) saveState();
+  }
+
+  async _publishNowInternal() {
 
     this.log('📢 Publicación manual solicitada...');
 
@@ -1460,6 +1981,12 @@ function buildControllers() {
           controller.stats.date = today;
           controller.stats.bumpsToday = 0;
         }
+      }
+      if (saved) {
+        controller.cycleStage = saved.cycleStage || controller.cycleStage;
+        controller.cycleDetail = saved.cycleDetail || '';
+        controller.cycleUpdatedAt = Number(saved.cycleUpdatedAt) || 0;
+        controller.cycleDeleteCompleted = Boolean(saved.cycleDeleteCompleted);
       }
       controllers.set(profile.id, controller);
     }
@@ -1757,6 +2284,12 @@ io.on('connection', (socket) => {
   for (const c of controllers.values()) {
     io.emit('profile-state', { id: c.id, state: c.state });
     io.emit('stats', { id: c.id, stats: c.stats });
+    io.emit('cycle-stage', {
+      id: c.id,
+      stage: c.cycleStage,
+      detail: c.cycleDetail,
+      at: c.cycleUpdatedAt
+    });
     if (c.started && !c.paused) {
       const remaining = Math.max(0, c._nextBumpAt - Date.now());
       io.emit('timer', { id: c.id, time: mmss(remaining) });
@@ -1818,6 +2351,11 @@ io.on('connection', (socket) => {
   socket.on('publish-profile', (id) => {
     const controller = controllers.get(id);
     if (controller) controller.publishNow();
+  });
+
+  socket.on('retry-profile', (id) => {
+    const controller = controllers.get(id);
+    if (controller) controller.retryCycle();
   });
 
   socket.on('update-interval', ({ id, min, max }) => {
