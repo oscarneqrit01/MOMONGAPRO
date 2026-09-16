@@ -1333,16 +1333,16 @@ emitActive() {
     if (this._cycleTimer) clearTimeout(this._cycleTimer);
 
     const min = Math.max(1, this.cfg.bumpMinMinutes || this.cfg.intervalMinutes || 16);
-    let max = Math.max(min, this.cfg.bumpMaxMinutes || min);
-    const autoMax = max <= min;
-    if (autoMax) max = min * 2;
+    const max = Math.max(min, this.cfg.bumpMaxMinutes || min);
 
-    let waitMs = Math.round((min + Math.random() * (max - min)) * 60 * 1000);
-    waitMs = Math.max(min * 60 * 1000, waitMs);
+    // Exacto igual que la extensión: obtenerIntervaloAleatorio()
+    const minMs = min * 60 * 1000;
+    const maxMs = max * 60 * 1000;
+    const waitMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
 
     this._nextBumpAt = Date.now() + waitMs;
     const minutes = Math.round(waitMs / 60000);
-    this.log(`Próximo bump en ~${minutes} min (rango ${min}–${max} min${autoMax ? ' · automático' : ''}).`);
+    this.log(`Próximo bump en ~${minutes} min (rango ${min}–${max} min).`);
     io.emit('timer', { id: this.id, time: mmss(waitMs) });
 
     this._cycleTimer = setTimeout(() => this.bumpCycle(), waitMs);
