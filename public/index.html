@@ -1087,7 +1087,7 @@
     }
 
     async function scrapeActiveAd(profileId) {
-      alert('📥 Conectando al navegador activo para extraer fotos, texto y ubicación exacta...');
+      alert('📥 Leyendo la página actual (SOLO LECTURA). Abre primero el anuncio en la ventana del navegador para copiar sus datos.');
       try {
         const res = await fetch(`/api/profiles/${encodeURIComponent(profileId)}/scrape`, { method: 'POST' });
         const result = await res.json();

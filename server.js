@@ -710,28 +710,6 @@ function parseProxy(value) {
   };
 }
 
-async function openFirstAdForEdit(page) {
-  const clicked = await page.evaluate(() => {
-    const candidates = Array.from(document.querySelectorAll('a, button'));
-    const target = candidates.find((el) => {
-      const text = (el.innerText || '').trim();
-      const href = el.getAttribute('href') || '';
-      return /edit|modify|editar/i.test(text) || /\/(posts|ads)\/[^/]+/i.test(href);
-    });
-    if (target) {
-      target.click();
-      return true;
-    }
-    return false;
-  });
-
-  if (clicked) {
-    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
-    await sleep(1500);
-  }
-  return clicked;
-}
-
 async function scrapeActiveAdData(page) {
   return page.evaluate(() => {
     const readValue = (selectors) => {
@@ -1329,10 +1307,8 @@ app.post('/api/profiles/:id/scrape', async (req, res) => {
   }
 
   try {
-    await controller.page.goto(MANAGE_POSTS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-    await openFirstAdForEdit(controller.page);
     const data = await scrapeActiveAdData(controller.page);
-    controller.log('📥 Datos del anuncio copiados desde el navegador.');
+    controller.log('📥 Datos leídos de la página actual (solo lectura).');
 
     const photoUrls = await scrapeActiveAdPhotos(controller.page);
     let photosPath = '';
