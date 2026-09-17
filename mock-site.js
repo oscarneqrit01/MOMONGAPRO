@@ -22,7 +22,14 @@ app.get('/', (request, response) => {
   if (scenario === 'session-closed') {
     return response.send(layout('Login', '<h2>Session expired</h2><form><input type="email"><input type="password"><button>Login</button></form>'));
   }
+  if (scenario === 'ban-url') {
+    return response.redirect('/users/ban_message');
+  }
   return response.redirect('/users/posts/list');
+});
+
+app.get('/users/ban_message', (request, response) => {
+  response.send(layout('Notice', '<h2>Notice</h2><p>Please contact support for more information.</p>'));
 });
 
 app.get('/users/posts/list', (request, response) => {

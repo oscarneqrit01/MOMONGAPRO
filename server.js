@@ -690,9 +690,12 @@ let emergencyActive = false;
 
 async function detectBlock(page) {
   try {
+    const url = page.url();
+    if (/\/users\/ban_message|\bban_message\b|\/banned\b|\/suspended\b/i.test(url)) return true;
+
     return await page.evaluate((patternsSource) => {
       const patterns = patternsSource.map((source) => new RegExp(source, 'i'));
-      const parts = [document.title || ''];
+      const parts = [document.title || '', window.location.href || ''];
 
       const selectors = [
         'h1', 'h2', 'h3',
@@ -1048,6 +1051,7 @@ async function doBump(page, controller) {
   ).then(() => true).catch(() => false);
 
   if (!confirmed) {
+    if (await checkForBlock(page, controller)) return false;
     controller.setCycleStage('error', 'No se confirmó success_publish.');
     controller.log('⚠️ El botón respondió, pero no se confirmó la publicación en 15 segundos.');
     return false;
@@ -1786,6 +1790,7 @@ async function deleteAndRepost(page, controller, options = {}) {
       break;
     }
     if (!confirmed) {
+      if (await checkForBlock(page, controller)) return false;
       controller.setCycleStage('error', 'No se confirmó success_publish.');
       controller.log('❌ El formulario se envió, pero no apareció la confirmación success_publish.');
       return false;
