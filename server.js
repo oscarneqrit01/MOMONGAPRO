@@ -1175,6 +1175,9 @@ async function doBump(page, controller) {
   controller.setCycleStage('completed', 'Bump confirmado.');
   controller.recordBump();
 
+  // Cerrar el modal "Success!" con OK para poder seguir
+  if (await dismissOkModal(page)) await sleep(1200);
+
   // Igual que la extensión: esperar y volver a la lista de posts.
   await sleep(1500);
   await returnToPostsList(page, controller);
@@ -1324,6 +1327,7 @@ async function bumpAllAdsOneByOne(page, controller) {
   controller.setCycleStage('completed', 'Bump confirmado.');
   controller.recordBump();
   saveState();
+  if (await dismissOkModal(page)) await sleep(1200);
   await returnToPostsList(page, controller);
   return true;
 }
@@ -1775,6 +1779,34 @@ async function confirmTokenPopup(page) {
   }).catch(() => false);
 }
 
+// Modal "Success!" con botón OK (success_publish / imágenes revisadas): hay que cerrarlo para seguir
+async function dismissOkModal(page) {
+  return page.evaluate(() => {
+    const byId = document.getElementById('success-ok');
+    if (byId && byId.offsetParent !== null) { byId.click(); return true; }
+    const byImg = Array.from(document.querySelectorAll('img')).find((el) => el.offsetParent !== null && /buttonok/i.test(el.getAttribute('src') || ''));
+    if (byImg) { byImg.click(); return true; }
+    const byText = Array.from(document.querySelectorAll('button, a, input[type="button"], div'))
+      .find((el) => el.offsetParent !== null && /^ok$/i.test((el.innerText || el.value || '').trim()));
+    if (byText) { byText.click(); return true; }
+    return false;
+  }).catch(() => false);
+}
+
+// Página de imágenes pendientes (/users/pendingImages/...): hay que pulsar el botón OK
+async function clickPendingImagesOk(page) {
+  return page.evaluate(() => {
+    const ok = document.getElementById('success-ok')
+      || Array.from(document.querySelectorAll('img, button, a, div'))
+        .find((el) => el.offsetParent !== null && /buttonok|success-ok/i.test(`${el.id || ''} ${el.getAttribute('src') || ''}`));
+    if (ok) {
+      ok.click();
+      return true;
+    }
+    return false;
+  }).catch(() => false);
+}
+
 // Detecta si el sitio rechazó el captcha (aunque el modal esté oculto)
 async function detectCaptchaRejected(page) {
   return page.evaluate(() => {
@@ -1947,13 +1979,24 @@ async function deleteAndRepost(page, controller, options = {}) {
         return false;
       }
 
-      // Espera la confirmación (proxy lento). Si aparece el popup de tokens (ciudad de pago), lo confirma.
+      // Espera la confirmación (proxy lento). Maneja el popup de tokens y la página de imágenes pendientes.
       const deadline = Date.now() + 60000;
       let tokenLogged = false;
+      let okLogged = false;
+      let sawPendingImages = false;
       let captchaRejected = false;
       while (Date.now() < deadline && !confirmed) {
         confirmed = await page.evaluate(() => window.location.href.includes('success_publish')).catch(() => false);
         if (confirmed) break;
+
+        if (page.url().includes('pendingImages')) sawPendingImages = true;
+
+        if (await clickPendingImagesOk(page)) {
+          if (!okLogged) {
+            controller.log('🖼️ Página de imágenes pendientes; pulsando OK...');
+            okLogged = true;
+          }
+        }
 
         if (await confirmTokenPopup(page)) {
           if (!tokenLogged) {
@@ -1964,6 +2007,12 @@ async function deleteAndRepost(page, controller, options = {}) {
 
         captchaRejected = await detectCaptchaRejected(page);
         if (captchaRejected) break;
+
+        // Si ya salimos de la página de imágenes pendientes tras pulsar OK, se considera publicado.
+        if (sawPendingImages && okLogged && !page.url().includes('pendingImages')) {
+          confirmed = true;
+          break;
+        }
 
         await sleep(1500);
       }
@@ -1990,6 +2039,12 @@ async function deleteAndRepost(page, controller, options = {}) {
     controller.cycleDeleteCompleted = false;
     saveState();
     controller.recordBump();
+
+    // Cerrar el modal "Success!" con OK para poder seguir
+    if (await dismissOkModal(page)) {
+      controller.log('✅ Modal de confirmación cerrado; continúo con el ciclo.');
+      await sleep(1200);
+    }
 
     // Volver a la lista de anuncios (MY POSTS)
     const wentBack = await clickTextControl(page, ['my\\s+posts', 'mis\\s+anuncios'], 6000);

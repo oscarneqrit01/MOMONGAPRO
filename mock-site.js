@@ -65,6 +65,13 @@ app.get('/users/posts/list', (request, response) => {
   `));
 });
 
+app.get('/users/pendingImages/:id', (request, response) => {
+  response.send(layout('Pending images', `
+    <h2>Processing images</h2>
+    <img id="success-ok" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="OK" style="cursor:pointer" onclick="window.location.href='/users/posts/success_publish/${request.params.id}'">
+  `));
+});
+
 app.get('/users/posts/bump/:id', (request, response) => {
   response.redirect(`/users/posts/success_publish/${request.params.id}`);
 });
@@ -75,6 +82,10 @@ app.get('/users/posts/success_publish/:id', (request, response) => {
   response.send(layout('Post published', `
     <h2>Sweet!</h2>
     <p>Your Post has been published!</p>
+    <div id="success-modal">
+      <p>Success! THANKS Your images/videos have been reviewed.</p>
+      <img id="success-ok" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="OK" style="cursor:pointer" onclick="document.getElementById('success-modal').remove()">
+    </div>
     <a href="/users/posts/list">VIEW POST</a>
     <a href="/users/posts/list">MY POSTS</a>
   `));
@@ -105,7 +116,9 @@ app.get('/users/posts/create', (request, response) => {
   // Escenario que imita MegaPersonals: el botón de publicar es un div sin texto.
   const publishControl = scenario === 'input-send'
     ? `<div id="input_send" class="myButton previewbutton" onclick="window.location.href='${publishTarget}'">&nbsp;</div>`
-    : scenario === 'token-popup'
+    : scenario === 'pending-images'
+      ? `<div id="input_send" class="myButton previewbutton" onclick="window.location.href='/users/pendingImages/53005648'">&nbsp;</div>`
+      : scenario === 'token-popup'
       ? `<div id="input_send" class="myButton previewbutton" onclick="document.getElementById('confirmModal_enoughTokens').style.display='block'">&nbsp;</div>
          <div id="confirmModal_enoughTokens" style="display:none"><button id="createBumpPostUrl" onclick="window.location.href='${publishTarget}'">OK</button></div>`
       : '<button type="submit">Publish</button>';
