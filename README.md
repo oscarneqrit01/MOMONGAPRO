@@ -139,7 +139,7 @@ Es un **array** de perfiles:
 | `email` / `password` | Credenciales de login del sitio. |
 | `intervalMinutes` | Minutos entre bumps. |
 | `url` | Página inicial. |
-| `supportEmail` | (Opcional) Correo de soporte del sitio. Si está, al detectar un bloqueo se abre el correo (Outlook) con la apelación lista. |
+| `supportEmail` | (Opcional) Correo de soporte del sitio. Por defecto `support@megapersonals.eu`. Al detectar un bloqueo se abre el correo (Outlook) con la apelación lista. |
 | `supportUrl` | (Opcional) URL de contacto/soporte del sitio para apelaciones. Por defecto `<sitio>/contact`. |
 | `adDetails` | Ciudad, edad, texto y carpeta de fotos del anuncio. |
 | `proxy` | Proxy HTTP del perfil. |

@@ -3,6 +3,7 @@
     "id": "PerfilEjemplo",
     "port": 9333,
     "apiKey2Captcha": "TU_CLAVE_DE_2CAPTCHA",
+    "supportEmail": "support@megapersonals.eu",
     "email": "",
     "password": "",
     "intervalMinutes": 16,

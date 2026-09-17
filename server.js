@@ -13,6 +13,7 @@ const CONFIG_PATH = process.env.CONFIG_PATH || path.join(__dirname, 'config.json
 const STATE_PATH = process.env.STATE_PATH || path.join(__dirname, 'state.json');
 const PORT = process.env.PORT || 3000;
 const DEFAULT_URL = 'https://megapersonals.eu/';
+const DEFAULT_SUPPORT_EMAIL = 'support@megapersonals.eu';
 
 function siteUrls(controller) {
   const configuredUrl = controller?.cfg?.url || DEFAULT_URL;
@@ -780,7 +781,7 @@ async function captureBlockEvidence(page, controller, reason) {
       url,
       siteUrl: controller.cfg.url || DEFAULT_URL,
       supportUrl: controller.cfg.supportUrl || '',
-      supportEmail: controller.cfg.supportEmail || '',
+      supportEmail: controller.cfg.supportEmail || DEFAULT_SUPPORT_EMAIL,
       stage: controller.cycleStage,
       detail: controller.cycleDetail,
       at: now.toISOString(),
@@ -800,7 +801,7 @@ async function captureBlockEvidence(page, controller, reason) {
     controller.log(`📸 Evidencia del bloqueo guardada en logs/appeals/${pngName}`);
     io.emit('block-evidence', record);
 
-    if (record.supportEmail && controller.cfg.autoAppeal !== false) {
+    if (controller.cfg.autoAppeal !== false) {
       const { outlookUrl } = buildAppealDraft(record);
       if (outlookUrl) {
         controller.log(`📧 Abriendo el correo para apelar a ${record.supportEmail}...`);
@@ -834,7 +835,7 @@ function openExternalUrl(url) {
 
 function buildAppealDraft(record) {
   const account = (record && record.account) || '(tu correo)';
-  const supportEmail = (record && record.supportEmail) || '';
+  const supportEmail = (record && record.supportEmail) || DEFAULT_SUPPORT_EMAIL;
   const when = record && record.at ? new Date(record.at).toUTCString() : '';
   let supportUrl = (record && record.supportUrl) || '';
   if (!supportUrl && record && record.siteUrl) {
