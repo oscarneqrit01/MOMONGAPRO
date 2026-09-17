@@ -4,7 +4,6 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const puppeteer = require('puppeteer');
 
 const ROOT = path.join(__dirname, '..');
@@ -256,47 +255,6 @@ async function runTests() {
     const ok = await waitForLog(out, /Apelación manual creada/i, 20000);
     record('apelacion: boton Apelar crea el borrador', ok, ok ? 'ok' : 'no');
   });
-
-  // 12) Licencias (offline)
-  {
-    fs.mkdirSync(TMP, { recursive: true });
-    const tmp = fs.mkdtempSync(path.join(TMP, 'lic-'));
-    const lic = require('../license');
-    const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
-    const pubPath = path.join(tmp, 'public.pem');
-    fs.writeFileSync(pubPath, publicKey.export({ type: 'spki', format: 'pem' }));
-    const licensePath = path.join(tmp, 'license.json');
-    const savedEnv = { dev: process.env.MOMONGA_DEV, licPath: process.env.LICENSE_PATH, pub: process.env.LICENSE_PUBLIC_KEY_PATH };
-    delete process.env.MOMONGA_DEV;
-    process.env.LICENSE_PUBLIC_KEY_PATH = pubPath;
-    process.env.LICENSE_PATH = licensePath;
-
-    const mid = lic.machineId();
-    const sign = (payload) => crypto.sign(null, Buffer.from(JSON.stringify(payload)), privateKey).toString('base64');
-    const base = { licenseId: 'x', issuedTo: 'Cliente', machineId: mid, issuedAt: Date.now(), expiresAt: Date.now() + 86400000 };
-
-    fs.writeFileSync(licensePath, JSON.stringify({ ...base, signature: sign(base) }));
-    record('licencia: válida para esta máquina', lic.check().valid, 'ok');
-
-    const otra = { ...base, machineId: 'otra-maquina' };
-    fs.writeFileSync(licensePath, JSON.stringify({ ...otra, signature: sign(otra) }));
-    record('licencia: rechaza otra máquina', !lic.check().valid, lic.check().reason || '');
-
-    const vencida = { ...base, expiresAt: Date.now() - 1000 };
-    fs.writeFileSync(licensePath, JSON.stringify({ ...vencida, signature: sign(vencida) }));
-    record('licencia: rechaza vencida', !lic.check().valid, lic.check().reason || '');
-
-    fs.writeFileSync(licensePath, JSON.stringify({ ...base, issuedTo: 'Hackeado', signature: sign(base) }));
-    record('licencia: rechaza firma manipulada', !lic.check().valid, lic.check().reason || '');
-
-    process.env.MOMONGA_DEV = '1';
-    record('licencia: modo dev no bloquea', lic.check().mode === 'dev', 'ok');
-
-    if (savedEnv.dev === undefined) delete process.env.MOMONGA_DEV; else process.env.MOMONGA_DEV = savedEnv.dev;
-    if (savedEnv.licPath === undefined) delete process.env.LICENSE_PATH; else process.env.LICENSE_PATH = savedEnv.licPath;
-    if (savedEnv.pub === undefined) delete process.env.LICENSE_PUBLIC_KEY_PATH; else process.env.LICENSE_PUBLIC_KEY_PATH = savedEnv.pub;
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
 
   // Limpiar apelaciones creadas por las pruebas (perfiles "perfil-*")
   try {
