@@ -632,12 +632,17 @@ async function handleCaptchaIfPresent(page, controller) {
 }
 
 const BLOCK_PATTERNS = [
-  /account[^.]{0,40}(suspended|banned|blocked|disabled)/i,
-  /(suspended|banned|blocked|disabled)[^.]{0,40}account/i,
+  /account[^.]{0,40}(suspended|banned|blocked|disabled|deactivated|locked|restricted)/i,
+  /(suspended|banned|blocked|disabled|deactivated|locked|restricted)[^.]{0,40}account/i,
   /access denied/i,
-  /cuenta\s+(suspendida|bloqueada|baneada)/i,
-  /your account (has been|was) (suspended|banned|blocked|disabled)/i,
-  /you (have been|are) (suspended|banned|blocked)/i,
+  /cuenta\s+(suspendida|bloqueada|baneada|desactivada|restringida|cerrada)/i,
+  /your account (has been|was|is) (suspended|banned|blocked|disabled|deactivated|locked|restricted|under review)/i,
+  /you (have been|are) (suspended|banned|blocked|restricted)/i,
+  /(disabled|deactivated|locked|restricted) (your )?account/i,
+  /permanently (banned|suspended|blocked)/i,
+  /violat(e|ion|ed)[^.]{0,40}(terms|policy|policies)/i,
+  /has sido (suspendido|bloqueado|baneado)/i,
+  /su cuenta (ha sido|fue) (suspendida|bloqueada|baneada|desactivada)/i,
   /\bsuspended\b/i,
   /\bbanned\b/i,
   /\bblocked\b/i
@@ -656,7 +661,8 @@ async function detectBlock(page) {
         '[role="alert"]',
         '.alert', '.error', '.error-message', '.notice-error',
         '[class*="alert" i]', '[class*="error" i]', '[class*="suspend" i]', '[class*="banned" i]', '[class*="blocked" i]',
-        '[id*="alert" i]', '[id*="error" i]', '[id*="suspend" i]', '[id*="banned" i]'
+        '[class*="restrict" i]', '[class*="deactivat" i]', '[class*="denied" i]',
+        '[id*="alert" i]', '[id*="error" i]', '[id*="suspend" i]', '[id*="banned" i]', '[id*="blocked" i]'
       ];
 
       document.querySelectorAll(selectors.join(',')).forEach((el) => {
@@ -675,7 +681,7 @@ async function emergencyStop(reason, sourceId) {
   if (emergencyActive) return;
   emergencyActive = true;
 
-  const active = [...controllers.values()].filter((c) => c.started);
+  const active = [...controllers.values()].filter((c) => c.started || c.browser);
 
   console.error('');
   console.error('\x1b[41m\x1b[1m\x1b[37m' + ' 🚨  PARADA DE EMERGENCIA  🚨 ' + '\x1b[0m');

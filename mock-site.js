@@ -26,6 +26,13 @@ app.get('/', (request, response) => {
 });
 
 app.get('/users/posts/list', (request, response) => {
+  if (scenario === 'blocked') {
+    return response.send(layout('My Posts', `
+      <h2>Your account has been suspended</h2>
+      <p class="error">This account is blocked and cannot publish.</p>
+    `));
+  }
+
   if (scenario === 'multi-ads') {
     const adCount = Math.max(1, Number(process.env.MOCK_ADS || 3));
     const ads = Array.from({ length: adCount }, (_, index) => 52957356 + index).map((id, index) => `
