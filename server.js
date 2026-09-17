@@ -626,9 +626,9 @@ async function fillCaptchaInput(page, code, controller) {
   return false;
 }
 
-// Prepara la imagen del captcha: escala x3 + gris + binarizado (igual que el bot de reportes)
-async function preprocessCaptchaImage(page, pngBase64) {
-  return page.evaluate(async (dataUrl) => {
+// Prepara la imagen del captcha. binarize=false solo amplía (más fiel); binarize=true aplica gris+umbral.
+async function preprocessCaptchaImage(page, pngBase64, binarize = false) {
+  return page.evaluate(async (dataUrl, doBinarize) => {
     const img = new Image();
     img.src = dataUrl;
     await new Promise((resolve, reject) => {
@@ -643,18 +643,20 @@ async function preprocessCaptchaImage(page, pngBase64) {
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const data = imageData.data;
-    for (let i = 0; i < data.length; i += 4) {
-      const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
-      const value = avg < 140 ? 0 : 255;
-      data[i] = value;
-      data[i + 1] = value;
-      data[i + 2] = value;
+    if (doBinarize) {
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+      for (let i = 0; i < data.length; i += 4) {
+        const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
+        const value = avg < 140 ? 0 : 255;
+        data[i] = value;
+        data[i + 1] = value;
+        data[i + 2] = value;
+      }
+      ctx.putImageData(imageData, 0, 0);
     }
-    ctx.putImageData(imageData, 0, 0);
     return canvas.toDataURL('image/png').replace(/^data:image\/\w+;base64,/, '');
-  }, `data:image/png;base64,${pngBase64}`).catch(() => null);
+  }, `data:image/png;base64,${pngBase64}`, binarize).catch(() => null);
 }
 
 async function reloadImageCaptcha(page) {
@@ -679,10 +681,35 @@ async function solveImageCaptcha(apiKey, page, controller) {
   });
   if (!rawShot) return false;
 
-  const processed = await preprocessCaptchaImage(page, rawShot);
-  const imageBase64 = processed || rawShot;
+  const plain = await preprocessCaptchaImage(page, rawShot, false);
+  const binarized = await preprocessCaptchaImage(page, rawShot, true);
 
-  controller.log('🤖 Enviando CAPTCHA de imagen a 2Captcha...');
+  // 1º la imagen normal (más fiel); si 2Captcha no la resuelve, 2º la binarizada.
+  const attempts = [
+    { label: 'normal', image: plain || rawShot },
+    { label: 'binarizada', image: binarized }
+  ].filter((a) => a.image);
+
+  let lastError = null;
+  for (const attempt of attempts) {
+    try {
+      const code = await submitAndPollImage(apiKey, attempt.image, controller, 90000, attempt.label);
+      const filled = await fillCaptchaInput(page, code, controller);
+      if (!filled) {
+        throw new Error('2Captcha resolvió el código, pero no se pudo escribir en el campo del captcha.');
+      }
+      return code;
+    } catch (error) {
+      lastError = error;
+      controller.log(`⚠️ Intento de captcha (${attempt.label}) falló: ${error.message}`);
+    }
+  }
+
+  throw lastError || new Error('No se pudo resolver el CAPTCHA de imagen.');
+}
+
+async function submitAndPollImage(apiKey, imageBase64, controller, timeoutMs, label) {
+  controller.log(`🤖 Enviando CAPTCHA de imagen a 2Captcha (${label})...`);
   const submitRes = await twoCaptchaFetch(`${TWOCAPTCHA_BASE}/in.php`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -694,31 +721,27 @@ async function solveImageCaptcha(apiKey, page, controller) {
   }
 
   const taskId = submitData.request;
-  controller.log(`⏳ Tarea de imagen creada (${taskId}). Esperando resolución (hasta 5 min)...`);
+  controller.log(`⏳ Tarea de imagen creada (${taskId}). Esperando resolución (máx. ${Math.round(timeoutMs / 1000)}s)...`);
 
   const startedAt = Date.now();
-  // Revisa cada 2s: continúa en cuanto 2Captcha lo resuelve. El máximo es 5 min por si tarda.
-  for (let i = 0; i < 150; i++) {
+  let polls = 0;
+  while (Date.now() - startedAt < timeoutMs) {
     await sleep(2000);
+    polls += 1;
     const res = await twoCaptchaFetch(`${TWOCAPTCHA_BASE}/res.php?key=${apiKey}&action=get&id=${taskId}&json=1`);
     const data = await res.json();
     if (data.status === 1) {
-      const code = String(data.request || '').trim().toUpperCase();
-      const filled = await fillCaptchaInput(page, code, controller);
-      if (!filled) {
-        throw new Error('2Captcha resolvió el código, pero no se pudo escribir en el campo del captcha.');
-      }
-      return code;
+      return String(data.request || '').trim().toUpperCase();
     }
     if (data.request !== 'CAPCHA_NOT_READY') {
-      throw new Error(`Respuesta de error: ${data.request}`);
+      throw new Error(`2Captcha: ${data.request}`);
     }
-    if (i > 0 && i % 10 === 0) {
-      controller.log(`⏳ Aún esperando a 2Captcha... (${Math.round((Date.now() - startedAt) / 1000)}s)`);
+    if (polls % 10 === 0) {
+      controller.log(`⏳ Aún esperando a 2Captcha (${label})... (${Math.round((Date.now() - startedAt) / 1000)}s)`);
     }
   }
 
-  throw new Error('Tiempo de espera agotado para el CAPTCHA de imagen (5 min).');
+  throw new Error(`2Captcha no resolvió la imagen (${label}) en ${Math.round(timeoutMs / 1000)}s.`);
 }
 
 async function handleCaptchaIfPresent(page, controller) {
