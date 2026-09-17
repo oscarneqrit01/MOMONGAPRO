@@ -697,8 +697,9 @@ async function solveImageCaptcha(apiKey, page, controller) {
   controller.log(`⏳ Tarea de imagen creada (${taskId}). Esperando resolución (hasta 5 min)...`);
 
   const startedAt = Date.now();
-  for (let i = 0; i < 60; i++) {
-    await sleep(5000);
+  // Revisa cada 2s: continúa en cuanto 2Captcha lo resuelve. El máximo es 5 min por si tarda.
+  for (let i = 0; i < 150; i++) {
+    await sleep(2000);
     const res = await twoCaptchaFetch(`${TWOCAPTCHA_BASE}/res.php?key=${apiKey}&action=get&id=${taskId}&json=1`);
     const data = await res.json();
     if (data.status === 1) {
@@ -712,7 +713,7 @@ async function solveImageCaptcha(apiKey, page, controller) {
     if (data.request !== 'CAPCHA_NOT_READY') {
       throw new Error(`Respuesta de error: ${data.request}`);
     }
-    if (i > 0 && i % 3 === 0) {
+    if (i > 0 && i % 10 === 0) {
       controller.log(`⏳ Aún esperando a 2Captcha... (${Math.round((Date.now() - startedAt) / 1000)}s)`);
     }
   }
