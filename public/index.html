@@ -1187,6 +1187,7 @@
           <button class="btn btn-publish" id="publishAllBtn">Publicar en todos</button>
           <button class="btn btn-pause" id="pauseAllBtn">Pausar</button>
           <button class="btn btn-export" id="exportLogsBtn">Exportar logs</button>
+          <button class="btn btn-export" id="appealsBtn">Bloqueos detectados</button>
           <button class="btn btn-export" id="changePasswordBtn">Cambiar contraseña</button>
         </div>
 
@@ -1296,6 +1297,19 @@
     </form>
   </div>
 
+  <div class="modal-backdrop" id="appealsModal" role="dialog" aria-modal="true" aria-labelledby="appealsModalTitle">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="appealsModalTitle">Bloqueos detectados</h2>
+        <button class="modal-close" id="closeAppealsModalBtn" type="button" aria-label="Cerrar">&times;</button>
+      </div>
+      <div id="appealsList" style="max-height: 60vh; overflow: auto; display: grid; gap: 10px;"></div>
+      <div class="modal-actions">
+        <button class="cancel-btn" id="cancelAppealsModalBtn" type="button">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const socket = io();
     const profileStates = {};
@@ -1311,6 +1325,8 @@
     const passwordModal = document.getElementById('passwordModal');
     const passwordForm = document.getElementById('passwordForm');
     const passwordFormError = document.getElementById('passwordFormError');
+    const appealsModal = document.getElementById('appealsModal');
+    const appealsList = document.getElementById('appealsList');
     const pendingSettingsSaves = {};
 
     function openAddModal() {
@@ -1332,6 +1348,99 @@
 
     function closePasswordModal() {
       passwordModal.classList.remove('open');
+    }
+
+    function formatAppealDate(value) {
+      try { return new Date(value).toLocaleString(); } catch (_) { return value || ''; }
+    }
+
+    function renderAppeals(records) {
+      appealsList.innerHTML = '';
+      if (!records || records.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'color:#aaa;font-size:13px;padding:10px;';
+        empty.textContent = 'No hay bloqueos registrados.';
+        appealsList.appendChild(empty);
+        return;
+      }
+
+      records.forEach((record) => {
+        const item = document.createElement('div');
+        item.style.cssText = 'border:1px solid #2a2a40;border-radius:8px;padding:10px;background:#151522;';
+
+        const title = document.createElement('div');
+        title.style.cssText = 'font-weight:bold;color:#e74c3c;font-size:13px;margin-bottom:4px;';
+        title.textContent = `${record.profile || ''} · ${formatAppealDate(record.at)}`;
+
+        const meta = document.createElement('div');
+        meta.style.cssText = 'color:#bbb;font-size:12px;margin-bottom:6px;';
+        meta.textContent = `${record.account || 'sin correo'} · ${record.reason || ''}`;
+
+        const detail = document.createElement('div');
+        detail.style.cssText = 'color:#888;font-size:11px;margin-bottom:8px;word-break:break-word;';
+        detail.textContent = `${record.message || ''} ${record.url || ''}`.trim();
+
+        const actions = document.createElement('div');
+        actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+
+        if (record.screenshot) {
+          const view = document.createElement('button');
+          view.className = 'small-btn blue';
+          view.textContent = 'Ver captura';
+          view.addEventListener('click', () => window.open(`/api/appeals/${encodeURIComponent(record.screenshot)}`, '_blank'));
+          actions.appendChild(view);
+        }
+
+        const copy = document.createElement('button');
+        copy.className = 'small-btn green';
+        copy.textContent = 'Copiar apelación';
+        copy.addEventListener('click', async () => {
+          try {
+            const res = await fetch(`/api/appeals/${encodeURIComponent(record.id)}/draft`);
+            const data = await res.json();
+            if (!data.success) throw new Error(data.error || 'No se pudo generar la apelación.');
+            await navigator.clipboard.writeText(data.draft);
+            copy.textContent = '✅ Copiado';
+            setTimeout(() => { copy.textContent = 'Copiar apelación'; }, 2000);
+          } catch (error) {
+            alert('❌ ' + error.message);
+          }
+        });
+        actions.appendChild(copy);
+
+        const support = document.createElement('button');
+        support.className = 'small-btn';
+        support.textContent = 'Abrir soporte';
+        support.addEventListener('click', async () => {
+          try {
+            const res = await fetch(`/api/appeals/${encodeURIComponent(record.id)}/draft`);
+            const data = await res.json();
+            if (data.supportUrl) window.open(data.supportUrl, '_blank');
+            else alert('No se pudo determinar la URL de soporte del sitio.');
+          } catch (error) {
+            alert('❌ ' + error.message);
+          }
+        });
+        actions.appendChild(support);
+
+        item.append(title, meta, detail, actions);
+        appealsList.appendChild(item);
+      });
+    }
+
+    async function openAppealsModal() {
+      appealsModal.classList.add('open');
+      appealsList.textContent = 'Cargando...';
+      try {
+        const res = await fetch('/api/appeals');
+        renderAppeals(await res.json());
+      } catch (error) {
+        renderAppeals([]);
+      }
+    }
+
+    function closeAppealsModal() {
+      appealsModal.classList.remove('open');
     }
 
     async function loadProfiles() {
@@ -1981,6 +2090,17 @@
       } catch (error) {
         passwordFormError.textContent = error.message;
       }
+    });
+
+    document.getElementById('appealsBtn').addEventListener('click', openAppealsModal);
+    document.getElementById('closeAppealsModalBtn').addEventListener('click', closeAppealsModal);
+    document.getElementById('cancelAppealsModalBtn').addEventListener('click', closeAppealsModal);
+    appealsModal.addEventListener('click', (event) => {
+      if (event.target === appealsModal) closeAppealsModal();
+    });
+
+    socket.on('block-evidence', () => {
+      if (appealsModal.classList.contains('open')) openAppealsModal();
     });
 
     addProfileForm.addEventListener('submit', async (event) => {

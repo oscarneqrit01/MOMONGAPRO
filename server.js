@@ -166,6 +166,32 @@ app.post('/api/security/password', (req, res) => {
   }
 });
 
+function readAppealsIndex() {
+  try {
+    const data = JSON.parse(fs.readFileSync(path.join(APPEALS_DIR, 'index.json'), 'utf8'));
+    return Array.isArray(data) ? data : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+app.get('/api/appeals', (req, res) => {
+  res.json(readAppealsIndex().slice().reverse());
+});
+
+app.get('/api/appeals/:id/draft', (req, res) => {
+  const record = readAppealsIndex().find((item) => item.id === req.params.id);
+  if (!record) return res.status(404).json({ success: false, error: 'Bloqueo no encontrado.' });
+  res.json({ success: true, ...buildAppealDraft(record) });
+});
+
+app.get('/api/appeals/:file', (req, res) => {
+  const file = path.basename(req.params.file);
+  const full = path.join(APPEALS_DIR, file);
+  if (path.dirname(full) !== APPEALS_DIR || !fs.existsSync(full)) return res.status(404).end();
+  res.sendFile(full);
+});
+
 io.use((socket, next) => {
   const cookies = parseCookies(socket.handshake.headers.cookie);
   if (cookies[AUTH_COOKIE] === AUTH_TOKEN) return next();
@@ -184,6 +210,7 @@ function loadConfig() {
 }
 
 const LOGS_DIR = path.join(__dirname, 'logs');
+const APPEALS_DIR = path.join(LOGS_DIR, 'appeals');
 
 function logToFile(prefix, text) {
   try {
@@ -703,8 +730,99 @@ async function emergencyStop(reason, sourceId) {
   emergencyActive = false;
 }
 
+async function captureBlockEvidence(page, controller, reason) {
+  try {
+    fs.mkdirSync(APPEALS_DIR, { recursive: true });
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const id = `${controller.id}-${stamp}`;
+    const pngName = `${id}.png`;
+    const htmlName = `${id}.html`;
+
+    let url = '';
+    let message = '';
+    try {
+      url = page.url();
+      message = await page.evaluate(() => {
+        const selectors = ['h1', 'h2', 'h3', '[role="alert"]', '.alert', '.error', '[class*="error" i]', '[class*="alert" i]', '[class*="suspend" i]', '[class*="blocked" i]'];
+        const parts = [];
+        document.querySelectorAll(selectors.join(',')).forEach((el) => {
+          if (el && el.innerText) parts.push(el.innerText.replace(/\s+/g, ' ').trim());
+        });
+        return parts.join(' | ').slice(0, 500);
+      }).catch(() => '');
+    } catch (_) {}
+
+    try { await page.screenshot({ path: path.join(APPEALS_DIR, pngName) }); } catch (_) {}
+    try { fs.writeFileSync(path.join(APPEALS_DIR, htmlName), await page.content(), 'utf8'); } catch (_) {}
+
+    const record = {
+      id,
+      profile: controller.id,
+      account: controller.cfg.email || '',
+      reason,
+      message,
+      url,
+      siteUrl: controller.cfg.url || DEFAULT_URL,
+      supportUrl: controller.cfg.supportUrl || '',
+      stage: controller.cycleStage,
+      detail: controller.cycleDetail,
+      at: now.toISOString(),
+      screenshot: pngName,
+      html: htmlName
+    };
+
+    const indexPath = path.join(APPEALS_DIR, 'index.json');
+    let index = [];
+    try {
+      index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+      if (!Array.isArray(index)) index = [];
+    } catch (_) {}
+    index.push(record);
+    fs.writeFileSync(indexPath, `${JSON.stringify(index.slice(-200), null, 2)}\n`, 'utf8');
+
+    controller.log(`📸 Evidencia del bloqueo guardada en logs/appeals/${pngName}`);
+    io.emit('block-evidence', record);
+    return record;
+  } catch (error) {
+    try { controller.log(`No se pudo guardar la evidencia del bloqueo: ${error.message}`); } catch (_) {}
+    return null;
+  }
+}
+
+function buildAppealDraft(record) {
+  const account = (record && record.account) || '(tu correo)';
+  const when = record && record.at ? new Date(record.at).toUTCString() : '';
+  let supportUrl = (record && record.supportUrl) || '';
+  if (!supportUrl && record && record.siteUrl) {
+    try { supportUrl = `${new URL(record.siteUrl).origin}/contact`; } catch (_) { supportUrl = record.siteUrl; }
+  }
+  const draft = [
+    'Subject: Appeal - account suspended / blocked',
+    '',
+    'Hello,',
+    '',
+    `My account (${account}) appears to have been suspended or blocked. I believe this may be a mistake or the result of a false report, and I am requesting a manual review.`,
+    '',
+    'Details:',
+    `- Account: ${account}`,
+    `- Profile: ${(record && record.profile) || ''}`,
+    `- Date: ${when}`,
+    `- Page: ${(record && record.url) || ''}`,
+    `- Detected message: ${(record && (record.message || record.reason)) || ''}`,
+    '',
+    'I have always followed the platform terms of service. Please review my account and restore it if possible.',
+    '',
+    'Thank you,',
+    account
+  ].join('\n');
+  return { draft, supportUrl };
+}
+
 async function checkForBlock(page, controller) {
   if (await detectBlock(page)) {
+    await captureBlockEvidence(page, controller, 'La página muestra señales de suspensión/bloqueo.');
     await emergencyStop('La página muestra señales de suspensión/bloqueo.', controller.id);
     return true;
   }
