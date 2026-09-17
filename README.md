@@ -24,6 +24,9 @@ Panel multi-perfil para automatizar **bumps** y **reposts** en sitios tipo MegaP
 - **Salud del sistema**: panel con última operación, última OK, errores, avisos y bumps de hoy por perfil; además del saldo y consumo de 2Captcha.
 - **Auto-recuperación**: si Chrome se cae o se cierra a mitad de ciclo, el perfil lo reabre solo y continúa.
 - **Salud de proxies**: comprobación periódica; avisa si un proxy deja de responder.
+- **Sesión persistente**: cada perfil guarda su sesión (cookies) en `profiles/perfil_<id>`; si la sesión caduca, **re-loguea automáticamente** (si hay credenciales) antes de cada ciclo.
+- **Arranque escalonado**: "Iniciar todos"/"Abrir todos" no abren las cuentas a la vez (espera ~45 s entre cada una; ajustable con `START_STAGGER_SECONDS`).
+- **Detección de bloqueo**: página de bloqueo (scam-page), `/users/ban_message`, y **HTTP 403/429/5xx** (rate-limit) en la página principal.
 - **Límite de seguridad**: tope diario de publicaciones por perfil. El intervalo entre ciclos **siempre** se respeta tal cual lo configures (no se ajusta solo).
 - **Backups y cifrado**: copias de `config.json`/`state.json` en `backups/`, y los secretos (contraseñas, API key, proxy) se guardan **cifrados** (AES-256-GCM) en disco.
 - **Tests**: `npm test` corre una suite automática contra un sitio simulado (repost, captcha, rotación, bloqueo, tokens, límites, etc.).
@@ -171,6 +174,7 @@ Es un **array** de perfiles:
 | `TELEGRAM_CHAT_ID` | Chat/ID de destino en Telegram. | — |
 | `DISCORD_WEBHOOK_URL` | URL de webhook de Discord. | — |
 | `CHROME_BIN` | Ruta manual a Chrome (si la detección falla). | autodetectado |
+| `START_STAGGER_SECONDS` | Segundos base entre cada cuenta al arrancar todas (con variación ±40%). | `45` |
 
 En Windows puedes definirlas en `iniciar.bat`, por ejemplo:
 

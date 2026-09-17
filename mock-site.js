@@ -21,6 +21,10 @@ const layout = (title, body) => `<!doctype html>
 </html>`;
 
 app.get('/', (request, response) => {
+  if (scenario === 'http-403') {
+    response.status(403).send('<h1>403 Forbidden</h1>');
+    return;
+  }
   if (scenario === 'session-closed') {
     return response.send(layout('Login', '<h2>Session expired</h2><form><input type="email"><input type="password"><button>Login</button></form>'));
   }

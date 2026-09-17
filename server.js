@@ -1127,6 +1127,15 @@ async function createManualAppeal(controller, reason = 'Apelación manual desde 
 }
 
 async function checkForBlock(page, controller) {
+  // HTTP 403/429/5xx en el documento principal (rate-limit / bloqueo), aunque el texto no lo diga
+  if (controller && controller._httpBlock && Date.now() - controller._httpBlock.at < 60000) {
+    const { status, url } = controller._httpBlock;
+    controller._httpBlock = null;
+    await captureBlockEvidence(page, controller, `HTTP ${status} (rate-limit/bloqueo) en ${url}`);
+    await emergencyStop(`HTTP ${status} (posible rate-limit/bloqueo).`, controller.id);
+    return true;
+  }
+
   if (await detectBlock(page)) {
     await captureBlockEvidence(page, controller, 'La página muestra señales de suspensión/bloqueo.');
     await emergencyStop('La página muestra señales de suspensión/bloqueo.', controller.id);
@@ -1247,6 +1256,31 @@ async function loginIfNeeded(page, controller) {
 
   await sleep(3000);
   await checkForBlock(page, controller);
+}
+
+// Revisa si la sesión murió y, si hay credenciales, vuelve a iniciar sesión.
+async function ensureSession(page, controller) {
+  try {
+    const state = await page.evaluate(() => {
+      const hasLoginFields = Boolean(document.querySelector('input[type="password"], input[type="email"]'));
+      const url = window.location.href;
+      const text = document.body ? document.body.innerText : '';
+      const loginish = /login|sign in|session expired|sesión/i.test(text) || /\/login|reset_user_password/i.test(url);
+      return { hasLoginFields, loginish };
+    }).catch(() => ({ hasLoginFields: false, loginish: false }));
+
+    if (state.hasLoginFields && state.loginish) {
+      if (!controller.cfg.email || !controller.cfg.password) {
+        controller.warn('La sesión se cerró y no hay credenciales guardadas para re-loguear.');
+        return false;
+      }
+      controller.log('🔐 La sesión se cerró; iniciando sesión de nuevo...');
+      await loginIfNeeded(page, controller);
+      await sleep(2500);
+      return true;
+    }
+  } catch (_) {}
+  return false;
 }
 
 async function clickBumpButton(page) {
@@ -1960,6 +1994,9 @@ async function deleteAndRepost(page, controller, options = {}) {
       controller.log('🗑️ Iniciando ciclo de borrado del anuncio actual...');
       await page.goto(urls.manage, { waitUntil: 'networkidle2', timeout: 60000 });
 
+      if (await ensureSession(page, controller)) {
+        await page.goto(urls.manage, { waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {});
+      }
       if (await checkForBlock(page, controller)) return false;
 
       const deleteClicked = await page.evaluate(() => {
@@ -2666,6 +2703,19 @@ emitActive() {
 
     const page = await browser.newPage();
 
+    // Detección de rate-limit/bloqueo por HTTP en el documento principal (403/429/5xx)
+    page.on('response', (response) => {
+      try {
+        if (response.frame() !== page.mainFrame()) return;
+        const status = response.status();
+        if (status === 403 || status === 429 || status >= 500) {
+          this._httpBlock = { status, url: response.url(), at: Date.now() };
+        } else if (status >= 200 && status < 400) {
+          this._httpBlock = null;
+        }
+      } catch (_) {}
+    });
+
     if (proxy && proxy.host && proxy.username !== undefined && proxy.password !== undefined) {
       await page.authenticate({ username: proxy.username, password: proxy.password });
       this.log('Auth del proxy configurada.');
@@ -2768,13 +2818,14 @@ emitActive() {
 
       if (await checkForBlock(page, this)) return false;
 
-      const sessionClosed = await page.evaluate(() => {
+      await ensureSession(page, this);
+      const stillClosed = await page.evaluate(() => {
         const hasLoginFields = Boolean(document.querySelector('input[type="password"], input[type="email"]'));
         return hasLoginFields && /login|sign in|session expired|sesión/i.test(document.body?.innerText || '');
       }).catch(() => false);
-      if (sessionClosed) {
+      if (stillClosed) {
         this.setCycleStage('error', 'Sesión cerrada; inicia sesión manualmente.');
-        this.log('❌ La sesión está cerrada. Inicia sesión manualmente antes de continuar.');
+        this.log('❌ La sesión está cerrada y no se pudo re-loguear (revisa las credenciales del perfil).');
         this.emitState('error');
         return false;
       }
@@ -2970,6 +3021,8 @@ emitActive() {
       this.log(`Recarga fallida: ${error.message}`);
     }
 
+    // Revisa la sesión antes de operar; si murió, re-loguea.
+    await ensureSession(this.page, this);
     if (await checkForBlock(this.page, this)) return;
 
     if (this.settings.rotateAds) {
@@ -3114,6 +3167,8 @@ emitActive() {
       this.log(`Recarga fallida: ${error.message}`);
     }
 
+    // Revisa la sesión antes de operar; si murió, re-loguea.
+    await ensureSession(this.page, this);
     if (await checkForBlock(this.page, this)) return;
 
     if (this.settings.rotateAds) {
@@ -3522,8 +3577,25 @@ io.on('connection', (socket) => {
   }
   io.emit('active-count', { active });
 
+  // Arranque escalonado: no abrir todas las cuentas a la vez (evita correlación multicuenta)
+  function staggerSeconds() {
+    const base = Number(process.env.START_STAGGER_SECONDS) || 45;
+    const jitter = 0.6 + Math.random() * 0.8; // 60% - 140%
+    return Math.max(5, Math.round(base * jitter));
+  }
+
+  function forEachStaggered(action) {
+    let acc = 0;
+    for (const c of controllers.values()) {
+      const wait = acc;
+      if (wait === 0) action(c);
+      else setTimeout(() => action(c), wait * 1000);
+      acc += staggerSeconds();
+    }
+  }
+
   socket.on('open-all', () => {
-    for (const c of controllers.values()) c.open();
+    forEachStaggered((c) => c.open());
   });
 
   socket.on('open-profile', (id) => {
@@ -3532,7 +3604,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('start-all', () => {
-    for (const c of controllers.values()) c.start();
+    forEachStaggered((c) => c.start());
   });
 
   socket.on('pause-all', () => {

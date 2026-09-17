@@ -64,6 +64,7 @@ async function withStack(opts, fn) {
     env: {
       ...process.env, PORT: String(panelPort), PANEL_PASSWORD: 'testpass', PANEL_AUTH_PATH: authPath,
       CONFIG_PATH: configPath, STATE_PATH: statePath, SECRETS_KEY_PATH: keyPath, MOMONGA_NO_OPEN: '1',
+      ...(opts.env || {}),
       ...(useFake2Captcha ? { TWOCAPTCHA_BASE: `http://127.0.0.1:${fakePort}` } : {})
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -220,7 +221,30 @@ async function runTests() {
     record('limites: el intervalo no sube solo (respeta 1 min)', !excedido, excedido ? 'se infló' : 'ok');
   });
 
-  // 9) Apelación manual desde el panel
+  // 9) Detección de bloqueo por HTTP 403
+  await withStack({
+    scenario: 'http-403',
+    profiles: [{ id: 'perfil-403', email: 'cuenta@ejemplo.com', settings: { rotateAds: true, randomizedDelay: false, publishOnStart: false } }]
+  }, async ({ page, out }) => {
+    await startFirst(page);
+    const ok = await waitForLog(out, /PARADA DE EMERGENCIA/i, 60000);
+    record('bloqueo: detecta HTTP 403 y para todo', ok && /HTTP 403/i.test(out()), ok ? 'ok' : 'no');
+  });
+
+  // 10) Arranque escalonado (no abrir todas a la vez)
+  await withStack({
+    scenario: 'normal', env: { START_STAGGER_SECONDS: '1' },
+    profiles: [{ id: 'perfil-st1' }, { id: 'perfil-st2' }, { id: 'perfil-st3' }]
+  }, async ({ page, out }) => {
+    await startAll(page);
+    await sleep(2500);
+    const early = (out().match(/Navegador abierto/g) || []).length;
+    for (let i = 0; i < 40 && (out().match(/Navegador abierto/g) || []).length < 3; i++) await sleep(1500);
+    const total = (out().match(/Navegador abierto/g) || []).length;
+    record('arranque escalonado: no abre todas a la vez', early <= 1 && total >= 3, `a 2.5s=${early}, total=${total}`);
+  });
+
+  // 11) Apelación manual desde el panel
   await withStack({
     scenario: 'normal',
     profiles: [{ id: 'perfil-appeal', email: 'cuenta@ejemplo.com' }]
