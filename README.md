@@ -24,7 +24,7 @@ Panel multi-perfil para automatizar **bumps** y **reposts** en sitios tipo MegaP
 - **Salud del sistema**: panel con última operación, última OK, errores, avisos y bumps de hoy por perfil; además del saldo y consumo de 2Captcha.
 - **Auto-recuperación**: si Chrome se cae o se cierra a mitad de ciclo, el perfil lo reabre solo y continúa.
 - **Salud de proxies**: comprobación periódica; avisa si un proxy deja de responder.
-- **Límites de seguridad**: tope diario de publicaciones por perfil y **modo conservador** (+50% de intervalo).
+- **Límite de seguridad**: tope diario de publicaciones por perfil. El intervalo entre ciclos **siempre** se respeta tal cual lo configures (no se ajusta solo).
 - **Backups y cifrado**: copias de `config.json`/`state.json` en `backups/`, y los secretos (contraseñas, API key, proxy) se guardan **cifrados** (AES-256-GCM) en disco.
 - **Tests**: `npm test` corre una suite automática contra un sitio simulado (repost, captcha, rotación, bloqueo, tokens, límites, etc.).
 
@@ -147,7 +147,6 @@ Es un **array** de perfiles:
 | `url` | Página inicial. |
 | `supportEmail` | (Opcional) Correo de soporte del sitio. Por defecto `support@megapersonals.eu`. Al detectar un bloqueo se abre el correo (Outlook) con la apelación lista. |
 | `limits.dailyLimit` | Tope diario de publicaciones (0 = sin límite). |
-| `limits.conservativeMode` | `true` aumenta un 50% el intervalo entre ciclos. |
 | `supportUrl` | (Opcional) URL de contacto/soporte del sitio para apelaciones. Por defecto `<sitio>/contact`. |
 | `adDetails` | Ciudad, edad, texto y carpeta de fotos del anuncio. |
 | `proxy` | Proxy HTTP del perfil. |

@@ -426,6 +426,7 @@
     .small-btn.orange { background: linear-gradient(180deg, #f7a42d, #df891d); }
     .small-btn.red { background: linear-gradient(180deg, #ef5658, #d5413d); }
     .small-btn.blue { background: linear-gradient(180deg, #2ea5ec, #147fe0); }
+  .small-btn.amber { background: linear-gradient(180deg, #f7b733, #f39c12); color: #1a1a2e; }
 
     .subpanel {
       margin-top: 18px;
@@ -1620,6 +1621,7 @@
             <button class="small-btn red" data-action="stop" data-id="${profile.id}">Detener</button>
             <button class="small-btn blue" data-action="publish" data-id="${profile.id}">Publicar Ya</button>
             <button class="small-btn dark" data-action="retry" data-id="${profile.id}">Reintentar Paso</button>
+            <button class="small-btn amber" data-action="appeal" data-id="${profile.id}">Apelar</button>
           </div>
 
           <div class="subpanel">
@@ -1679,10 +1681,6 @@
                   <div>
                     <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">LÍMITE DIARIO DE PUBLICACIONES (0 = sin límite)</label>
                     <input type="number" min="0" id="dailyLimit-${profile.id}" value="${profile.limits?.dailyLimit || 0}" style="width: 100%; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
-                  </div>
-                  <div>
-                    <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">MODO CONSERVADOR (+50% de intervalo)</label>
-                    <input type="checkbox" id="conservative-${profile.id}" ${profile.limits?.conservativeMode ? 'checked' : ''}> <span style="color:#aaa;font-size:11px;">Activar</span>
                   </div>
                 </div>
 
@@ -1822,6 +1820,7 @@
           if (action === 'stop') socket.emit('stop-profile', id);
           if (action === 'publish') socket.emit('publish-profile', id);
           if (action === 'retry') socket.emit('retry-profile', id);
+          if (action === 'appeal') socket.emit('appeal-profile', id);
           if (action === 'save-interval') {
             const minInput = document.querySelector(`[data-bump-min="${id}"]`);
             const maxInput = document.querySelector(`[data-bump-max="${id}"]`);
@@ -1976,7 +1975,7 @@
         supportEmail: document.getElementById(`supportEmail-${profileId}`).value,
         limits: {
           dailyLimit: Number(document.getElementById(`dailyLimit-${profileId}`)?.value) || 0,
-          conservativeMode: Boolean(document.getElementById(`conservative-${profileId}`)?.checked)
+          conservativeMode: false
         },
         email: document.getElementById(`email-${profileId}`).value,
         password: document.getElementById(`pass-${profileId}`).value,
@@ -2137,7 +2136,7 @@
       showEmergencyBanner((data && data.reason) || 'Bloqueo detectado');
     });
 
-    function showComplianceBanner(id, reasons, min, max) {
+    function showComplianceBanner(id, reasons) {
       let banner = document.getElementById('compliance-banner');
       if (!banner) {
         banner = document.createElement('div');
@@ -2145,14 +2144,14 @@
         banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99998;background:#f39c12;color:#1a1a2e;padding:12px 16px;text-align:center;font-weight:bold;font-size:14px;box-shadow:0 4px 14px rgba(0,0,0,.4);';
         document.body.appendChild(banner);
       }
-      banner.textContent = `⚠️ Cumplimiento [${id}]: ${reasons}. Ritmo reducido a ${min}–${max} min para evitar reportes.`;
+      banner.textContent = `⚠️ Cumplimiento [${id}]: ${reasons}. (El intervalo se mantiene como lo configuraste.)`;
       clearTimeout(banner._hideTimer);
       banner._hideTimer = setTimeout(() => banner.remove(), 20000);
     }
 
     socket.on('compliance-warning', (data) => {
       if (!data) return;
-      showComplianceBanner(data.id, (data.reasons || []).join('; '), data.min, data.max);
+      showComplianceBanner(data.id, (data.reasons || []).join('; '));
     });
 
     document.getElementById('startAllBtn').addEventListener('click', async () => {

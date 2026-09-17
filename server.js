@@ -1070,6 +1070,52 @@ function buildAppealDraft(record) {
   return { draft, subject, body, supportUrl, supportEmail, outlookUrl, mailtoUrl };
 }
 
+// Apelación manual desde el panel (sin captura, por si no se detectó el bloqueo)
+async function createManualAppeal(controller, reason = 'Apelación manual desde el panel.') {
+  try {
+    fs.mkdirSync(APPEALS_DIR, { recursive: true });
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const id = `${controller.id}-${stamp}`;
+    const record = {
+      id,
+      profile: controller.id,
+      account: controller.cfg.email || controller.id,
+      reason,
+      message: reason,
+      url: controller.page ? controller.page.url() : '',
+      siteUrl: controller.cfg.url || DEFAULT_URL,
+      supportUrl: controller.cfg.supportUrl || '',
+      supportEmail: controller.cfg.supportEmail || DEFAULT_SUPPORT_EMAIL,
+      stage: controller.cycleStage,
+      detail: controller.cycleDetail,
+      at: now.toISOString(),
+      screenshot: '',
+      html: ''
+    };
+    const indexPath = path.join(APPEALS_DIR, 'index.json');
+    let index = [];
+    try {
+      index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+      if (!Array.isArray(index)) index = [];
+    } catch (_) {}
+    index.push(record);
+    fs.writeFileSync(indexPath, `${JSON.stringify(index.slice(-200), null, 2)}\n`, 'utf8');
+    const { outlookUrl } = buildAppealDraft(record);
+    if (outlookUrl && controller.cfg.autoAppeal !== false) {
+      controller.log(`📧 Abriendo el correo para apelar a ${record.supportEmail}...`);
+      openExternalUrl(outlookUrl);
+    }
+    controller.log('📨 Apelación manual creada (revisa "Bloqueos detectados").');
+    io.emit('block-evidence', record);
+    return record;
+  } catch (error) {
+    try { controller.log(`No se pudo crear la apelación: ${error.message}`); } catch (_) {}
+    return null;
+  }
+}
+
 async function checkForBlock(page, controller) {
   if (await detectBlock(page)) {
     await captureBlockEvidence(page, controller, 'La página muestra señales de suspensión/bloqueo.');
@@ -1145,32 +1191,10 @@ function assessComplianceRisk(controller) {
   return reasons;
 }
 
-function applyComplianceSlowdown(controller, reasons) {
-  const factor = 1.5;
-  const currentMin = Math.max(1, Number(controller.cfg.bumpMinMinutes || controller.cfg.intervalMinutes || 16));
-  const currentMax = Math.max(currentMin, Number(controller.cfg.bumpMaxMinutes || currentMin));
-  const newMin = Math.min(Math.round(currentMin * factor), 240);
-  const newMax = Math.min(Math.round(currentMax * factor), 300);
-
-  if (newMin === currentMin && newMax === currentMax) return false;
-
-  controller.cfg.bumpMinMinutes = newMin;
-  controller.cfg.bumpMaxMinutes = newMax;
-
-  try {
-    const config = loadConfig();
-    const profile = config.find((item) => item.id === controller.id);
-    if (profile) {
-      profile.bumpMinMinutes = newMin;
-      profile.bumpMaxMinutes = newMax;
-      saveConfig(config);
-    }
-  } catch (_) {
-    // si no se puede persistir, igual se aplica en memoria
-  }
-
-  controller.log(`⚠️ Cumplimiento: ${reasons.join('; ')}. Bajo el ritmo automáticamente a ${newMin}–${newMax} min.`);
-  io.emit('compliance-warning', { id: controller.id, reasons, min: newMin, max: newMax, at: Date.now() });
+// Solo AVISA del riesgo de reportes; NO cambia el intervalo (se respeta el que configures).
+function warnComplianceRisk(controller, reasons) {
+  controller.log(`⚠️ Cumplimiento: ${reasons.join('; ')}. (Se mantiene el intervalo configurado.)`);
+  io.emit('compliance-warning', { id: controller.id, reasons, at: Date.now() });
   return true;
 }
 
@@ -2746,6 +2770,7 @@ emitActive() {
       }
 
       await loginIfNeeded(page, this);
+      if (await checkForBlock(page, this)) return false;
       this.log('Página lista. Pulsa Iniciar para comenzar el conteo.');
       this.setCycleStage('ready', 'Página lista.');
       this.emitState('ready');
@@ -2799,9 +2824,20 @@ emitActive() {
     this.startCountdown();
     this.scheduleNext();
     this.scheduleRepost();
+    this.startBlockWatch();
     this.emitActive();
     this.emitState('running');
     saveState();
+  }
+
+  startBlockWatch() {
+    if (this._blockWatch) clearInterval(this._blockWatch);
+    this._blockWatch = setInterval(async () => {
+      if (this.started && !this.paused && this.browser && this.page) {
+        await checkForBlock(this.page, this);
+      }
+    }, 45000);
+    if (this._blockWatch.unref) this._blockWatch.unref();
   }
 
   pause() {
@@ -2810,9 +2846,11 @@ emitActive() {
     if (this._cycleTimer) clearTimeout(this._cycleTimer);
     if (this._countdownTimer) clearInterval(this._countdownTimer);
     if (this._repostTimer) clearTimeout(this._repostTimer);
+    if (this._blockWatch) clearInterval(this._blockWatch);
     this._cycleTimer = null;
     this._countdownTimer = null;
     this._repostTimer = null;
+    this._blockWatch = null;
     this.log('⏸ Pausado.');
     io.emit('timer', { id: this.id, time: null });
     io.emit('repost-timer', { id: this.id, time: null });
@@ -2826,6 +2864,7 @@ emitActive() {
     this.startCountdown();
     this.scheduleNext();
     this.scheduleRepost();
+    this.startBlockWatch();
     this.emitState('running');
   }
 
@@ -2836,9 +2875,11 @@ emitActive() {
     if (this._cycleTimer) clearTimeout(this._cycleTimer);
     if (this._countdownTimer) clearInterval(this._countdownTimer);
     if (this._repostTimer) clearTimeout(this._repostTimer);
+    if (this._blockWatch) clearInterval(this._blockWatch);
     this._cycleTimer = null;
     this._countdownTimer = null;
     this._repostTimer = null;
+    this._blockWatch = null;
     if (this.browser) {
       await this.browser.close().catch(() => {});
     }
@@ -2873,15 +2914,14 @@ emitActive() {
     const min = Math.max(1, this.cfg.bumpMinMinutes || this.cfg.intervalMinutes || 16);
     const max = Math.max(min, this.cfg.bumpMaxMinutes || min);
 
-    // Exacto igual que la extensión: obtenerIntervaloAleatorio()
+    // Exacto igual que la extensión: obtenerIntervaloAleatorio() — siempre dentro del rango configurado
     const minMs = min * 60 * 1000;
     const maxMs = max * 60 * 1000;
-    let waitMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
-    if (this.limits.conservativeMode) waitMs = Math.round(waitMs * 1.5);
+    const waitMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
 
     this._nextBumpAt = Date.now() + waitMs;
     const minutes = Math.round(waitMs / 60000);
-    this.log(`Próximo bump en ~${minutes} min (rango ${min}–${max} min)${this.limits.conservativeMode ? ' [conservador]' : ''}.`);
+    this.log(`Próximo bump en ~${minutes} min (rango ${min}–${max} min).`);
     io.emit('timer', { id: this.id, time: mmss(waitMs) });
 
     this._cycleTimer = setTimeout(() => this.bumpCycle(), waitMs);
@@ -2911,7 +2951,7 @@ emitActive() {
     this.log('Iniciando ciclo de bump...');
 
     const risk = assessComplianceRisk(this);
-    if (risk.length > 0) applyComplianceSlowdown(this, risk);
+    if (risk.length > 0) warnComplianceRisk(this, risk);
 
     try {
       await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -2983,7 +3023,7 @@ emitActive() {
     }
 
     const risk = assessComplianceRisk(this);
-    if (risk.length > 0) applyComplianceSlowdown(this, risk);
+    if (risk.length > 0) warnComplianceRisk(this, risk);
 
     this.log('🔄 Iniciando ciclo automático de borrado y republicación...');
     this._operationPromise = deleteAndRepost(this.page, this);
@@ -3055,7 +3095,7 @@ emitActive() {
     this.log('📢 Publicación manual solicitada...');
 
     const risk = assessComplianceRisk(this);
-    if (risk.length > 0) applyComplianceSlowdown(this, risk);
+    if (risk.length > 0) warnComplianceRisk(this, risk);
 
     try {
       await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -3522,6 +3562,11 @@ io.on('connection', (socket) => {
   socket.on('retry-profile', (id) => {
     const controller = controllers.get(id);
     if (controller) controller.retryCycle();
+  });
+
+  socket.on('appeal-profile', (id) => {
+    const controller = controllers.get(id);
+    if (controller) createManualAppeal(controller);
   });
 
   socket.on('update-interval', ({ id, min, max }) => {

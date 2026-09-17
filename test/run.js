@@ -198,16 +198,39 @@ async function runTests() {
     record('pendingImages: pulsa OK y publica', ok && /imágenes pendientes; pulsando OK/i.test(out()), ok ? 'ok' : 'no');
   });
 
-  // 8) Tope diario + modo conservador
+  // 8) Tope diario y que el intervalo respete lo configurado
   await withStack({
     scenario: 'normal',
-    profiles: [{ id: 'perfil-lim', intervalMinutes: 1, bumpMinMinutes: 1, bumpMaxMinutes: 1, settings: { rotateAds: false, randomizedDelay: false, publishOnStart: true }, limits: { dailyLimit: 1, conservativeMode: true } }]
+    profiles: [{ id: 'perfil-lim', intervalMinutes: 1, bumpMinMinutes: 1, bumpMaxMinutes: 1, settings: { rotateAds: false, randomizedDelay: false, publishOnStart: true }, limits: { dailyLimit: 1 } }]
   }, async ({ page, out }) => {
     await startFirst(page);
     const ok = await waitForLog(out, /Tope diario alcanzado/i, 180000);
     record('limites: tope diario bloquea', ok, ok ? 'ok' : 'no');
-    record('limites: modo conservador', /conservador/i.test(out()), 'ok');
+    const excedido = /Próximo bump en ~([2-9]|\d{2,}) min/.test(out());
+    record('limites: el intervalo no sube solo (respeta 1 min)', !excedido, excedido ? 'se infló' : 'ok');
   });
+
+  // 9) Apelación manual desde el panel
+  await withStack({
+    scenario: 'normal',
+    profiles: [{ id: 'perfil-appeal', email: 'cuenta@ejemplo.com' }]
+  }, async ({ page, out }) => {
+    await startFirst(page);
+    await sleep(3000);
+    await page.click('[data-action="appeal"]');
+    const ok = await waitForLog(out, /Apelación manual creada/i, 20000);
+    record('apelacion: boton Apelar crea el borrador', ok, ok ? 'ok' : 'no');
+  });
+
+  // Limpiar apelaciones creadas por las pruebas (perfiles "perfil-*")
+  try {
+    const indexPath = path.join(ROOT, 'logs', 'appeals', 'index.json');
+    if (fs.existsSync(indexPath)) {
+      const arr = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+      const kept = (Array.isArray(arr) ? arr : []).filter((r) => !/^perfil-/.test(r.profile || ''));
+      fs.writeFileSync(indexPath, `${JSON.stringify(kept, null, 2)}\n`, 'utf8');
+    }
+  } catch (_) {}
 
   // Resumen
   const failed = results.filter((r) => !r.pass);
