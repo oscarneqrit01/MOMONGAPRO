@@ -1305,7 +1305,8 @@
       </div>
       <div id="appealsList" style="max-height: 60vh; overflow: auto; display: grid; gap: 10px;"></div>
       <div class="modal-actions">
-        <button class="cancel-btn" id="cancelAppealsModalBtn" type="button">Cerrar</button>
+        <button class="cancel-btn" id="openAppealsFolderBtn" type="button">Abrir carpeta de evidencias</button>
+        <button class="save-btn" id="cancelAppealsModalBtn" type="button">Cerrar</button>
       </div>
     </div>
   </div>
@@ -1384,11 +1385,41 @@
         actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
 
         if (record.screenshot) {
+          const shotUrl = `/api/appeals/${encodeURIComponent(record.screenshot)}`;
+
           const view = document.createElement('button');
           view.className = 'small-btn blue';
           view.textContent = 'Ver captura';
-          view.addEventListener('click', () => window.open(`/api/appeals/${encodeURIComponent(record.screenshot)}`, '_blank'));
+          view.addEventListener('click', () => window.open(shotUrl, '_blank'));
           actions.appendChild(view);
+
+          const download = document.createElement('button');
+          download.className = 'small-btn';
+          download.textContent = 'Descargar captura';
+          download.addEventListener('click', () => {
+            const link = document.createElement('a');
+            link.href = shotUrl;
+            link.download = record.screenshot;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+          });
+          actions.appendChild(download);
+
+          const copyShot = document.createElement('button');
+          copyShot.className = 'small-btn';
+          copyShot.textContent = 'Copiar captura';
+          copyShot.addEventListener('click', async () => {
+            try {
+              const blob = await (await fetch(shotUrl)).blob();
+              await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+              copyShot.textContent = '✅ Copiada';
+              setTimeout(() => { copyShot.textContent = 'Copiar captura'; }, 2000);
+            } catch (error) {
+              alert('❌ No se pudo copiar la imagen. Usa "Descargar captura".');
+            }
+          });
+          actions.appendChild(copyShot);
         }
 
         const copy = document.createElement('button');
@@ -2097,6 +2128,16 @@
     document.getElementById('cancelAppealsModalBtn').addEventListener('click', closeAppealsModal);
     appealsModal.addEventListener('click', (event) => {
       if (event.target === appealsModal) closeAppealsModal();
+    });
+
+    document.getElementById('openAppealsFolderBtn').addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/appeals/open-folder', { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'No se pudo abrir la carpeta.');
+      } catch (error) {
+        alert('❌ ' + error.message);
+      }
     });
 
     socket.on('block-evidence', () => {

@@ -192,6 +192,17 @@ app.get('/api/appeals/:file', (req, res) => {
   res.sendFile(full);
 });
 
+app.post('/api/appeals/open-folder', (req, res) => {
+  try {
+    fs.mkdirSync(APPEALS_DIR, { recursive: true });
+    const cmd = process.platform === 'win32' ? 'explorer' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+    execFile(cmd, [APPEALS_DIR], { windowsHide: true }, () => {});
+    res.json({ success: true, path: APPEALS_DIR });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 io.use((socket, next) => {
   const cookies = parseCookies(socket.handshake.headers.cookie);
   if (cookies[AUTH_COOKIE] === AUTH_TOKEN) return next();
