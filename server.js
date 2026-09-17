@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
+const { execFile } = require('child_process');
 const express = require('express');
 const { Server } = require('socket.io');
 const puppeteer = require('puppeteer');
@@ -308,6 +309,42 @@ function hhmmss(ms) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function killChromeForProfileDir(profileDir) {
+  return new Promise((resolve) => {
+    if (process.platform === 'win32') {
+      const script = `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object { $_.CommandLine -like '*${profileDir}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+      execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true }, () => resolve());
+    } else {
+      execFile('pkill', ['-f', profileDir], () => resolve());
+    }
+  });
+}
+
+// Cierra una instancia previa de Chrome que esté bloqueando la carpeta del perfil
+async function closeStaleChrome(profileDir, port, log = () => {}) {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (res.ok) {
+      log(`🔌 Cerrando Chrome previo en el puerto ${port}...`);
+      const browser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${port}` });
+      await browser.close().catch(() => {});
+      await sleep(1500);
+    }
+  } catch (_) {
+    // El puerto no responde: se cierra por proceso.
+  }
+
+  await killChromeForProfileDir(profileDir);
+  await sleep(1500);
+}
+
+function isProfileLockError(message) {
+  return /already running|userDataDir|SingletonLock|profile appears to be in use|ProcessSingleton/i.test(String(message || ''));
 }
 
 function waitForAnySelector(page, selectors, timeout = 8000) {
@@ -1784,11 +1821,24 @@ emitActive() {
       this.log('Chrome del sistema no encontrado; usando el navegador de Puppeteer.');
     }
 
-    const browser = await puppeteer.launch({
+    const launch = () => puppeteer.launch({
       headless: false,
       ...(executablePath ? { executablePath } : {}),
       args
     });
+
+    let browser;
+    try {
+      browser = await launch();
+    } catch (error) {
+      if (isProfileLockError(error.message)) {
+        this.log('⚠️ Chrome ya estaba usando este perfil. Cerrando la instancia previa y reintentando...');
+        await closeStaleChrome(profileDir, this.cfg.port, (message) => this.log(message));
+        browser = await launch();
+      } else {
+        throw error;
+      }
+    }
 
     const page = await browser.newPage();
 
