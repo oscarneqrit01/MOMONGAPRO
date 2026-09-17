@@ -585,12 +585,31 @@ async function fillCaptchaInput(page, code, controller) {
   const selector = CAPTCHA_INPUT_SELECTORS.join(', ');
   const log = (msg) => { if (controller) controller.log(msg); };
 
-  const frames = page.frames();
-  for (const frame of frames) {
-    const setValue = (value) => frame.evaluate((sel, val) => {
+  for (const frame of page.frames()) {
+    const handle = await frame.$(selector).catch(() => null);
+    if (!handle) continue;
+
+    const checkValue = () => handle.evaluate((el, val) => String(el.value || '').trim() === val, code).catch(() => false);
+
+    // 1) Igual que el otro proyecto que funciona: teclado real (clear + send_keys).
+    try {
+      await handle.evaluate((el) => { try { el.scrollIntoView({ block: 'center' }); } catch (_) {} el.focus(); }).catch(() => {});
+      await handle.click({ clickCount: 3 }).catch(() => {});
+      await page.keyboard.down('Control').catch(() => {});
+      await page.keyboard.press('KeyA').catch(() => {});
+      await page.keyboard.up('Control').catch(() => {});
+      await page.keyboard.press('Backspace').catch(() => {});
+      await handle.type(code, { delay: 60 }).catch(() => {});
+      await sleep(300);
+      if (await checkValue()) return true;
+    } catch (_) {
+      // seguir con el respaldo
+    }
+
+    // 2) Respaldo: asignar el valor directamente.
+    const set = await frame.evaluate((sel, val) => {
       const input = document.querySelector(sel);
       if (!input) return false;
-      try { input.scrollIntoView({ block: 'center' }); } catch (_) {}
       input.focus();
       const setter = Object.getOwnPropertyDescriptor(input.__proto__, 'value')?.set;
       if (setter) setter.call(input, val); else input.value = val;
@@ -600,23 +619,9 @@ async function fillCaptchaInput(page, code, controller) {
       input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
       input.dispatchEvent(new Event('blur', { bubbles: true }));
       return true;
-    }, selector, value).catch(() => false);
-
-    const checkValue = () => frame.evaluate((sel, val) => {
-      const input = document.querySelector(sel);
-      return Boolean(input && String(input.value || '').trim() === val);
     }, selector, code).catch(() => false);
 
-    if (!(await setValue(code))) continue;
-
-    await sleep(400);
-    if (await checkValue()) return true;
-
-    // Respaldo: escribir con teclado real (algunos sitios lo exigen)
-    const handle = await frame.$(selector).catch(() => null);
-    if (handle) {
-      await handle.click({ clickCount: 3 }).catch(() => {});
-      await handle.type(code, { delay: 50 }).catch(() => {});
+    if (set) {
       await sleep(300);
       if (await checkValue()) return true;
     }
@@ -681,19 +686,19 @@ async function solveImageCaptcha(apiKey, page, controller) {
   });
   if (!rawShot) return false;
 
-  const plain = await preprocessCaptchaImage(page, rawShot, false);
   const binarized = await preprocessCaptchaImage(page, rawShot, true);
 
-  // 1º la imagen normal (más fiel); si 2Captcha no la resuelve, 2º la binarizada.
+  // Igual que el otro proyecto que funciona: 1º la imagen CRUDA tal cual (sin procesar).
+  // Si 2Captcha no la resuelve en 60s, 2º intento con la binarizada.
   const attempts = [
-    { label: 'normal', image: plain || rawShot },
+    { label: 'original', image: rawShot },
     { label: 'binarizada', image: binarized }
   ].filter((a) => a.image);
 
   let lastError = null;
   for (const attempt of attempts) {
     try {
-      const code = await submitAndPollImage(apiKey, attempt.image, controller, 90000, attempt.label);
+      const code = await submitAndPollImage(apiKey, attempt.image, controller, 60000, attempt.label);
       const filled = await fillCaptchaInput(page, code, controller);
       if (!filled) {
         throw new Error('2Captcha resolvió el código, pero no se pudo escribir en el campo del captcha.');
