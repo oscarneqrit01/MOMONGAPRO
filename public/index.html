@@ -1310,6 +1310,7 @@
     const passwordModal = document.getElementById('passwordModal');
     const passwordForm = document.getElementById('passwordForm');
     const passwordFormError = document.getElementById('passwordFormError');
+    const pendingSettingsSaves = {};
 
     function openAddModal() {
       formError.textContent = '';
@@ -1556,9 +1557,13 @@
       for (const id of Object.keys(profileRepostTimers)) updateRepostTimer(id, profileRepostTimers[id]);
 
       profilesEl.querySelectorAll('[data-action]').forEach(button => {
-        button.addEventListener('click', () => {
+        button.addEventListener('click', async () => {
           const id = button.dataset.id;
           const action = button.dataset.action;
+
+          if (pendingSettingsSaves[id]) {
+            await pendingSettingsSaves[id].catch(() => {});
+          }
 
           if (action === 'open') socket.emit('open-profile', id);
           if (action === 'start') socket.emit('start-profile', id);
@@ -1607,7 +1612,7 @@
             settings[option.dataset.setting] = option.checked;
           });
 
-          try {
+          const save = (async () => {
             const response = await fetch(`/api/profiles/${encodeURIComponent(profileId)}/settings`, {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
@@ -1617,9 +1622,16 @@
               const result = await response.json();
               throw new Error(result.error || 'No se pudo guardar la opción.');
             }
+          })();
+
+          pendingSettingsSaves[profileId] = save;
+          try {
+            await save;
           } catch (error) {
             input.checked = !input.checked;
             console.error(error.message);
+          } finally {
+            if (pendingSettingsSaves[profileId] === save) delete pendingSettingsSaves[profileId];
           }
         });
       });
@@ -1863,7 +1875,8 @@
       showEmergencyBanner((data && data.reason) || 'Bloqueo detectado');
     });
 
-    document.getElementById('startAllBtn').addEventListener('click', () => {
+    document.getElementById('startAllBtn').addEventListener('click', async () => {
+      await Promise.all(Object.values(pendingSettingsSaves).map((save) => save.catch(() => {})));
       socket.emit('start-all');
     });
 
