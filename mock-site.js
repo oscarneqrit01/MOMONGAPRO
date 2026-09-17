@@ -102,6 +102,10 @@ app.get('/users/posts/create', (request, response) => {
   const onSubmit = scenario === 'captcha-pending'
     ? `event.preventDefault();fetch('/record-captcha?value='+encodeURIComponent(document.getElementById('captcha_code').value)).then(()=>{window.location.href='${publishTarget}'});`
     : `event.preventDefault();window.location.href='${publishTarget}'`;
+  // Escenario que imita MegaPersonals: el botón de publicar es un div sin texto.
+  const publishControl = scenario === 'input-send'
+    ? `<div id="input_send" class="myButton previewbutton" onclick="window.location.href='${publishTarget}'">&nbsp;</div>`
+    : '<button type="submit">Publish</button>';
   response.send(layout('Create post', `
     <h2>Create post</h2>
     <form id="post-form" onsubmit="${onSubmit}">
@@ -118,7 +122,7 @@ app.get('/users/posts/create', (request, response) => {
       <div id="step-two" hidden>
         ${photoInput}
         ${captchaInput}
-        <button type="submit">Publish</button>
+        ${publishControl}
       </div>
     </form>
   `));

@@ -1885,6 +1885,13 @@ async function deleteAndRepost(page, controller, options = {}) {
       let published = await clickTextControl(page, ['publish', 'post\\s+ad', 'publicar', 'crear anuncio'], 10000);
       if (!published) {
         published = await page.evaluate(() => {
+          // Botón real de MegaPersonals: <div id="input_send" class="myButton previewbutton"> (sin texto)
+          const direct = document.getElementById('input_send')
+            || document.querySelector('.myButton.previewbutton');
+          if (direct && direct.offsetParent !== null) {
+            direct.click();
+            return true;
+          }
           const form = document.querySelector('form');
           const submit = form && form.querySelector('button[type="submit"], input[type="submit"]');
           if (submit && submit.offsetParent !== null && !submit.disabled) {
@@ -1892,7 +1899,7 @@ async function deleteAndRepost(page, controller, options = {}) {
             return true;
           }
           const any = Array.from(document.querySelectorAll('button, input[type="submit"], a'))
-            .find((el) => el.offsetParent !== null && !el.disabled && /publish|post\s*ad|submit|publicar/i.test(`${el.innerText || ''} ${el.value || ''}`));
+            .find((el) => el.offsetParent !== null && !el.disabled && /publish|post\s*ad|submit|publicar|send/i.test(`${el.innerText || ''} ${el.value || ''} ${el.id || ''}`));
           if (any) {
             any.click();
             return true;
