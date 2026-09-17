@@ -448,20 +448,104 @@ async function solveCaptcha(apiKey, siteKey, pageUrl, page) {
   }
 }
 
-async function handleCaptchaIfPresent(page, controller) {
-  const siteKey = await detectCaptchaSiteKey(page);
-  if (!siteKey) return true;
+async function markImageCaptcha(page) {
+  return page.evaluate(() => {
+    const fields = Array.from(document.querySelectorAll('input, textarea'));
+    const input = fields.find((item) => /captcha|code from|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`));
+    if (!input) return false;
 
-  const apiKey = controller.cfg.apiKey2Captcha;
-  if (!apiKey || /^AQU[IÍ]/i.test(apiKey)) {
-    controller.log('CAPTCHA detectado pero falta la clave apiKey2Captcha del perfil en la configuración.');
-    return false;
+    const elements = Array.from(document.querySelectorAll('img, canvas'));
+    const visible = elements.filter((el) => el.offsetParent !== null && el.getBoundingClientRect().width > 10);
+    const byName = visible.find((el) => /captcha|verif|code/i.test(`${el.src || ''} ${el.id || ''} ${el.className || ''} ${el.alt || ''}`));
+    const bySize = visible.find((el) => {
+      const rect = el.getBoundingClientRect();
+      return rect.width >= 40 && rect.width <= 420 && rect.height >= 20 && rect.height <= 160;
+    });
+    const image = byName || bySize;
+    if (!image) return false;
+
+    image.setAttribute('data-momonga-captcha-image', '1');
+    input.setAttribute('data-momonga-captcha-input', '1');
+    return true;
+  }).catch(() => false);
+}
+
+// Resuelve CAPTCHAs de imagen (los que no son reCAPTCHA) con 2Captcha
+async function solveImageCaptcha(apiKey, page, controller) {
+  if (!(await markImageCaptcha(page))) return false;
+
+  const imageHandle = await page.$('[data-momonga-captcha-image]');
+  if (!imageHandle) return false;
+  const box = await imageHandle.boundingBox();
+  if (!box || !box.width || !box.height) return false;
+
+  controller.log('🤖 Enviando CAPTCHA de imagen a 2Captcha...');
+  const imageBase64 = await page.screenshot({ clip: box, encoding: 'base64' });
+  const submitRes = await fetch('https://2captcha.com/in.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ key: apiKey, method: 'base64', body: imageBase64, json: '1' })
+  });
+  const submitData = await submitRes.json();
+  if (submitData.status !== 1) {
+    throw new Error(`Error al enviar imagen: ${submitData.request}`);
   }
 
-  controller.log('🧩 CAPTCHA detectado. Resolviendo con 2Captcha...');
-  const solved = await solveCaptcha(apiKey, siteKey, page.url(), page);
-  controller.log(solved ? '✅ CAPTCHA resuelto e inyectado.' : '❌ No se pudo resolver el CAPTCHA.');
-  return solved;
+  const taskId = submitData.request;
+  controller.log(`⏳ Tarea de imagen creada (${taskId}). Esperando resolución...`);
+
+  for (let i = 0; i < 24; i++) {
+    await sleep(5000);
+    const res = await fetch(`https://2captcha.com/res.php?key=${apiKey}&action=get&id=${taskId}&json=1`);
+    const data = await res.json();
+    if (data.status === 1) {
+      await page.evaluate((code) => {
+        const input = document.querySelector('[data-momonga-captcha-input]');
+        if (!input) return;
+        input.focus();
+        input.value = code;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      }, data.request);
+      return true;
+    }
+    if (data.request !== 'CAPCHA_NOT_READY') {
+      throw new Error(`Respuesta de error: ${data.request}`);
+    }
+  }
+
+  throw new Error('Tiempo de espera agotado para el CAPTCHA de imagen.');
+}
+
+async function handleCaptchaIfPresent(page, controller) {
+  const apiKey = controller.cfg.apiKey2Captcha;
+  const hasApiKey = Boolean(apiKey) && !/^AQU[IÍ]/i.test(apiKey);
+  const siteKey = await detectCaptchaSiteKey(page);
+
+  if (siteKey) {
+    if (!hasApiKey) {
+      controller.log('CAPTCHA detectado pero falta la clave apiKey2Captcha del perfil en la configuración.');
+      return false;
+    }
+    controller.log('🧩 CAPTCHA reCAPTCHA detectado. Resolviendo con 2Captcha...');
+    const solved = await solveCaptcha(apiKey, siteKey, page.url(), page);
+    controller.log(solved ? '✅ CAPTCHA resuelto e inyectado.' : '❌ No se pudo resolver el CAPTCHA.');
+    return solved;
+  }
+
+  if (!hasApiKey) return true;
+
+  try {
+    const imageSolved = await solveImageCaptcha(apiKey, page, controller);
+    if (imageSolved) {
+      controller.log('✅ CAPTCHA de imagen resuelto e introducido.');
+      return true;
+    }
+  } catch (error) {
+    controller.log(`❌ No se pudo resolver el CAPTCHA de imagen: ${error.message}`);
+  }
+
+  return true;
 }
 
 const BLOCK_PATTERNS = [
@@ -1063,23 +1147,32 @@ async function waitForManualCaptcha(page, controller) {
 
   if (!captcha.imageField && !captcha.recaptcha) return true;
 
-  if (captcha.recaptcha) {
-    controller.setCycleStage('captcha', 'Resolviendo CAPTCHA con 2Captcha.');
-    controller.log('🧩 CAPTCHA reCAPTCHA detectado. Intentando resolver automáticamente con 2Captcha...');
-    await handleCaptchaIfPresent(page, controller);
-    const tokenReady = await page.waitForFunction(() => {
-      const recaptcha = document.querySelector('textarea[name="g-recaptcha-response"], textarea#g-recaptcha-response');
-      return Boolean(recaptcha && recaptcha.value.trim());
-    }, { timeout: 10000 }).then(() => true).catch(() => false);
-    if (tokenReady) {
-      controller.setCycleStage('captcha', 'CAPTCHA resuelto automáticamente.');
-      controller.log('✅ CAPTCHA resuelto e inyectado automáticamente.');
-      return true;
-    }
+  controller.setCycleStage('captcha', 'CAPTCHA detectado.');
+  controller.log(`🧩 CAPTCHA detectado (reCAPTCHA: ${captcha.recaptcha ? 'sí' : 'no'}, campo de código: ${captcha.imageField ? 'sí' : 'no'}). Intentando resolver con 2Captcha...`);
+
+  try {
+    fs.writeFileSync(path.join(LOGS_DIR, `dump-captcha-${controller.id}.html`), await page.content(), 'utf8');
+  } catch (_) {
+    // sin dump disponible
+  }
+
+  await handleCaptchaIfPresent(page, controller);
+
+  const solvedAuto = await page.waitForFunction(() => {
+    const fields = Array.from(document.querySelectorAll('input, textarea'));
+    const imageField = fields.find((item) => /captcha|code from|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`));
+    const recaptcha = document.querySelector('textarea[name="g-recaptcha-response"], textarea#g-recaptcha-response');
+    return Boolean((imageField && imageField.value.trim()) || (recaptcha && recaptcha.value.trim()));
+  }, { timeout: 15000 }).then(() => true).catch(() => false);
+
+  if (solvedAuto) {
+    controller.setCycleStage('captcha', 'CAPTCHA resuelto automáticamente.');
+    controller.log('✅ CAPTCHA resuelto e introducido automáticamente.');
+    return true;
   }
 
   controller.setCycleStage('captcha', 'Esperando CAPTCHA manual.');
-  controller.log('🧩 CAPTCHA detectado. Introduce el código manualmente en Chrome; el proceso esperará hasta 5 minutos.');
+  controller.log('🧩 CAPTCHA no resuelto automáticamente. Introduce el código manualmente en Chrome; el proceso esperará hasta 5 minutos.');
   const solved = await page.waitForFunction(() => {
     const fields = Array.from(document.querySelectorAll('input, textarea'));
     const imageField = fields.find((item) => /captcha|code from|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`));

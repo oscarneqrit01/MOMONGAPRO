@@ -9,7 +9,7 @@ Panel multi-perfil para automatizar **bumps** y **reposts** en sitios tipo MegaP
 - **Multi-perfil**: cada perfil usa su propio `user-data-dir`, proxy y huella (zona horaria, idioma, geolocalización).
 - **Proxy blindado**: el proxy se aplica en Chrome (`--proxy-server` + `page.authenticate`) y también en la descarga de fotos (vía `undici` `ProxyAgent`), para no exponer la IP local.
 - **Validación de proxy** antes de arrancar: si el proxy no responde, no se lanza el perfil (no se gastan ciclos).
-- **Captcha**: resolución automática de reCAPTCHA (v2/v3) con 2Captcha.
+- **Captcha**: resolución automática de reCAPTCHA (v2/v3) y de captchas de imagen con 2Captcha. Si no puede resolverlo, espera la entrada manual.
 - **Bump / Delete & Repost**: ciclos automáticos configurables por intervalo.
 - **Auto-repost**: borra y republica cada N horas.
 - **Copia de anuncio**: extrae ciudad/edad/texto y descarga+limpia las fotos del anuncio actual (quita EXIF y altera ligeramente la imagen).
