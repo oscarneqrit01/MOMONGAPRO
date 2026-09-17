@@ -5,6 +5,7 @@ const port = Number(process.env.MOCK_PORT || 4100);
 const scenario = String(process.env.MOCK_SCENARIO || 'normal').trim().toLowerCase();
 let bumpCount = 0;
 let repostCount = 0;
+let bumpedIds = [];
 
 app.use(express.urlencoded({ extended: false }));
 
@@ -25,6 +26,19 @@ app.get('/', (request, response) => {
 });
 
 app.get('/users/posts/list', (request, response) => {
+  if (scenario === 'multi-ads') {
+    const ads = [52957356, 52957357, 52957358].map((id, index) => `
+      <div class="post_header">
+        <div class="post_title"><div class="post_title_caption">Anuncio ${index + 1}</div></div>
+        <a href="/users/posts/bump/${id}">Bump to Top</a>
+      </div>`).join('');
+    return response.send(layout('My Posts', `
+      <h2>My Posts</h2>
+      ${ads}
+      <p>Bumps confirmed: <strong>${bumpCount}</strong> | IDs: <strong>${bumpedIds.join(',')}</strong></p>
+    `));
+  }
+
   response.send(layout('My Posts', `
     <h2>My Posts</h2>
     <p id="post-status">Test ad is published.</p>
@@ -34,8 +48,13 @@ app.get('/users/posts/list', (request, response) => {
   `));
 });
 
+app.get('/users/posts/bump/:id', (request, response) => {
+  response.redirect(`/users/posts/success_publish/${request.params.id}`);
+});
+
 app.get('/users/posts/success_publish/:id', (request, response) => {
   bumpCount += 1;
+  if (/^\d+$/.test(request.params.id)) bumpedIds.push(request.params.id);
   response.send(layout('Post published', `
     <h2>Sweet!</h2>
     <p>Your Post has been published!</p>

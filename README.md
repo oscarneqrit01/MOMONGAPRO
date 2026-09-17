@@ -140,7 +140,7 @@ Es un **array** de perfiles:
 | `url` | Página inicial. |
 | `adDetails` | Ciudad, edad, texto y carpeta de fotos del anuncio. |
 | `proxy` | Proxy HTTP del perfil. |
-| `settings.rotateAds` | Si está activo, el ciclo hace borrar+republicar en vez de bump. |
+| `settings.rotateAds` | Si está activo, en cada ciclo hace **bump de los anuncios de la cuenta uno por uno** (rota entre todos, sin borrar). |
 | `settings.randomizedDelay` | Añade ±20% de variación al intervalo. |
 | `settings.publishOnStart` | Publica al pulsar Iniciar. |
 | `autoRepostActive` / `repostInterval` | Ciclo automático de borrado+republicación cada N horas. |

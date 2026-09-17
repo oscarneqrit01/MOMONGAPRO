@@ -10,7 +10,7 @@ const sharp = require('sharp');
 const { ProxyAgent, fetch: undiciFetch } = require('undici');
 
 const CONFIG_PATH = process.env.CONFIG_PATH || path.join(__dirname, 'config.json');
-const STATE_PATH = path.join(__dirname, 'state.json');
+const STATE_PATH = process.env.STATE_PATH || path.join(__dirname, 'state.json');
 const PORT = process.env.PORT || 3000;
 const DEFAULT_URL = 'https://megapersonals.eu/';
 
@@ -283,7 +283,8 @@ function saveState() {
         cycleStage: controller.cycleStage,
         cycleDetail: controller.cycleDetail,
         cycleUpdatedAt: controller.cycleUpdatedAt,
-        cycleDeleteCompleted: Boolean(controller.cycleDeleteCompleted)
+        cycleDeleteCompleted: Boolean(controller.cycleDeleteCompleted),
+        rotateQueue: Array.isArray(controller.rotateQueue) ? controller.rotateQueue : []
       };
     }
     fs.writeFileSync(STATE_PATH, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
@@ -866,6 +867,90 @@ async function performBump(page, controller) {
   if (await doBump(page, controller)) return;
 
   controller.log('No se encontró botón de bump/publicación.');
+}
+
+// Bump de todos los anuncios de la cuenta uno por uno (rota en cada ciclo, sin borrar)
+async function bumpAllAdsOneByOne(page, controller) {
+  const urls = siteUrls(controller);
+  controller.setCycleStage('publishing', 'Rotando anuncios de la cuenta.');
+  controller.log('🔄 Rotando: abriendo Mis Anuncios...');
+
+  try {
+    await page.goto(urls.manage, { waitUntil: 'networkidle2', timeout: 60000 });
+  } catch (error) {
+    controller.log(`No se pudo abrir Mis Anuncios: ${error.message}`);
+    return false;
+  }
+
+  if (await checkForBlock(page, controller)) return false;
+
+  const ads = await page.evaluate(() => {
+    const links = Array.from(document.querySelectorAll('a[href*="/users/posts/bump/"]'));
+    const seen = new Set();
+    const result = [];
+    for (const link of links) {
+      const match = (link.getAttribute('href') || '').match(/\/users\/posts\/bump\/(\d+)/);
+      if (!match || seen.has(match[1])) continue;
+      seen.add(match[1]);
+      let title = '';
+      const container = link.closest('.post_header, .post, li, tr, article, section, div');
+      if (container) {
+        const node = container.querySelector('.post_title_caption, .post_title, h2, h3');
+        if (node) title = (node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+      }
+      result.push({ id: match[1], title });
+    }
+    return result;
+  }).catch(() => []);
+
+  if (ads.length === 0) {
+    controller.log('⚠️ No se encontraron anuncios para rotar en Mis Anuncios.');
+    return false;
+  }
+
+  const currentIds = ads.map((ad) => ad.id);
+  const queue = (Array.isArray(controller.rotateQueue) ? controller.rotateQueue : [])
+    .filter((id) => currentIds.includes(id));
+  for (const id of currentIds) {
+    if (!queue.includes(id)) queue.push(id);
+  }
+  controller.rotateQueue = queue;
+
+  const targetId = queue.shift();
+  queue.push(targetId);
+  const position = currentIds.indexOf(targetId) + 1;
+  const target = ads.find((ad) => ad.id === targetId) || { id: targetId, title: '' };
+
+  controller.log(`🔄 Anuncio ${position}/${ads.length} (ID ${targetId}${target.title ? ` · ${target.title}` : ''}).`);
+
+  const clicked = await page.evaluate((postId) => {
+    const link = document.querySelector(`a[href*="/users/posts/bump/${postId}"]`);
+    if (!link) return false;
+    link.click();
+    return true;
+  }, targetId).catch(() => false);
+
+  if (!clicked) {
+    controller.log(`❌ No se encontró el botón de bump del anuncio ${targetId}.`);
+    return false;
+  }
+
+  const confirmed = await page.waitForFunction(
+    () => window.location.href.includes('success_publish'),
+    { timeout: 20000 }
+  ).then(() => true).catch(() => false);
+
+  if (!confirmed) {
+    controller.log(`⚠️ El bump del anuncio ${targetId} no se confirmó.`);
+    return false;
+  }
+
+  controller.log(`🚀 Bump confirmado (anuncio ${position}/${ads.length}, ID ${targetId}).`);
+  controller.setCycleStage('completed', 'Bump confirmado.');
+  controller.recordBump();
+  saveState();
+  await returnToPostsList(page, controller);
+  return true;
 }
 
 async function clickTextControl(page, patterns, timeout = 10000) {
@@ -1732,6 +1817,7 @@ class ProfileController {
     this.cycleDetail = '';
     this.cycleUpdatedAt = 0;
     this.cycleDeleteCompleted = false;
+    this.rotateQueue = [];
     this.stats = { totalBumps: 0, bumpsToday: 0, lastBumpAt: 0, date: todayKey() };
     this.settings = {
       rotateAds: Boolean(cfg.settings?.rotateAds),
@@ -1974,7 +2060,7 @@ emitActive() {
     if (this.settings.publishOnStart) {
       this.log('Publicación al iniciar activada.');
       if (this.settings.rotateAds) {
-        await deleteAndRepost(this.page, this);
+        await bumpAllAdsOneByOne(this.page, this);
       } else {
         await performBump(this.page, this);
       }
@@ -2098,7 +2184,7 @@ emitActive() {
     if (await checkForBlock(this.page, this)) return;
 
     if (this.settings.rotateAds) {
-      await deleteAndRepost(this.page, this);
+      await bumpAllAdsOneByOne(this.page, this);
     } else {
       await performBump(this.page, this);
     }
@@ -2231,7 +2317,7 @@ emitActive() {
     if (await checkForBlock(this.page, this)) return;
 
     if (this.settings.rotateAds) {
-      await deleteAndRepost(this.page, this);
+      await bumpAllAdsOneByOne(this.page, this);
     } else {
       await performBump(this.page, this);
     }
@@ -2267,6 +2353,7 @@ function buildControllers() {
         controller.cycleDetail = saved.cycleDetail || '';
         controller.cycleUpdatedAt = Number(saved.cycleUpdatedAt) || 0;
         controller.cycleDeleteCompleted = Boolean(saved.cycleDeleteCompleted);
+        controller.rotateQueue = Array.isArray(saved.rotateQueue) ? saved.rotateQueue : [];
       }
       controllers.set(profile.id, controller);
     }

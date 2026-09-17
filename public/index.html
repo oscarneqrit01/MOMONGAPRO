@@ -1356,7 +1356,7 @@
         card.innerHTML = `
           <div class="profile-top">
             <span>Perfil</span>
-            <span>${profile.settings?.rotateAds ? 'REMOVE & REPOST' : 'BUMP'} · ${profile.proxy ? 'Proxy activo' : 'Sin proxy'}</span>
+            <span>${profile.settings?.rotateAds ? 'ROTAR ANUNCIOS (BUMP)' : 'BUMP'} · ${profile.proxy ? 'Proxy activo' : 'Sin proxy'}</span>
           </div>
 
           <div class="profile-name">
@@ -1415,7 +1415,7 @@
             <div class="checks">
               <label class="check-item">
                 <input type="checkbox" data-setting="rotateAds" data-id="${profile.id}" ${profile.settings?.rotateAds ? 'checked' : ''} />
-                <span>Rotar todos los anuncios de la cuenta uno por uno</span>
+                <span>Rotar todos los anuncios uno por uno (bump, sin borrar)</span>
               </label>
               <label class="check-item">
                 <input type="checkbox" data-setting="randomizedDelay" data-id="${profile.id}" ${profile.settings?.randomizedDelay ? 'checked' : ''} />
