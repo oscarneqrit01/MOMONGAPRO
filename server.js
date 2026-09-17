@@ -8,6 +8,7 @@ const { Server } = require('socket.io');
 const puppeteer = require('puppeteer');
 const sharp = require('sharp');
 const { ProxyAgent, fetch: undiciFetch } = require('undici');
+const license = require('./license');
 
 const CONFIG_PATH = process.env.CONFIG_PATH || path.join(__dirname, 'config.json');
 const STATE_PATH = process.env.STATE_PATH || path.join(__dirname, 'state.json');
@@ -3719,6 +3720,20 @@ async function checkProxiesHealth() {
     }
   }
 }
+
+// --- Licencia (offline) ---
+const licenseState = license.check();
+if (!licenseState.valid) {
+  console.error('');
+  console.error('❌ LICENCIA INVÁLIDA:', licenseState.reason);
+  console.error('   Este programa requiere una licencia válida (license.json).');
+  console.error('   Si eres el desarrollador: ejecuta con MOMONGA_DEV=1 o crea un archivo DEV en la carpeta.');
+  console.error('');
+  process.exit(1);
+}
+if (licenseState.mode === 'dev') console.log('🔓 Licencia: modo desarrollador (sin restricción).');
+else if (licenseState.mode === 'licensed') console.log(`🔑 Licencia válida para "${licenseState.license.issuedTo}".`);
+else if (licenseState.warning) console.log(`⚠️ ${licenseState.warning}`);
 
 server.listen(PORT, () => {
   pruneLogs();

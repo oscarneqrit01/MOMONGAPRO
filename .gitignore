@@ -11,6 +11,11 @@ panel-auth.json
 .secrets-key
 backups/
 test/.tmp/
+
+# Licencias: la clave privada, el archivo DEV y las licencias son del desarrollador
+keys/private.pem
+license.json
+DEV
 .env
 .env.*
 

@@ -185,6 +185,31 @@ set DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 
 ---
 
+## Licencias (para rentar/vender)
+
+El programa incluye un sistema de licencias **offline** (sin servidor). Cada licencia va **firmada** y atada a la **máquina** del cliente, con vencimiento.
+
+**Tú (desarrollador):**
+```bash
+node license-tools.js keygen     # crea keys/private.pem (SECRETA) y keys/public.pem
+node license-tools.js machine    # tu ID de máquina (para tu propia licencia, opcional)
+node license-tools.js issue --machine <ID_DEL_CLIENTE> --name "Cliente" --days 30
+```
+- El cliente ejecuta `node license-tools.js machine` y te manda su ID.
+- Generas `license.json` para ese ID y se lo entregas.
+- `--days 0` = sin vencimiento.
+
+**En tu PC nunca te bloquea:** crea un archivo `DEV` en la carpeta del proyecto (o arranca con `MOMONGA_DEV=1`). Ese archivo está en `.gitignore`, así que no viaja a los clientes.
+
+**Reglas:**
+- `keys/private.pem` **NUNCA** se comparte ni se sube. Con ella se firman las licencias.
+- `keys/public.pem` sí va con el programa (es pública).
+- `license.json` y `DEV` están en `.gitignore`.
+
+**Honestidad:** el código es JavaScript y, si se entrega, se puede leer. La licencia **bloquea el arranque** de copias sin permiso, pero para máxima protección conviene además **ofuscar** (javascript-obfuscator) o **empaquetar a binario** (`pkg`) antes de entregar.
+
+---
+
 ## Logs
 
 La actividad se guarda en `logs/AAAA-MM-DD.log` (uno por día) y se rotan conservando los últimos 30 días.
@@ -202,6 +227,9 @@ MOMONGAPRO/
 ├── iniciar.bat          # Lanzador de Windows
 ├── package.json
 ├── logs/                # (generado) registros diarios
+├── license.js           # verificación de licencias (offline)
+├── license-tools.js     # keygen / machine / issue (solo desarrollador)
+├── keys/                # (generado) public.pem va con el programa; private.pem es SECRETA
 ├── test/                # suite de pruebas (npm test)
 ├── profiles/            # (generado) sesiones de Chrome por perfil
 ├── backups/             # (generado) copias de config.json / state.json
