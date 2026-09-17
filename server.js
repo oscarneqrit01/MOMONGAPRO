@@ -451,9 +451,11 @@ async function solveCaptcha(apiKey, siteKey, pageUrl, page) {
 async function markImageCaptcha(page) {
   return page.evaluate(() => {
     const fields = Array.from(document.querySelectorAll('input, textarea'));
-    const input = fields.find((item) => /captcha|code from|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`));
+    const input = fields.find((item) => /captcha|code from|picture|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`))
+      || fields.find((item) => item.type === 'text' && !/email/i.test(`${item.name || ''} ${item.id || ''}`));
     if (!input) return false;
 
+    const known = document.getElementById('captcha_image_itself');
     const elements = Array.from(document.querySelectorAll('img, canvas'));
     const visible = elements.filter((el) => el.offsetParent !== null && el.getBoundingClientRect().width > 10);
     const byName = visible.find((el) => /captcha|verif|code/i.test(`${el.src || ''} ${el.id || ''} ${el.className || ''} ${el.alt || ''}`));
@@ -461,13 +463,52 @@ async function markImageCaptcha(page) {
       const rect = el.getBoundingClientRect();
       return rect.width >= 40 && rect.width <= 420 && rect.height >= 20 && rect.height <= 160;
     });
-    const image = byName || bySize;
+    const image = (known && known.offsetParent !== null ? known : null) || byName || bySize;
     if (!image) return false;
 
     image.setAttribute('data-momonga-captcha-image', '1');
     input.setAttribute('data-momonga-captcha-input', '1');
     return true;
   }).catch(() => false);
+}
+
+// Prepara la imagen del captcha: escala x3 + gris + binarizado (igual que el bot de reportes)
+async function preprocessCaptchaImage(page, pngBase64) {
+  return page.evaluate(async (dataUrl) => {
+    const img = new Image();
+    img.src = dataUrl;
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+    });
+    const scale = 3;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(img.width * scale));
+    canvas.height = Math.max(1, Math.round(img.height * scale));
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
+      const value = avg < 140 ? 0 : 255;
+      data[i] = value;
+      data[i + 1] = value;
+      data[i + 2] = value;
+    }
+    ctx.putImageData(imageData, 0, 0);
+    return canvas.toDataURL('image/png').replace(/^data:image\/\w+;base64,/, '');
+  }, `data:image/png;base64,${pngBase64}`).catch(() => null);
+}
+
+async function reloadImageCaptcha(page) {
+  await page.evaluate(() => {
+    const reload = document.getElementById('captchaReloadButton')
+      || Array.from(document.querySelectorAll('img')).find((el) => /reload|refresh/i.test(`${el.src || ''} ${el.id || ''} ${el.className || ''}`));
+    if (reload) reload.click();
+  }).catch(() => {});
 }
 
 // Resuelve CAPTCHAs de imagen (los que no son reCAPTCHA) con 2Captcha
@@ -479,8 +520,11 @@ async function solveImageCaptcha(apiKey, page, controller) {
   const box = await imageHandle.boundingBox();
   if (!box || !box.width || !box.height) return false;
 
+  const rawShot = await page.screenshot({ clip: box, encoding: 'base64' });
+  const processed = await preprocessCaptchaImage(page, rawShot);
+  const imageBase64 = processed || rawShot;
+
   controller.log('🤖 Enviando CAPTCHA de imagen a 2Captcha...');
-  const imageBase64 = await page.screenshot({ clip: box, encoding: 'base64' });
   const submitRes = await fetch('https://2captcha.com/in.php', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -499,15 +543,16 @@ async function solveImageCaptcha(apiKey, page, controller) {
     const res = await fetch(`https://2captcha.com/res.php?key=${apiKey}&action=get&id=${taskId}&json=1`);
     const data = await res.json();
     if (data.status === 1) {
-      await page.evaluate((code) => {
+      const code = String(data.request || '').trim().toUpperCase();
+      await page.evaluate((value) => {
         const input = document.querySelector('[data-momonga-captcha-input]');
         if (!input) return;
         input.focus();
-        input.value = code;
+        input.value = value;
         input.dispatchEvent(new Event('input', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
-      }, data.request);
-      return true;
+      }, code);
+      return code;
     }
     if (data.request !== 'CAPCHA_NOT_READY') {
       throw new Error(`Respuesta de error: ${data.request}`);
@@ -536,9 +581,9 @@ async function handleCaptchaIfPresent(page, controller) {
   if (!hasApiKey) return true;
 
   try {
-    const imageSolved = await solveImageCaptcha(apiKey, page, controller);
-    if (imageSolved) {
-      controller.log('✅ CAPTCHA de imagen resuelto e introducido.');
+    const code = await solveImageCaptcha(apiKey, page, controller);
+    if (code) {
+      controller.log(`✅ CAPTCHA de imagen resuelto e introducido: "${code}".`);
       return true;
     }
   } catch (error) {
@@ -1296,16 +1341,30 @@ async function deleteAndRepost(page, controller, options = {}) {
     if (!(await waitForManualCaptcha(page, controller))) return false;
 
     controller.setCycleStage('publishing', 'Publicando anuncio.');
-    const published = await clickTextControl(page, ['publish', 'post\\s+ad', 'publicar', 'crear anuncio'], 10000);
-    if (!published) {
-      controller.log('No se encontró el botón final de publicación.');
-      return false;
-    }
+    let confirmed = false;
+    for (let attempt = 1; attempt <= 3 && !confirmed; attempt++) {
+      const published = await clickTextControl(page, ['publish', 'post\\s+ad', 'publicar', 'crear anuncio'], 10000);
+      if (!published) {
+        controller.log('No se encontró el botón final de publicación.');
+        return false;
+      }
 
-    const confirmed = await page.waitForFunction(
-      () => window.location.href.includes('success_publish'),
-      { timeout: 20000 }
-    ).then(() => true).catch(() => false);
+      confirmed = await page.waitForFunction(
+        () => window.location.href.includes('success_publish'),
+        { timeout: 20000 }
+      ).then(() => true).catch(() => false);
+      if (confirmed) break;
+
+      const captchaError = await page.evaluate(() => /does not match|incorrect|captcha code|invalid captcha/i.test(document.body?.innerText || '')).catch(() => false);
+      if (captchaError && attempt < 3) {
+        controller.log(`⚠️ CAPTCHA rechazado (intento ${attempt}). Recargando y reintentando...`);
+        await reloadImageCaptcha(page);
+        await sleep(1500);
+        if (!(await waitForManualCaptcha(page, controller))) return false;
+        continue;
+      }
+      break;
+    }
     if (!confirmed) {
       controller.setCycleStage('error', 'No se confirmó success_publish.');
       controller.log('❌ El formulario se envió, pero no apareció la confirmación success_publish.');
