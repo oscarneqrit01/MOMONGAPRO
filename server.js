@@ -15,6 +15,7 @@ const PORT = process.env.PORT || 3000;
 const DEFAULT_URL = 'https://megapersonals.eu/';
 const DEFAULT_SUPPORT_EMAIL = 'support@megapersonals.eu';
 const TWOCAPTCHA_BASE = (process.env.TWOCAPTCHA_BASE || 'https://2captcha.com').replace(/\/+$/, '');
+const twoCaptchaStats = { solves: 0, fails: 0, balance: null, lastBalanceAt: 0 };
 
 function siteUrls(controller) {
   const configuredUrl = controller?.cfg?.url || DEFAULT_URL;
@@ -211,6 +212,84 @@ io.use((socket, next) => {
   next(new Error('unauthorized'));
 });
 
+// --- Backups y cifrado de secretos ---
+const BACKUPS_DIR = path.join(__dirname, 'backups');
+const SECRETS_KEY_PATH = process.env.SECRETS_KEY_PATH || path.join(__dirname, '.secrets-key');
+const BACKUPS_KEEP = 20;
+
+function backupFile(filePath, label) {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    fs.copyFileSync(filePath, path.join(BACKUPS_DIR, `${label}-${stamp}.json`));
+    const files = fs.readdirSync(BACKUPS_DIR).filter((f) => f.startsWith(`${label}-`)).sort();
+    while (files.length > BACKUPS_KEEP) fs.unlinkSync(path.join(BACKUPS_DIR, files.shift()));
+  } catch (_) {
+    // si falla el backup, no interrumpe
+  }
+}
+
+let _secretsKey = null;
+function secretsKey() {
+  if (_secretsKey) return _secretsKey;
+  try {
+    if (fs.existsSync(SECRETS_KEY_PATH)) {
+      const k = fs.readFileSync(SECRETS_KEY_PATH, 'utf8').trim();
+      if (/^[0-9a-f]{64}$/i.test(k)) {
+        _secretsKey = Buffer.from(k, 'hex');
+        return _secretsKey;
+      }
+    }
+  } catch (_) {}
+  const key = crypto.randomBytes(32);
+  try { fs.writeFileSync(SECRETS_KEY_PATH, key.toString('hex'), 'utf8'); } catch (_) {}
+  _secretsKey = key;
+  return _secretsKey;
+}
+
+function encryptSecret(value) {
+  const v = String(value == null ? '' : value);
+  if (!v || v.startsWith('enc:')) return v;
+  try {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', secretsKey(), iv);
+    const enc = Buffer.concat([cipher.update(v, 'utf8'), cipher.final()]);
+    return `enc:${Buffer.concat([iv, cipher.getAuthTag(), enc]).toString('base64')}`;
+  } catch (_) {
+    return v;
+  }
+}
+
+function decryptSecret(value) {
+  const v = String(value == null ? '' : value);
+  if (!v.startsWith('enc:')) return v;
+  try {
+    const raw = Buffer.from(v.slice(4), 'base64');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', secretsKey(), raw.subarray(0, 12));
+    decipher.setAuthTag(raw.subarray(12, 28));
+    return Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString('utf8');
+  } catch (_) {
+    return '';
+  }
+}
+
+function mapConfigSecrets(config, fn) {
+  return config.map((p) => {
+    const c = { ...p };
+    if (c.password) c.password = fn(c.password);
+    if (c.apiKey2Captcha) c.apiKey2Captcha = fn(c.apiKey2Captcha);
+    if (c.proxy && c.proxy.password) c.proxy = { ...c.proxy, password: fn(c.proxy.password) };
+    return c;
+  });
+}
+
+function saveConfig(config) {
+  backupFile(CONFIG_PATH, 'config');
+  const toWrite = mapConfigSecrets(config, encryptSecret);
+  fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(toWrite, null, 2)}\n`, 'utf8');
+}
+
 function loadConfig() {
   if (!fs.existsSync(CONFIG_PATH)) {
     throw new Error('Falta config.json. Crea el archivo con tus perfiles antes de lanzar el servidor.');
@@ -219,7 +298,7 @@ function loadConfig() {
   if (!Array.isArray(config) || config.length === 0) {
     throw new Error('config.json debe contener un array de perfiles.');
   }
-  return config;
+  return mapConfigSecrets(config, decryptSecret);
 }
 
 const LOGS_DIR = path.join(__dirname, 'logs');
@@ -327,6 +406,7 @@ function saveState() {
         rotateQueue: Array.isArray(controller.rotateQueue) ? controller.rotateQueue : []
       };
     }
+    backupFile(STATE_PATH, 'state');
     fs.writeFileSync(STATE_PATH, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
   } catch (error) {
     console.error('No se pudo guardar state.json:', error.message);
@@ -516,6 +596,7 @@ async function solveCaptcha(apiKey, siteKey, pageUrl, page) {
           }
         }, token);
 
+        twoCaptchaStats.solves += 1;
         return true;
       }
 
@@ -526,6 +607,7 @@ async function solveCaptcha(apiKey, siteKey, pageUrl, page) {
 
     throw new Error('Tiempo de espera agotado para el CAPTCHA.');
   } catch (error) {
+    twoCaptchaStats.fails += 1;
     console.error(`❌ Error en resolución automática: ${error.message}`);
     return false;
   }
@@ -739,9 +821,11 @@ async function submitAndPollImage(apiKey, imageBase64, controller, timeoutMs, la
     const res = await twoCaptchaFetch(`${TWOCAPTCHA_BASE}/res.php?key=${apiKey}&action=get&id=${taskId}&json=1`);
     const data = await res.json();
     if (data.status === 1) {
+      twoCaptchaStats.solves += 1;
       return String(data.request || '').trim().toUpperCase();
     }
     if (data.request !== 'CAPCHA_NOT_READY') {
+      twoCaptchaStats.fails += 1;
       throw new Error(`2Captcha: ${data.request}`);
     }
     if (polls % 10 === 0) {
@@ -749,6 +833,7 @@ async function submitAndPollImage(apiKey, imageBase64, controller, timeoutMs, la
     }
   }
 
+  twoCaptchaStats.fails += 1;
   throw new Error(`2Captcha no resolvió la imagen (${label}) en ${Math.round(timeoutMs / 1000)}s.`);
 }
 
@@ -1078,7 +1163,7 @@ function applyComplianceSlowdown(controller, reasons) {
     if (profile) {
       profile.bumpMinMinutes = newMin;
       profile.bumpMaxMinutes = newMax;
-      fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+      saveConfig(config);
     }
   } catch (_) {
     // si no se puede persistir, igual se aplica en memoria
@@ -1989,12 +2074,13 @@ async function deleteAndRepost(page, controller, options = {}) {
         confirmed = await page.evaluate(() => window.location.href.includes('success_publish')).catch(() => false);
         if (confirmed) break;
 
-        if (page.url().includes('pendingImages')) sawPendingImages = true;
-
-        if (await clickPendingImagesOk(page)) {
-          if (!okLogged) {
-            controller.log('🖼️ Página de imágenes pendientes; pulsando OK...');
-            okLogged = true;
+        if (page.url().includes('pendingImages')) {
+          sawPendingImages = true;
+          if (await clickPendingImagesOk(page)) {
+            if (!okLogged) {
+              controller.log('🖼️ Página de imágenes pendientes; pulsando OK...');
+              okLogged = true;
+            }
           }
         }
 
@@ -2365,11 +2451,70 @@ class ProfileController {
     this.cycleUpdatedAt = 0;
     this.cycleDeleteCompleted = false;
     this.rotateQueue = [];
+    this._stopping = false;
+    this._recovering = false;
     this.stats = { totalBumps: 0, bumpsToday: 0, lastBumpAt: 0, date: todayKey() };
+    this.health = {
+      lastOperation: '',
+      lastOperationAt: 0,
+      lastOkAt: 0,
+      lastError: '',
+      lastErrorAt: 0,
+      errors: 0,
+      warnings: []
+    };
     this.settings = {
       rotateAds: Boolean(cfg.settings?.rotateAds),
       randomizedDelay: Boolean(cfg.settings?.randomizedDelay),
       publishOnStart: Boolean(cfg.settings?.publishOnStart)
+    };
+    this.limits = {
+      dailyLimit: Number(cfg.limits?.dailyLimit) || 0,
+      conservativeMode: Boolean(cfg.limits?.conservativeMode)
+    };
+  }
+
+  noteOperation(op) {
+    this.health.lastOperation = op;
+    this.health.lastOperationAt = Date.now();
+    io.emit('health', this.healthSnapshot());
+  }
+
+  noteOk() {
+    this.health.lastOkAt = Date.now();
+    this.health.lastError = '';
+  }
+
+  noteError(message) {
+    this.health.errors += 1;
+    this.health.lastError = String(message || '').slice(0, 200);
+    this.health.lastErrorAt = Date.now();
+    io.emit('health', this.healthSnapshot());
+  }
+
+  warn(message) {
+    this.log(`⚠️ ${message}`);
+    this.health.warnings.push({ at: Date.now(), message: String(message).slice(0, 200) });
+    if (this.health.warnings.length > 50) this.health.warnings.shift();
+    io.emit('health', this.healthSnapshot());
+  }
+
+  healthSnapshot() {
+    return {
+      id: this.id,
+      state: this.state,
+      started: this.started,
+      paused: this.paused,
+      lastOperation: this.health.lastOperation,
+      lastOperationAt: this.health.lastOperationAt,
+      lastOkAt: this.health.lastOkAt,
+      lastError: this.health.lastError,
+      lastErrorAt: this.health.lastErrorAt,
+      errors: this.health.errors,
+      warnings: this.health.warnings.slice(-10),
+      bumpsToday: this.stats.bumpsToday,
+      dailyLimit: this.limits.dailyLimit,
+      proxy: this.cfg.proxy ? `${this.cfg.proxy.host}:${this.cfg.proxy.port}` : ''
     };
   }
 
@@ -2476,6 +2621,15 @@ emitActive() {
       }
     }
 
+    // Auto-recuperación: si Chrome se cae o se cierra a mitad de ciclo, se reabre solo.
+    browser.on('disconnected', () => {
+      if (this._stopping) return;
+      this.warn('Chrome se cerró/desconectó inesperadamente.');
+      this.browser = null;
+      this.page = null;
+      if (this.started && !this.paused) this.recoverBrowser();
+    });
+
     const page = await browser.newPage();
 
     if (proxy && proxy.host && proxy.username !== undefined && proxy.password !== undefined) {
@@ -2513,6 +2667,30 @@ emitActive() {
     this.log(`Fingerprint: TZ=${fp.tz} | Lang=${fp.lang}`);
 
     return { browser, page };
+  }
+
+  async recoverBrowser() {
+    if (this._recovering) return;
+    this._recovering = true;
+    try {
+      this.warn('♻️ Reintentando abrir el navegador automáticamente...');
+      for (let attempt = 1; attempt <= 3 && this.started && !this.paused; attempt++) {
+        await sleep(8000);
+        const ok = await this.open().catch(() => false);
+        if (ok) {
+          this.log('✅ Navegador recuperado; continúo el ciclo.');
+          this.noteOk();
+          if (this.started && !this.paused) {
+            this.scheduleNext();
+            this.scheduleRepost();
+          }
+          return;
+        }
+        this.warn(`No se pudo reabrir el navegador (intento ${attempt}/3).`);
+      }
+    } finally {
+      this._recovering = false;
+    }
   }
 
   async open() {
@@ -2654,6 +2832,7 @@ emitActive() {
   async stop() {
     this.started = false;
     this.paused = false;
+    this._stopping = true;
     if (this._cycleTimer) clearTimeout(this._cycleTimer);
     if (this._countdownTimer) clearInterval(this._countdownTimer);
     if (this._repostTimer) clearTimeout(this._repostTimer);
@@ -2665,6 +2844,7 @@ emitActive() {
     }
     this.browser = null;
     this.page = null;
+    this._stopping = false;
     this.setCycleStage('idle', 'Perfil detenido.');
     this.log('🛑 Detenido.');
     this.emitActive();
@@ -2696,17 +2876,23 @@ emitActive() {
     // Exacto igual que la extensión: obtenerIntervaloAleatorio()
     const minMs = min * 60 * 1000;
     const maxMs = max * 60 * 1000;
-    const waitMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+    let waitMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+    if (this.limits.conservativeMode) waitMs = Math.round(waitMs * 1.5);
 
     this._nextBumpAt = Date.now() + waitMs;
     const minutes = Math.round(waitMs / 60000);
-    this.log(`Próximo bump en ~${minutes} min (rango ${min}–${max} min).`);
+    this.log(`Próximo bump en ~${minutes} min (rango ${min}–${max} min)${this.limits.conservativeMode ? ' [conservador]' : ''}.`);
     io.emit('timer', { id: this.id, time: mmss(waitMs) });
 
     this._cycleTimer = setTimeout(() => this.bumpCycle(), waitMs);
   }
 
   async bumpCycle() {
+    if (this.limits.dailyLimit > 0 && this.stats.bumpsToday >= this.limits.dailyLimit) {
+      this.log(`⛔ Tope diario alcanzado (${this.stats.bumpsToday}/${this.limits.dailyLimit}). No publico más hoy.`);
+      this.scheduleNext();
+      return;
+    }
     if (this._operationPromise) {
       this.log('Ciclo de bump omitido: hay una publicación en curso. Se reprograma.');
       this.scheduleNext();
@@ -2779,6 +2965,11 @@ emitActive() {
 
   async repostCycle() {
     if (!this.started || this.paused || !this.autoRepostActive) return;
+    if (this.limits.dailyLimit > 0 && this.stats.bumpsToday >= this.limits.dailyLimit) {
+      this.log(`⛔ Tope diario alcanzado (${this.stats.bumpsToday}/${this.limits.dailyLimit}). No republico más hoy.`);
+      this.scheduleRepost();
+      return;
+    }
     if (this._operationPromise) {
       this.log('Republicación omitida: hay una publicación en curso. Se reprograma.');
       this.scheduleRepost();
@@ -2941,6 +3132,24 @@ async function restoreActiveProfiles() {
   }
 }
 
+app.get('/api/health', (req, res) => {
+  res.json({
+    profiles: [...controllers.values()].map((c) => c.healthSnapshot()),
+    twoCaptcha: {
+      solves: twoCaptchaStats.solves,
+      fails: twoCaptchaStats.fails,
+      balance: twoCaptchaStats.balance,
+      lastBalanceAt: twoCaptchaStats.lastBalanceAt
+    },
+    at: Date.now()
+  });
+});
+
+app.post('/api/health/balance', async (req, res) => {
+  await refreshTwoCaptchaBalance();
+  res.json({ success: true, ...twoCaptchaStats });
+});
+
 app.get('/api/profiles', (req, res) => {
   try {
     res.json(loadConfig());
@@ -2951,7 +3160,7 @@ app.get('/api/profiles', (req, res) => {
 
 app.post('/api/profiles', (req, res) => {
   try {
-    const { id, port, intervalMinutes, bumpMinMinutes, bumpMaxMinutes, url, email, password, supportEmail, supportUrl, proxy, adDetails } = req.body || {};
+    const { id, port, intervalMinutes, bumpMinMinutes, bumpMaxMinutes, url, email, password, supportEmail, supportUrl, proxy, adDetails, limits } = req.body || {};
     const cleanId = String(id || '').trim();
     const numericPort = Number(port);
     let minVal = Number(bumpMinMinutes);
@@ -2996,6 +3205,10 @@ app.post('/api/profiles', (req, res) => {
         phone: String(adDetails?.phone || '').trim(),
         text: String(adDetails?.text || ''),
         photosPath: String(adDetails?.photosPath || '').trim()
+      },
+      limits: {
+        dailyLimit: Math.max(0, Math.round(Number(limits?.dailyLimit) || 0)),
+        conservativeMode: Boolean(limits?.conservativeMode)
       }
     };
 
@@ -3009,7 +3222,7 @@ app.post('/api/profiles', (req, res) => {
     }
 
     config.push(newProfile);
-    fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+    saveConfig(config);
     controllers.set(newProfile.id, new ProfileController(newProfile));
     io.emit('profiles-updated', config);
     res.status(201).json(newProfile);
@@ -3058,6 +3271,13 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
       profile.autoAppeal = Boolean(body.autoAppeal);
     }
 
+    if (body.limits && typeof body.limits === 'object') {
+      profile.limits = {
+        dailyLimit: Math.max(0, Math.round(Number(body.limits.dailyLimit) || 0)),
+        conservativeMode: Boolean(body.limits.conservativeMode)
+      };
+    }
+
     if (body.adDetails && typeof body.adDetails === 'object') {
       profile.adDetails = {
         name: String(body.adDetails.name || '').trim(),
@@ -3080,12 +3300,18 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
       }
     }
 
-    fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+    saveConfig(config);
 
     const controller = controllers.get(profile.id);
     if (controller) {
       controller.cfg = profile;
       if (profile.settings) controller.settings = profile.settings;
+      if (profile.limits) {
+        controller.limits = {
+          dailyLimit: Math.max(0, Math.round(Number(profile.limits.dailyLimit) || 0)),
+          conservativeMode: Boolean(profile.limits.conservativeMode)
+        };
+      }
     }
     res.json({ success: true, profile });
   } catch (error) {
@@ -3175,7 +3401,7 @@ app.delete('/api/profiles/:id', async (req, res) => {
     }
 
     config.splice(index, 1);
-    fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+    saveConfig(config);
     io.emit('profiles-updated', config);
     saveState();
     res.json({ success: true });
@@ -3205,7 +3431,7 @@ app.patch('/api/profiles/:id/autorepost', (req, res) => {
       profile.repostInterval = Math.round(Number(minutes) / 60) || 1;
     }
 
-    fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+    saveConfig(config);
 
     const controller = controllers.get(profile.id);
     if (controller) {
@@ -3308,7 +3534,7 @@ io.on('connection', (socket) => {
     if (profile) {
       profile.bumpMinMinutes = minVal;
       profile.bumpMaxMinutes = maxVal;
-      fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+      saveConfig(config);
     }
     Object.assign(controller.cfg, { bumpMinMinutes: minVal, bumpMaxMinutes: maxVal });
     if (controller.started && !controller.paused) controller.scheduleNext();
@@ -3325,7 +3551,7 @@ io.on('connection', (socket) => {
     if (profile) {
       profile.repostIntervalMin = val;
       profile.repostInterval = Math.round(val / 60) || 1;
-      fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+      saveConfig(config);
     }
     Object.assign(controller.cfg, { repostIntervalMin: val, repostInterval: Math.round(val / 60) || 1 });
     if (controller.autoRepostActive && controller.started && !controller.paused) controller.scheduleRepost();
@@ -3333,6 +3559,39 @@ io.on('connection', (socket) => {
   });
 
 });
+
+// --- Salud: saldo de 2Captcha y estado de proxies ---
+async function refreshTwoCaptchaBalance() {
+  const keys = [...new Set([...controllers.values()].map((c) => c.cfg.apiKey2Captcha).filter((k) => k && !/^AQU[IÍ]/i.test(k)))];
+  if (keys.length === 0) return;
+  try {
+    const res = await twoCaptchaFetch(`${TWOCAPTCHA_BASE}/res.php?key=${encodeURIComponent(keys[0])}&action=getbalance&json=1`);
+    const data = await res.json();
+    if (data.status === 1) {
+      twoCaptchaStats.balance = Number(data.request);
+      twoCaptchaStats.lastBalanceAt = Date.now();
+      if (twoCaptchaStats.balance < 1) {
+        for (const c of controllers.values()) {
+          if (c.started) c.warn(`Saldo de 2Captcha bajo: $${twoCaptchaStats.balance.toFixed(2)}`);
+        }
+      }
+      io.emit('health', { global: true });
+    }
+  } catch (_) {
+    // sin conexión a 2Captcha
+  }
+}
+
+async function checkProxiesHealth() {
+  for (const controller of controllers.values()) {
+    if (!controller.started || controller.paused) continue;
+    if (!controller.cfg.proxy || !controller.cfg.proxy.host) continue;
+    const result = await validateProxy(controller.cfg.proxy, 10000);
+    if (!result.skipped && !result.ok) {
+      controller.warn(`Proxy no responde (${result.reason}).`);
+    }
+  }
+}
 
 server.listen(PORT, () => {
   pruneLogs();
@@ -3343,6 +3602,9 @@ server.listen(PORT, () => {
     console.warn('⚠️ Contraseña del panel por defecto: "momonga". Define PANEL_PASSWORD para cambiarla.');
   }
   restoreActiveProfiles();
+  refreshTwoCaptchaBalance();
+  setInterval(refreshTwoCaptchaBalance, 30 * 60 * 1000).unref();
+  setInterval(checkProxiesHealth, 10 * 60 * 1000).unref();
 });
 
 server.on('error', (error) => {

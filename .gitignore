@@ -8,6 +8,9 @@ profiles/
 config.json
 state.json
 panel-auth.json
+.secrets-key
+backups/
+test/.tmp/
 .env
 .env.*
 

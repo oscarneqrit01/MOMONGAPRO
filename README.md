@@ -21,6 +21,12 @@ Panel multi-perfil para automatizar **bumps** y **reposts** en sitios tipo MegaP
 - **Logs a archivo** diarios con rotación (no se pierden al cerrar la terminal).
 - **Notificaciones** por Telegram y/o Discord ante fallos y paradas de emergencia.
 - **Detección automática de Chrome** (Windows/macOS/Linux) o navegador propio de Puppeteer.
+- **Salud del sistema**: panel con última operación, última OK, errores, avisos y bumps de hoy por perfil; además del saldo y consumo de 2Captcha.
+- **Auto-recuperación**: si Chrome se cae o se cierra a mitad de ciclo, el perfil lo reabre solo y continúa.
+- **Salud de proxies**: comprobación periódica; avisa si un proxy deja de responder.
+- **Límites de seguridad**: tope diario de publicaciones por perfil y **modo conservador** (+50% de intervalo).
+- **Backups y cifrado**: copias de `config.json`/`state.json` en `backups/`, y los secretos (contraseñas, API key, proxy) se guardan **cifrados** (AES-256-GCM) en disco.
+- **Tests**: `npm test` corre una suite automática contra un sitio simulado (repost, captcha, rotación, bloqueo, tokens, límites, etc.).
 
 ---
 
@@ -140,6 +146,8 @@ Es un **array** de perfiles:
 | `intervalMinutes` | Minutos entre bumps. |
 | `url` | Página inicial. |
 | `supportEmail` | (Opcional) Correo de soporte del sitio. Por defecto `support@megapersonals.eu`. Al detectar un bloqueo se abre el correo (Outlook) con la apelación lista. |
+| `limits.dailyLimit` | Tope diario de publicaciones (0 = sin límite). |
+| `limits.conservativeMode` | `true` aumenta un 50% el intervalo entre ciclos. |
 | `supportUrl` | (Opcional) URL de contacto/soporte del sitio para apelaciones. Por defecto `<sitio>/contact`. |
 | `adDetails` | Ciudad, edad, texto y carpeta de fotos del anuncio. |
 | `proxy` | Proxy HTTP del perfil. |
@@ -191,8 +199,11 @@ MOMONGAPRO/
 ├── iniciar.bat          # Lanzador de Windows
 ├── package.json
 ├── logs/                # (generado) registros diarios
+├── test/                # suite de pruebas (npm test)
 ├── profiles/            # (generado) sesiones de Chrome por perfil
+├── backups/             # (generado) copias de config.json / state.json
 ├── panel-auth.json      # (generado) hash de la contraseña del panel
+├── .secrets-key         # (generado) clave para descifrar los secretos
 ├── state.json           # (generado) estado y estadísticas
 └── .gitignore
 ```
@@ -203,7 +214,10 @@ MOMONGAPRO/
 
 - El panel requiere contraseña (`PANEL_PASSWORD`); se protege HTTP y Socket.IO.
 - La contraseña se puede cambiar desde el panel con el botón **Cambiar contraseña**. Se guarda como hash (scrypt + salt) en `panel-auth.json`, nunca en texto plano.
-- `config.json`, `panel-auth.json` y `state.json` con proxies y claves **nunca** se suben al repositorio.
+- Los secretos de `config.json` (contraseñas, API key de 2Captcha, contraseña del proxy) se guardan **cifrados** con AES-256-GCM. La clave está en `.secrets-key`.
+- **Importante**: guarda una copia de `.secrets-key`. Si lo borras, los secretos cifrados no se podrán descifrar.
+- Cada vez que se guarda `config.json`/`state.json` se crea una copia en `backups/` (se conservan las últimas 20).
+- `config.json`, `panel-auth.json`, `state.json`, `.secrets-key` y `backups/` **nunca** se suben al repositorio.
 - No ejecutes dos instancias a la vez: comparten `state.json` y las carpetas de perfiles.
 
 ---

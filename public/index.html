@@ -1187,6 +1187,7 @@
           <button class="btn btn-publish" id="publishAllBtn">Publicar en todos</button>
           <button class="btn btn-pause" id="pauseAllBtn">Pausar</button>
           <button class="btn btn-export" id="exportLogsBtn">Exportar logs</button>
+          <button class="btn btn-export" id="healthBtn">Salud del sistema</button>
           <button class="btn btn-export" id="appealsBtn">Bloqueos detectados</button>
           <button class="btn btn-export" id="changePasswordBtn">Cambiar contraseña</button>
         </div>
@@ -1297,6 +1298,20 @@
     </form>
   </div>
 
+  <div class="modal-backdrop" id="healthModal" role="dialog" aria-modal="true" aria-labelledby="healthModalTitle">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="healthModalTitle">Salud del sistema</h2>
+        <button class="modal-close" id="closeHealthModalBtn" type="button" aria-label="Cerrar">&times;</button>
+      </div>
+      <div id="healthList" style="max-height: 60vh; overflow: auto; display: grid; gap: 10px;"></div>
+      <div class="modal-actions">
+        <button class="cancel-btn" id="refreshHealthBtn" type="button">Actualizar</button>
+        <button class="save-btn" id="cancelHealthModalBtn" type="button">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-backdrop" id="appealsModal" role="dialog" aria-modal="true" aria-labelledby="appealsModalTitle">
     <div class="modal">
       <div class="modal-header">
@@ -1328,6 +1343,8 @@
     const passwordFormError = document.getElementById('passwordFormError');
     const appealsModal = document.getElementById('appealsModal');
     const appealsList = document.getElementById('appealsList');
+    const healthModal = document.getElementById('healthModal');
+    const healthList = document.getElementById('healthList');
     const pendingSettingsSaves = {};
 
     function openAddModal() {
@@ -1489,6 +1506,58 @@
       appealsModal.classList.remove('open');
     }
 
+    function fmtTime(ms) {
+      if (!ms) return '—';
+      try { return new Date(ms).toLocaleString(); } catch (_) { return '—'; }
+    }
+
+    function renderHealth(data) {
+      healthList.innerHTML = '';
+      const tc = data.twoCaptcha || {};
+      const head = document.createElement('div');
+      head.style.cssText = 'border:1px solid #2a2a40;border-radius:8px;padding:10px;background:#151522;font-size:12px;color:#ddd;';
+      const saldo = tc.balance === null || tc.balance === undefined ? 'desconocido' : `$${Number(tc.balance).toFixed(2)}`;
+      head.innerHTML = `<b style="color:#4ecca3;">2Captcha</b> · saldo: <b>${saldo}</b> · resueltos: ${tc.solves || 0} · fallidos: ${tc.fails || 0} <span style="color:#888;">(actualizado ${fmtTime(tc.lastBalanceAt)})</span>`;
+      healthList.appendChild(head);
+
+      (data.profiles || []).forEach((p) => {
+        const item = document.createElement('div');
+        item.style.cssText = 'border:1px solid #2a2a40;border-radius:8px;padding:10px;background:#151522;font-size:12px;color:#ddd;';
+        const warnColor = p.lastError ? '#e74c3c' : (p.warnings && p.warnings.length ? '#f39c12' : '#4ecca3');
+        const estado = p.started ? (p.paused ? 'pausado' : 'activo') : 'detenido';
+        item.innerHTML = `
+          <div style="font-weight:bold;color:${warnColor};margin-bottom:4px;">${p.id} · ${estado}</div>
+          <div style="color:#aaa;">Última operación: ${p.lastOperation || '—'} (${fmtTime(p.lastOperationAt)})</div>
+          <div style="color:#aaa;">Última OK: ${fmtTime(p.lastOkAt)} · Errores: ${p.errors || 0}</div>
+          ${p.lastError ? `<div style="color:#e74c3c;margin-top:3px;">Último error: ${p.lastError}</div>` : ''}
+          ${(p.warnings || []).length ? `<div style="color:#f39c12;margin-top:3px;">Avisos: ${(p.warnings || []).map((w) => w.message).join(' | ')}</div>` : ''}
+          <div style="color:#888;margin-top:3px;">Bumps hoy: ${p.bumpsToday || 0}${p.dailyLimit ? ` / ${p.dailyLimit}` : ''} ${p.proxy ? `· Proxy ${p.proxy}` : ''}</div>
+        `;
+        healthList.appendChild(item);
+      });
+      if (!(data.profiles || []).length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'color:#aaa;font-size:13px;padding:10px;';
+        empty.textContent = 'Sin perfiles.';
+        healthList.appendChild(empty);
+      }
+    }
+
+    async function openHealthModal() {
+      healthModal.classList.add('open');
+      healthList.textContent = 'Cargando...';
+      try {
+        const res = await fetch('/api/health');
+        renderHealth(await res.json());
+      } catch (_) {
+        renderHealth({ profiles: [] });
+      }
+    }
+
+    function closeHealthModal() {
+      healthModal.classList.remove('open');
+    }
+
     async function loadProfiles() {
       try {
         const response = await fetch('/api/profiles');
@@ -1606,6 +1675,14 @@
                   <div>
                     <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">CORREO DE SOPORTE (APELACIONES)</label>
                     <input type="text" id="supportEmail-${profile.id}" placeholder="support@megapersonals.eu" value="${profile.supportEmail || ''}" style="width: 100%; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                  </div>
+                  <div>
+                    <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">LÍMITE DIARIO DE PUBLICACIONES (0 = sin límite)</label>
+                    <input type="number" min="0" id="dailyLimit-${profile.id}" value="${profile.limits?.dailyLimit || 0}" style="width: 100%; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                  </div>
+                  <div>
+                    <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">MODO CONSERVADOR (+50% de intervalo)</label>
+                    <input type="checkbox" id="conservative-${profile.id}" ${profile.limits?.conservativeMode ? 'checked' : ''}> <span style="color:#aaa;font-size:11px;">Activar</span>
                   </div>
                 </div>
 
@@ -1897,6 +1974,10 @@
         proxy: document.getElementById(`proxy-${profileId}`).value,
         apiKey2Captcha: document.getElementById(`cap-${profileId}`).value,
         supportEmail: document.getElementById(`supportEmail-${profileId}`).value,
+        limits: {
+          dailyLimit: Number(document.getElementById(`dailyLimit-${profileId}`)?.value) || 0,
+          conservativeMode: Boolean(document.getElementById(`conservative-${profileId}`)?.checked)
+        },
         email: document.getElementById(`email-${profileId}`).value,
         password: document.getElementById(`pass-${profileId}`).value,
         adDetails: {
@@ -2148,6 +2229,17 @@
     document.getElementById('cancelAppealsModalBtn').addEventListener('click', closeAppealsModal);
     appealsModal.addEventListener('click', (event) => {
       if (event.target === appealsModal) closeAppealsModal();
+    });
+
+    document.getElementById('healthBtn').addEventListener('click', openHealthModal);
+    document.getElementById('refreshHealthBtn').addEventListener('click', openHealthModal);
+    document.getElementById('closeHealthModalBtn').addEventListener('click', closeHealthModal);
+    document.getElementById('cancelHealthModalBtn').addEventListener('click', closeHealthModal);
+    healthModal.addEventListener('click', (event) => {
+      if (event.target === healthModal) closeHealthModal();
+    });
+    socket.on('health', () => {
+      if (healthModal.classList.contains('open')) openHealthModal();
     });
 
     document.getElementById('openAppealsFolderBtn').addEventListener('click', async () => {
