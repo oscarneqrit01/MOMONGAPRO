@@ -777,6 +777,7 @@ async function captureBlockEvidence(page, controller, reason) {
       url,
       siteUrl: controller.cfg.url || DEFAULT_URL,
       supportUrl: controller.cfg.supportUrl || '',
+      supportEmail: controller.cfg.supportEmail || '',
       stage: controller.cycleStage,
       detail: controller.cycleDetail,
       at: now.toISOString(),
@@ -795,6 +796,15 @@ async function captureBlockEvidence(page, controller, reason) {
 
     controller.log(`📸 Evidencia del bloqueo guardada en logs/appeals/${pngName}`);
     io.emit('block-evidence', record);
+
+    if (record.supportEmail && controller.cfg.autoAppeal !== false) {
+      const { outlookUrl } = buildAppealDraft(record);
+      if (outlookUrl) {
+        controller.log(`📧 Abriendo el correo para apelar a ${record.supportEmail}...`);
+        openExternalUrl(outlookUrl);
+      }
+    }
+
     return record;
   } catch (error) {
     try { controller.log(`No se pudo guardar la evidencia del bloqueo: ${error.message}`); } catch (_) {}
@@ -802,16 +812,34 @@ async function captureBlockEvidence(page, controller, reason) {
   }
 }
 
+function openExternalUrl(url) {
+  try {
+    if (!url) return;
+    if (process.env.MOMONGA_NO_OPEN === '1') {
+      console.log('[open-external omitido]', url.slice(0, 120));
+      return;
+    }
+    if (process.platform === 'win32') {
+      execFile('cmd', ['/c', 'start', '', url], { windowsHide: true }, () => {});
+    } else {
+      execFile(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], { windowsHide: true }, () => {});
+    }
+  } catch (_) {
+    // si no se puede abrir, se ignora
+  }
+}
+
 function buildAppealDraft(record) {
   const account = (record && record.account) || '(tu correo)';
+  const supportEmail = (record && record.supportEmail) || '';
   const when = record && record.at ? new Date(record.at).toUTCString() : '';
   let supportUrl = (record && record.supportUrl) || '';
   if (!supportUrl && record && record.siteUrl) {
     try { supportUrl = `${new URL(record.siteUrl).origin}/contact`; } catch (_) { supportUrl = record.siteUrl; }
   }
-  const draft = [
-    'Subject: Appeal - account suspended / blocked',
-    '',
+
+  const subject = 'Appeal - account suspended / blocked';
+  const body = [
     'Hello,',
     '',
     `My account (${account}) appears to have been suspended or blocked. I believe this may be a mistake or the result of a false report, and I am requesting a manual review.`,
@@ -825,10 +853,19 @@ function buildAppealDraft(record) {
     '',
     'I have always followed the platform terms of service. Please review my account and restore it if possible.',
     '',
-    'Thank you,',
-    account
+    'Thank you,'
   ].join('\n');
-  return { draft, supportUrl };
+
+  const draft = `Subject: ${subject}\n\n${body}`;
+  const enc = encodeURIComponent;
+  const outlookUrl = supportEmail
+    ? `https://outlook.live.com/mail/0/deeplink/compose?to=${enc(supportEmail)}&subject=${enc(subject)}&body=${enc(body)}`
+    : '';
+  const mailtoUrl = supportEmail
+    ? `mailto:${enc(supportEmail)}?subject=${enc(subject)}&body=${enc(body)}`
+    : '';
+
+  return { draft, subject, body, supportUrl, supportEmail, outlookUrl, mailtoUrl };
 }
 
 async function checkForBlock(page, controller) {
@@ -2665,7 +2702,7 @@ app.get('/api/profiles', (req, res) => {
 
 app.post('/api/profiles', (req, res) => {
   try {
-    const { id, port, intervalMinutes, bumpMinMinutes, bumpMaxMinutes, url, email, password, proxy, adDetails } = req.body || {};
+    const { id, port, intervalMinutes, bumpMinMinutes, bumpMaxMinutes, url, email, password, supportEmail, supportUrl, proxy, adDetails } = req.body || {};
     const cleanId = String(id || '').trim();
     const numericPort = Number(port);
     let minVal = Number(bumpMinMinutes);
@@ -2695,6 +2732,8 @@ app.post('/api/profiles', (req, res) => {
       port: numericPort,
       email: String(email || '').trim(),
       password: String(password || ''),
+      supportEmail: String(supportEmail || '').trim(),
+      supportUrl: String(supportUrl || '').trim(),
       intervalMinutes: minVal,
       bumpMinMinutes: minVal,
       bumpMaxMinutes: maxVal,
@@ -2756,6 +2795,18 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
 
     if ('password' in body) {
       profile.password = String(body.password || '');
+    }
+
+    if ('supportEmail' in body) {
+      profile.supportEmail = String(body.supportEmail || '').trim();
+    }
+
+    if ('supportUrl' in body) {
+      profile.supportUrl = String(body.supportUrl || '').trim();
+    }
+
+    if ('autoAppeal' in body) {
+      profile.autoAppeal = Boolean(body.autoAppeal);
     }
 
     if (body.adDetails && typeof body.adDetails === 'object') {

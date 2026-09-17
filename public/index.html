@@ -1454,6 +1454,21 @@
         });
         actions.appendChild(support);
 
+        const emailBtn = document.createElement('button');
+        emailBtn.className = 'small-btn green';
+        emailBtn.textContent = 'Enviar por correo (Outlook)';
+        emailBtn.addEventListener('click', async () => {
+          try {
+            const res = await fetch(`/api/appeals/${encodeURIComponent(record.id)}/draft`);
+            const data = await res.json();
+            if (data.outlookUrl) window.open(data.outlookUrl, '_blank');
+            else alert('Configura el "Correo de soporte" de este navegador en su Configuración.');
+          } catch (error) {
+            alert('❌ ' + error.message);
+          }
+        });
+        actions.appendChild(emailBtn);
+
         item.append(title, meta, detail, actions);
         appealsList.appendChild(item);
       });
@@ -1587,6 +1602,10 @@
                   <div>
                     <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">API KEY 2CAPTCHA</label>
                     <input type="text" id="cap-${profile.id}" placeholder="Tu clave API" value="${profile.apiKey2Captcha || ''}" style="width: 100%; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                  </div>
+                  <div>
+                    <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">CORREO DE SOPORTE (APELACIONES)</label>
+                    <input type="text" id="supportEmail-${profile.id}" placeholder="support@sitio.com" value="${profile.supportEmail || ''}" style="width: 100%; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
                   </div>
                 </div>
 
@@ -1877,6 +1896,7 @@
       const data = {
         proxy: document.getElementById(`proxy-${profileId}`).value,
         apiKey2Captcha: document.getElementById(`cap-${profileId}`).value,
+        supportEmail: document.getElementById(`supportEmail-${profileId}`).value,
         email: document.getElementById(`email-${profileId}`).value,
         password: document.getElementById(`pass-${profileId}`).value,
         adDetails: {

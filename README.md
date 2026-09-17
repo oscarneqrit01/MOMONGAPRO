@@ -14,7 +14,7 @@ Panel multi-perfil para automatizar **bumps** y **reposts** en sitios tipo MegaP
 - **Auto-repost**: borra y republica cada N horas.
 - **Copia de anuncio**: extrae ciudad/edad/texto y descarga+limpia las fotos del anuncio actual (quita EXIF y altera ligeramente la imagen).
 - **Parada de emergencia**: si detecta señales de suspensión/bloqueo en cualquier perfil, detiene todos los perfiles.
-- **Apelaciones**: al detectar un bloqueo guarda evidencia (captura, HTML, mensaje, URL, perfil y paso) en `logs/appeals/` y genera un borrador de apelación en inglés con los datos de la cuenta, para enviarlo manualmente al soporte. En el panel puedes ver, **descargar o copiar la captura** y **abrir la carpeta de evidencias**, ya que el formulario del sitio puede no permitir adjuntar archivos.
+- **Apelaciones**: al detectar un bloqueo guarda evidencia (captura, HTML, mensaje, URL, perfil y paso) en `logs/appeals/`, genera un borrador de apelación en inglés y, si el navegador tiene `supportEmail`, **abre el correo (Outlook) automáticamente** con el texto listo. En el panel puedes ver, **descargar o copiar la captura**, **abrir la carpeta de evidencias** y **enviar por correo**, ya que el formulario del sitio puede no permitir adjuntar archivos.
 - **Auto-arranque (opcional)**: con `AUTO_START=1`, al reiniciar el servidor reanuda los perfiles que estaban activos. Por defecto está **desactivado**.
 - **Panel web** en tiempo real (Socket.IO): **Abrir Página** / Iniciar / Pausar / Detener / Publicar, contadores, estado y registro en vivo. "Abrir Página" solo abre el navegador; el conteo empieza únicamente al pulsar **Iniciar**.
 - **Estadísticas**: bumps de hoy, total y último bump.
@@ -139,6 +139,7 @@ Es un **array** de perfiles:
 | `email` / `password` | Credenciales de login del sitio. |
 | `intervalMinutes` | Minutos entre bumps. |
 | `url` | Página inicial. |
+| `supportEmail` | (Opcional) Correo de soporte del sitio. Si está, al detectar un bloqueo se abre el correo (Outlook) con la apelación lista. |
 | `supportUrl` | (Opcional) URL de contacto/soporte del sitio para apelaciones. Por defecto `<sitio>/contact`. |
 | `adDetails` | Ciudad, edad, texto y carpeta de fotos del anuncio. |
 | `proxy` | Proxy HTTP del perfil. |
