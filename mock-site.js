@@ -27,7 +27,8 @@ app.get('/', (request, response) => {
 
 app.get('/users/posts/list', (request, response) => {
   if (scenario === 'multi-ads') {
-    const ads = [52957356, 52957357, 52957358].map((id, index) => `
+    const adCount = Math.max(1, Number(process.env.MOCK_ADS || 3));
+    const ads = Array.from({ length: adCount }, (_, index) => 52957356 + index).map((id, index) => `
       <div class="post_header">
         <div class="post_title"><div class="post_title_caption">Anuncio ${index + 1}</div></div>
         <a href="/users/posts/bump/${id}">Bump to Top</a>
