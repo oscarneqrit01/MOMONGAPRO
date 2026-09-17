@@ -525,10 +525,23 @@ async function solveCaptcha(apiKey, siteKey, pageUrl, page) {
   }
 }
 
+const CAPTCHA_INPUT_SELECTORS = [
+  '[data-momonga-captcha-input]',
+  '#captcha_code',
+  'input[name="captchaCode"]',
+  'input[name*="captcha" i]',
+  'input[id*="captcha" i]',
+  'input[placeholder*="picture" i]',
+  'input[placeholder*="code from" i]',
+  'input[autocapitalize="characters"]'
+];
+
 async function markImageCaptcha(page) {
-  return page.evaluate(() => {
+  return page.evaluate((inputSelectors) => {
+    const bySelector = document.querySelector(inputSelectors.join(', '));
     const fields = Array.from(document.querySelectorAll('input, textarea'));
-    const input = fields.find((item) => /captcha|code from|picture|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`))
+    const input = bySelector
+      || fields.find((item) => /captcha|code from|picture|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`))
       || fields.find((item) => item.type === 'text' && !/email/i.test(`${item.name || ''} ${item.id || ''}`));
     if (!input) return false;
 
@@ -546,7 +559,36 @@ async function markImageCaptcha(page) {
     image.setAttribute('data-momonga-captcha-image', '1');
     input.setAttribute('data-momonga-captcha-input', '1');
     return true;
-  }).catch(() => false);
+  }, CAPTCHA_INPUT_SELECTORS).catch(() => false);
+}
+
+// Escribe el código en el campo del captcha, reubicándolo (por si la página se re-renderizó)
+async function fillCaptchaInput(page, code) {
+  const selector = CAPTCHA_INPUT_SELECTORS.join(', ');
+
+  const programmatic = await page.evaluate((sel, value) => {
+    const input = document.querySelector(sel);
+    if (!input) return false;
+    input.focus();
+    const setter = Object.getOwnPropertyDescriptor(input.__proto__, 'value')?.set;
+    if (setter) setter.call(input, value);
+    else input.value = value;
+    input.setAttribute('value', value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    return String(input.value || '').trim().length > 0;
+  }, selector, code).catch(() => false);
+
+  if (programmatic) return true;
+
+  const handle = await page.$(selector).catch(() => null);
+  if (!handle) return false;
+  await handle.click({ clickCount: 3 }).catch(() => {});
+  await handle.type(code, { delay: 40 }).catch(() => {});
+  const value = await handle.evaluate((el) => String(el.value || '').trim()).catch(() => '');
+  return value.length > 0;
 }
 
 // Prepara la imagen del captcha: escala x3 + gris + binarizado (igual que el bot de reportes)
@@ -621,14 +663,10 @@ async function solveImageCaptcha(apiKey, page, controller) {
     const data = await res.json();
     if (data.status === 1) {
       const code = String(data.request || '').trim().toUpperCase();
-      await page.evaluate((value) => {
-        const input = document.querySelector('[data-momonga-captcha-input]');
-        if (!input) return;
-        input.focus();
-        input.value = value;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-      }, code);
+      const filled = await fillCaptchaInput(page, code);
+      if (!filled) {
+        throw new Error('2Captcha resolvió el código, pero no se pudo escribir en el campo del captcha.');
+      }
       return code;
     }
     if (data.request !== 'CAPCHA_NOT_READY') {
