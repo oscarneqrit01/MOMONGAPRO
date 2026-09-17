@@ -1754,6 +1754,38 @@ async function waitForManualCaptcha(page, controller) {
   return solved;
 }
 
+// Popup de ciudad de pago: hay que confirmarlo para que se envíe el formulario
+async function confirmTokenPopup(page) {
+  return page.evaluate(() => {
+    const popup = document.getElementById('confirmModal_enoughTokens');
+    if (!popup) return false;
+    const visible = popup.offsetParent !== null && getComputedStyle(popup).display !== 'none';
+    if (!visible) return false;
+    const confirm = document.getElementById('createBumpPostUrl')
+      || Array.from(popup.querySelectorAll('.flex-btn div, button, a'))
+        .find((el) => el.offsetParent !== null && /ok|accept|continue|confirm|publish|post/i.test(`${el.innerText || ''} ${el.id || ''}`));
+    if (confirm) {
+      confirm.click();
+      return true;
+    }
+    return false;
+  }).catch(() => false);
+}
+
+// Detecta si el sitio rechazó el captcha (aunque el modal esté oculto)
+async function detectCaptchaRejected(page) {
+  return page.evaluate(() => {
+    if (document.querySelector('[id="captchaCode.errors"], #captchaCode.errors')) return true;
+    const modal = document.getElementById('captcha-modal');
+    if (modal) {
+      const visible = modal.classList.contains('show') || (modal.offsetParent !== null && getComputedStyle(modal).display !== 'none');
+      if (visible && /does not match|incorrect|invalid|captcha code/i.test(modal.innerText || '')) return true;
+    }
+    const body = document.body ? document.body.innerText : '';
+    return /does not match|incorrect captcha|invalid captcha/i.test(body);
+  }).catch(() => false);
+}
+
 async function deleteAndRepost(page, controller, options = {}) {
   const urls = siteUrls(controller);
   const details = controller.cfg.adDetails || {};
@@ -1912,14 +1944,29 @@ async function deleteAndRepost(page, controller, options = {}) {
         return false;
       }
 
-      confirmed = await page.waitForFunction(
-        () => window.location.href.includes('success_publish'),
-        { timeout: 20000 }
-      ).then(() => true).catch(() => false);
+      // Espera la confirmación (proxy lento). Si aparece el popup de tokens (ciudad de pago), lo confirma.
+      const deadline = Date.now() + 60000;
+      let tokenLogged = false;
+      let captchaRejected = false;
+      while (Date.now() < deadline && !confirmed) {
+        confirmed = await page.evaluate(() => window.location.href.includes('success_publish')).catch(() => false);
+        if (confirmed) break;
+
+        if (await confirmTokenPopup(page)) {
+          if (!tokenLogged) {
+            controller.log('🪙 Popup de tokens detectado; confirmando publicación...');
+            tokenLogged = true;
+          }
+        }
+
+        captchaRejected = await detectCaptchaRejected(page);
+        if (captchaRejected) break;
+
+        await sleep(1500);
+      }
       if (confirmed) break;
 
-      const captchaError = await page.evaluate(() => /does not match|incorrect|captcha code|invalid captcha/i.test(document.body?.innerText || '')).catch(() => false);
-      if (captchaError && attempt < 3) {
+      if (captchaRejected && attempt < 3) {
         controller.log(`⚠️ CAPTCHA rechazado (intento ${attempt}). Recargando y reintentando...`);
         await reloadImageCaptcha(page);
         await sleep(1500);

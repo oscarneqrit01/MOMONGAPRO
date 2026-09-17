@@ -105,7 +105,10 @@ app.get('/users/posts/create', (request, response) => {
   // Escenario que imita MegaPersonals: el botón de publicar es un div sin texto.
   const publishControl = scenario === 'input-send'
     ? `<div id="input_send" class="myButton previewbutton" onclick="window.location.href='${publishTarget}'">&nbsp;</div>`
-    : '<button type="submit">Publish</button>';
+    : scenario === 'token-popup'
+      ? `<div id="input_send" class="myButton previewbutton" onclick="document.getElementById('confirmModal_enoughTokens').style.display='block'">&nbsp;</div>
+         <div id="confirmModal_enoughTokens" style="display:none"><button id="createBumpPostUrl" onclick="window.location.href='${publishTarget}'">OK</button></div>`
+      : '<button type="submit">Publish</button>';
   response.send(layout('Create post', `
     <h2>Create post</h2>
     <form id="post-form" onsubmit="${onSubmit}">
