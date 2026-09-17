@@ -711,6 +711,101 @@ async function checkForBlock(page, controller) {
   return false;
 }
 
+// --- Cumplimiento: control de riesgo que suele disparar reportes ---
+const recentBumpTimes = new Map();
+const textHashOwners = new Map();
+const lastPhotoSets = new Map();
+
+function hashText(text) {
+  return crypto.createHash('sha1').update(String(text || '').trim().toLowerCase()).digest('hex');
+}
+
+function hashFile(filePath) {
+  try {
+    return crypto.createHash('sha1').update(fs.readFileSync(filePath)).digest('hex');
+  } catch (_) {
+    return null;
+  }
+}
+
+function hashPhotoSet(photosPath) {
+  if (!photosPath) return null;
+  try {
+    const dir = path.resolve(__dirname, photosPath);
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return null;
+    const hashes = fs.readdirSync(dir)
+      .filter((name) => /\.(jpg|jpeg|png|webp)$/i.test(name))
+      .map((name) => hashFile(path.join(dir, name)))
+      .filter(Boolean)
+      .sort();
+    return hashes.length ? hashes.join(',') : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function assessComplianceRisk(controller) {
+  const reasons = [];
+  const details = controller.cfg.adDetails || {};
+  const now = Date.now();
+
+  const times = (recentBumpTimes.get(controller.id) || []).filter((t) => now - t < 30 * 60 * 1000);
+  recentBumpTimes.set(controller.id, times);
+  if (times.length >= 3) {
+    reasons.push(`publicaciones muy seguidas (${times.length} en 30 min)`);
+  }
+
+  if (details.text && String(details.text).trim()) {
+    const textHash = hashText(details.text);
+    const owners = textHashOwners.get(textHash) || new Set();
+    const others = [...owners].filter((id) => id !== controller.id);
+    if (others.length > 0) {
+      reasons.push(`texto idéntico al de otra cuenta (${others.join(', ')})`);
+    }
+    owners.add(controller.id);
+    textHashOwners.set(textHash, owners);
+  }
+
+  const photoSet = hashPhotoSet(details.photosPath);
+  if (photoSet) {
+    if (lastPhotoSets.get(controller.id) === photoSet) {
+      reasons.push('mismas fotos que el ciclo anterior');
+    }
+    lastPhotoSets.set(controller.id, photoSet);
+  }
+
+  return reasons;
+}
+
+function applyComplianceSlowdown(controller, reasons) {
+  const factor = 1.5;
+  const currentMin = Math.max(1, Number(controller.cfg.bumpMinMinutes || controller.cfg.intervalMinutes || 16));
+  const currentMax = Math.max(currentMin, Number(controller.cfg.bumpMaxMinutes || currentMin));
+  const newMin = Math.min(Math.round(currentMin * factor), 240);
+  const newMax = Math.min(Math.round(currentMax * factor), 300);
+
+  if (newMin === currentMin && newMax === currentMax) return false;
+
+  controller.cfg.bumpMinMinutes = newMin;
+  controller.cfg.bumpMaxMinutes = newMax;
+
+  try {
+    const config = loadConfig();
+    const profile = config.find((item) => item.id === controller.id);
+    if (profile) {
+      profile.bumpMinMinutes = newMin;
+      profile.bumpMaxMinutes = newMax;
+      fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+    }
+  } catch (_) {
+    // si no se puede persistir, igual se aplica en memoria
+  }
+
+  controller.log(`⚠️ Cumplimiento: ${reasons.join('; ')}. Bajo el ritmo automáticamente a ${newMin}–${newMax} min.`);
+  io.emit('compliance-warning', { id: controller.id, reasons, min: newMin, max: newMax, at: Date.now() });
+  return true;
+}
+
 async function loginIfNeeded(page, controller) {
   if (!controller.cfg.email || !controller.cfg.password) {
     controller.log('Sin credenciales, se asume sesión ya abierta.');
@@ -753,37 +848,27 @@ async function loginIfNeeded(page, controller) {
 }
 
 async function clickBumpButton(page) {
-  const rawClicked = await page.evaluate(() => {
+  const findAndClick = () => page.evaluate(() => {
+    const visible = (el) => el && el.offsetParent !== null;
+    const byId = document.getElementById('managePublishAd');
+    if (visible(byId)) {
+      byId.click();
+      return true;
+    }
     const controls = Array.from(document.querySelectorAll('a, button'));
-    const el = document.getElementById('managePublishAd')
-      || controls.find(e => /bump\s*to\s*top/i.test(`${e.innerText || ''} ${e.id || ''}`.trim()) && e.offsetParent !== null);
+    const el = controls.find((e) => visible(e) && /bump\s*to\s*top|bump|boost|subir/i.test(`${e.innerText || ''} ${e.value || ''} ${e.id || ''} ${e.getAttribute('href') || ''}`));
     if (el) {
       el.click();
       return true;
     }
     return false;
   }).catch(() => false);
-  if (rawClicked) return true;
 
-  const selectors = [
-    'a.manage-button:has-text("Bump")',
-    'a:has-text("Bump")',
-    'button:has-text("Bump to Top")',
-    'button:has-text("Bump")',
-    'button:has-text("Boost")',
-    'a:has-text("Boost")'
-  ];
-
-  for (const selector of selectors) {
-    try {
-      await page.waitForSelector(selector, { timeout: 2000 });
-      await page.locator(selector).click({ timeout: 4000 });
-      return true;
-    } catch (_) {
-      // seguir probando
-    }
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    if (await findAndClick()) return true;
+    await sleep(500);
   }
-
   return false;
 }
 
@@ -872,7 +957,7 @@ async function performBump(page, controller) {
 
   if (await doBump(page, controller)) return;
 
-  controller.log('No se encontró botón de bump/publicación.');
+  controller.log('⚠️ No se encontró el botón Bump to Top. Puede que el anuncio ya esté arriba o no sea elegible para bump.');
 }
 
 // Bump de todos los anuncios de la cuenta uno por uno (rota en cada ciclo, sin borrar)
@@ -1214,26 +1299,33 @@ async function selectCity(page, value, controller) {
 
   const clickLocationChoice = async (choice, label) => {
     controller.log(`📍 Seleccionando ${label}: ${choice}.`);
-    const clicked = await page.waitForFunction((wanted) => {
+    const tryClick = () => page.evaluate((wanted) => {
       const normalize = (text) => String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
       const target = normalize(wanted);
-      const exactLabel = Array.from(document.querySelectorAll('label[for]')).find((label) =>
-        normalize(label.textContent) === target && label.offsetParent !== null
+      const exactLabel = Array.from(document.querySelectorAll('label[for]')).find((el) =>
+        normalize(el.textContent) === target && el.offsetParent !== null
       );
       if (exactLabel) {
         exactLabel.click();
         return true;
       }
-      const elements = Array.from(document.querySelectorAll('button, a, [role="button"], li, div, span'))
-        .filter((element) => element.offsetParent !== null)
-        .filter((element) => normalize(element.textContent) === target || normalize(element.textContent).startsWith(`${target} `));
-      const element = elements.sort((a, b) => a.textContent.length - b.textContent.length)[0];
-      if (!element) return false;
-      element.click();
+      const candidates = Array.from(document.querySelectorAll('button, a, [role="button"], li, option, div, span'))
+        .filter((el) => el.offsetParent !== null || el.tagName === 'OPTION')
+        .map((el) => ({ el, text: normalize(el.textContent) }))
+        .filter((item) => item.text === target || item.text.startsWith(`${target} `) || item.text.startsWith(`${target},`))
+        .sort((a, b) => a.text.length - b.text.length);
+      const chosen = candidates[0];
+      if (!chosen) return false;
+      chosen.el.click();
       return true;
-    }, { timeout: 6000 }, choice).catch(() => false);
-    if (!clicked) controller.log(`❌ No se encontró la opción ${label}: ${choice}.`);
-    return clicked;
+    }, choice).catch(() => false);
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (await tryClick()) return true;
+      await sleep(1200);
+    }
+    controller.log(`❌ No se encontró la opción ${label}: ${choice} tras varios intentos.`);
+    return false;
   };
 
   const countryClicked = await page.evaluate(() => {
@@ -1437,20 +1529,37 @@ async function deleteAndRepost(page, controller, options = {}) {
       controller.setCycleStage('photos', 'Cargando fotos.');
       const photosDir = path.resolve(__dirname, details.photosPath);
       const photoInputs = await page.$$('input[type="file"]');
-      const photoInput = photoInputs.find((input) => input) || null;
+      let photoInput = null;
+      let acceptsMultiple = false;
+      for (const input of photoInputs) {
+        const info = await input.evaluate((el) => ({ multiple: Boolean(el.multiple) })).catch(() => ({ multiple: false }));
+        if (info.multiple) {
+          photoInput = input;
+          acceptsMultiple = true;
+          break;
+        }
+        if (!photoInput) photoInput = input;
+      }
       if (!photoInput) {
         controller.setCycleStage('error', 'No se encontró el campo de fotos.');
         controller.log('❌ No se encontró el campo de fotos en el formulario.');
         return false;
       }
-      if (photoInput && fs.existsSync(photosDir)) {
+      if (fs.existsSync(photosDir)) {
         const photos = fs.readdirSync(photosDir)
           .filter(name => /\.(jpg|jpeg|png|webp)$/i.test(name))
           .map(name => path.join(photosDir, name));
         if (photos.length > 0) {
-          const acceptsMultiple = await photoInput.evaluate((input) => input.multiple);
           if (acceptsMultiple) {
-            await photoInput.uploadFile(...photos);
+            try {
+              await photoInput.uploadFile(...photos);
+            } catch (error) {
+              controller.log(`⚠️ Subida múltiple falló (${error.message}); subiendo una por una...`);
+              for (const photo of photos) {
+                await photoInput.uploadFile(photo);
+                await sleep(800);
+              }
+            }
           } else {
             for (const photo of photos) {
               await photoInput.uploadFile(photo);
@@ -1471,7 +1580,24 @@ async function deleteAndRepost(page, controller, options = {}) {
     controller.setCycleStage('publishing', 'Publicando anuncio.');
     let confirmed = false;
     for (let attempt = 1; attempt <= 3 && !confirmed; attempt++) {
-      const published = await clickTextControl(page, ['publish', 'post\\s+ad', 'publicar', 'crear anuncio'], 10000);
+      let published = await clickTextControl(page, ['publish', 'post\\s+ad', 'publicar', 'crear anuncio'], 10000);
+      if (!published) {
+        published = await page.evaluate(() => {
+          const form = document.querySelector('form');
+          const submit = form && form.querySelector('button[type="submit"], input[type="submit"]');
+          if (submit && submit.offsetParent !== null && !submit.disabled) {
+            submit.click();
+            return true;
+          }
+          const any = Array.from(document.querySelectorAll('button, input[type="submit"], a'))
+            .find((el) => el.offsetParent !== null && !el.disabled && /publish|post\s*ad|submit|publicar/i.test(`${el.innerText || ''} ${el.value || ''}`));
+          if (any) {
+            any.click();
+            return true;
+          }
+          return false;
+        }).catch(() => false);
+      }
       if (!published) {
         controller.log('No se encontró el botón final de publicación.');
         return false;
@@ -1884,6 +2010,9 @@ emitActive() {
     this.stats.bumpsToday += 1;
     this.stats.totalBumps += 1;
     this.stats.lastBumpAt = Date.now();
+    const times = recentBumpTimes.get(this.id) || [];
+    times.push(Date.now());
+    recentBumpTimes.set(this.id, times.slice(-30));
     saveState();
     this.emitStats();
   }
@@ -2180,6 +2309,9 @@ emitActive() {
     if (!this.started || this.paused) return;
     this.log('Iniciando ciclo de bump...');
 
+    const risk = assessComplianceRisk(this);
+    if (risk.length > 0) applyComplianceSlowdown(this, risk);
+
     try {
       await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
       this.log('Recarga completada.');
@@ -2243,6 +2375,9 @@ emitActive() {
       clearTimeout(this._cycleTimer);
       this._cycleTimer = null;
     }
+
+    const risk = assessComplianceRisk(this);
+    if (risk.length > 0) applyComplianceSlowdown(this, risk);
 
     this.log('🔄 Iniciando ciclo automático de borrado y republicación...');
     this._operationPromise = deleteAndRepost(this.page, this);
@@ -2312,6 +2447,9 @@ emitActive() {
   async _publishNowInternal() {
 
     this.log('📢 Publicación manual solicitada...');
+
+    const risk = assessComplianceRisk(this);
+    if (risk.length > 0) applyComplianceSlowdown(this, risk);
 
     try {
       await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });

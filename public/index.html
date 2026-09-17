@@ -1302,6 +1302,7 @@
     const profileStats = {};
     const profileStages = {};
     const profileRepostTimers = {};
+    const profileLogs = {};
     const profilesEl = document.getElementById('profiles');
     const activeCountEl = document.getElementById('active-count');
     const addModal = document.getElementById('addModal');
@@ -1542,14 +1543,28 @@
                   <button class="clear-log" data-clear-id="${profile.id}">Limpiar</button>
                 </span>
               </div>
-              <div class="log-list" data-log-id="${profile.id}">
-                <div>[Sistema] Interfaz lista y sincronizada con el backend.</div>
-              </div>
+              <div class="log-list" data-log-id="${profile.id}"></div>
             </div>
           </div>
         `;
 
         profilesEl.appendChild(card);
+
+        const logBox = card.querySelector('.log-list');
+        const buffered = profileLogs[profile.id] || [];
+        if (buffered.length === 0) {
+          const line = document.createElement('div');
+          line.textContent = '[Sistema] Interfaz lista y sincronizada con el backend.';
+          logBox.appendChild(line);
+        } else {
+          buffered.slice(-300).forEach((entry) => {
+            const line = document.createElement('div');
+            line.textContent = `[${entry.stamp}] ${entry.text}`;
+            line.dataset.logLevel = entry.level || 'info';
+            logBox.appendChild(line);
+          });
+        }
+        logBox.scrollTop = logBox.scrollHeight;
       }
 
       for (const id of Object.keys(profileStates)) updateProfileState(id, profileStates[id]);
@@ -1589,6 +1604,7 @@
       profilesEl.querySelectorAll('[data-clear-id]').forEach(button => {
         button.addEventListener('click', () => {
           const id = button.dataset.clearId;
+          profileLogs[id] = [];
           const log = document.querySelector(`[data-log-id="${id}"]`);
           if (log) log.innerHTML = '';
         });
@@ -1773,12 +1789,17 @@
     });
 
     socket.on('log', (data) => {
+      const stamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const entry = { text: data.text, level: data.level || 'info', stamp };
+      if (!profileLogs[data.id]) profileLogs[data.id] = [];
+      profileLogs[data.id].push(entry);
+      if (profileLogs[data.id].length > 300) profileLogs[data.id].splice(0, profileLogs[data.id].length - 300);
+
       const logBox = document.querySelector(`[data-log-id="${data.id}"]`);
       if (logBox) {
         const line = document.createElement('div');
-        const stamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         line.textContent = `[${stamp}] ${data.text}`;
-        line.dataset.logLevel = data.level || 'info';
+        line.dataset.logLevel = entry.level;
         logBox.appendChild(line);
         logBox.scrollTop = logBox.scrollHeight;
       }
@@ -1873,6 +1894,24 @@
 
     socket.on('emergency-stop', (data) => {
       showEmergencyBanner((data && data.reason) || 'Bloqueo detectado');
+    });
+
+    function showComplianceBanner(id, reasons, min, max) {
+      let banner = document.getElementById('compliance-banner');
+      if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'compliance-banner';
+        banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99998;background:#f39c12;color:#1a1a2e;padding:12px 16px;text-align:center;font-weight:bold;font-size:14px;box-shadow:0 4px 14px rgba(0,0,0,.4);';
+        document.body.appendChild(banner);
+      }
+      banner.textContent = `⚠️ Cumplimiento [${id}]: ${reasons}. Ritmo reducido a ${min}–${max} min para evitar reportes.`;
+      clearTimeout(banner._hideTimer);
+      banner._hideTimer = setTimeout(() => banner.remove(), 20000);
+    }
+
+    socket.on('compliance-warning', (data) => {
+      if (!data) return;
+      showComplianceBanner(data.id, (data.reasons || []).join('; '), data.min, data.max);
     });
 
     document.getElementById('startAllBtn').addEventListener('click', async () => {
