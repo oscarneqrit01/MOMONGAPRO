@@ -452,11 +452,16 @@ async function detectCaptchaSiteKey(page) {
   });
 }
 
+// fetch a 2Captcha con timeout para que nunca se quede colgado
+function twoCaptchaFetch(url, options = {}) {
+  return fetch(url, { ...options, signal: AbortSignal.timeout(20000) });
+}
+
 // Función para resolver CAPTCHAs automáticamente con tu clave de 2Captcha
 async function solveCaptcha(apiKey, siteKey, pageUrl, page) {
   try {
     console.log('🤖 Enviando CAPTCHA a 2Captcha...');
-    const submitRes = await fetch(`${TWOCAPTCHA_BASE}/in.php?key=${apiKey}&method=userrecaptcha&googlekey=${siteKey}&pageurl=${encodeURIComponent(pageUrl)}&json=1`);
+    const submitRes = await twoCaptchaFetch(`${TWOCAPTCHA_BASE}/in.php?key=${apiKey}&method=userrecaptcha&googlekey=${siteKey}&pageurl=${encodeURIComponent(pageUrl)}&json=1`);
     const submitData = await submitRes.json();
 
     if (submitData.status !== 1) {
@@ -466,10 +471,10 @@ async function solveCaptcha(apiKey, siteKey, pageUrl, page) {
     const taskId = submitData.request;
     console.log(`⏳ Tarea creada (${taskId}). Esperando resolución de 2Captcha...`);
 
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < 60; i++) {
       await sleep(5000);
 
-      const res = await fetch(`${TWOCAPTCHA_BASE}/res.php?key=${apiKey}&action=get&id=${taskId}&json=1`);
+      const res = await twoCaptchaFetch(`${TWOCAPTCHA_BASE}/res.php?key=${apiKey}&action=get&id=${taskId}&json=1`);
       const data = await res.json();
 
       if (data.status === 1) {
@@ -538,58 +543,87 @@ const CAPTCHA_INPUT_SELECTORS = [
 ];
 
 async function markImageCaptcha(page) {
-  return page.evaluate((inputSelectors) => {
-    const bySelector = document.querySelector(inputSelectors.join(', '));
-    const fields = Array.from(document.querySelectorAll('input, textarea'));
-    const input = bySelector
-      || fields.find((item) => /captcha|code from|picture|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`))
-      || fields.find((item) => item.type === 'text' && !/email/i.test(`${item.name || ''} ${item.id || ''}`));
-    if (!input) return false;
+  for (const frame of page.frames()) {
+    const marked = await frame.evaluate((inputSelectors) => {
+      const bySelector = document.querySelector(inputSelectors.join(', '));
+      const fields = Array.from(document.querySelectorAll('input, textarea'));
+      const input = bySelector
+        || fields.find((item) => /captcha|code from|picture|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`))
+        || fields.find((item) => item.type === 'text' && !/email/i.test(`${item.name || ''} ${item.id || ''}`));
+      if (!input) return false;
 
-    const known = document.getElementById('captcha_image_itself');
-    const elements = Array.from(document.querySelectorAll('img, canvas'));
-    const visible = elements.filter((el) => el.offsetParent !== null && el.getBoundingClientRect().width > 10);
-    const byName = visible.find((el) => /captcha|verif|code/i.test(`${el.src || ''} ${el.id || ''} ${el.className || ''} ${el.alt || ''}`));
-    const bySize = visible.find((el) => {
-      const rect = el.getBoundingClientRect();
-      return rect.width >= 40 && rect.width <= 420 && rect.height >= 20 && rect.height <= 160;
-    });
-    const image = (known && known.offsetParent !== null ? known : null) || byName || bySize;
-    if (!image) return false;
+      const known = document.getElementById('captcha_image_itself');
+      const elements = Array.from(document.querySelectorAll('img, canvas'));
+      const visible = elements.filter((el) => el.offsetParent !== null && el.getBoundingClientRect().width > 10);
+      const byName = visible.find((el) => /captcha|verif|code/i.test(`${el.src || ''} ${el.id || ''} ${el.className || ''} ${el.alt || ''}`));
+      const bySize = visible.find((el) => {
+        const rect = el.getBoundingClientRect();
+        return rect.width >= 40 && rect.width <= 420 && rect.height >= 20 && rect.height <= 160;
+      });
+      const image = (known && known.offsetParent !== null ? known : null) || byName || bySize;
+      if (!image) return false;
 
-    image.setAttribute('data-momonga-captcha-image', '1');
-    input.setAttribute('data-momonga-captcha-input', '1');
-    return true;
-  }, CAPTCHA_INPUT_SELECTORS).catch(() => false);
+      image.setAttribute('data-momonga-captcha-image', '1');
+      input.setAttribute('data-momonga-captcha-input', '1');
+      return true;
+    }, CAPTCHA_INPUT_SELECTORS).catch(() => false);
+    if (marked) return true;
+  }
+  return false;
 }
 
-// Escribe el código en el campo del captcha, reubicándolo (por si la página se re-renderizó)
-async function fillCaptchaInput(page, code) {
+async function findInFrames(page, selector) {
+  for (const frame of page.frames()) {
+    const handle = await frame.$(selector).catch(() => null);
+    if (handle) return handle;
+  }
+  return null;
+}
+
+// Escribe el código en el campo del captcha buscándolo en todos los frames y verificando que quedó
+async function fillCaptchaInput(page, code, controller) {
   const selector = CAPTCHA_INPUT_SELECTORS.join(', ');
+  const log = (msg) => { if (controller) controller.log(msg); };
 
-  const programmatic = await page.evaluate((sel, value) => {
-    const input = document.querySelector(sel);
-    if (!input) return false;
-    input.focus();
-    const setter = Object.getOwnPropertyDescriptor(input.__proto__, 'value')?.set;
-    if (setter) setter.call(input, value);
-    else input.value = value;
-    input.setAttribute('value', value);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
-    input.dispatchEvent(new Event('blur', { bubbles: true }));
-    return String(input.value || '').trim().length > 0;
-  }, selector, code).catch(() => false);
+  const frames = page.frames();
+  for (const frame of frames) {
+    const setValue = (value) => frame.evaluate((sel, val) => {
+      const input = document.querySelector(sel);
+      if (!input) return false;
+      try { input.scrollIntoView({ block: 'center' }); } catch (_) {}
+      input.focus();
+      const setter = Object.getOwnPropertyDescriptor(input.__proto__, 'value')?.set;
+      if (setter) setter.call(input, val); else input.value = val;
+      input.setAttribute('value', val);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+      input.dispatchEvent(new Event('blur', { bubbles: true }));
+      return true;
+    }, selector, value).catch(() => false);
 
-  if (programmatic) return true;
+    const checkValue = () => frame.evaluate((sel, val) => {
+      const input = document.querySelector(sel);
+      return Boolean(input && String(input.value || '').trim() === val);
+    }, selector, code).catch(() => false);
 
-  const handle = await page.$(selector).catch(() => null);
-  if (!handle) return false;
-  await handle.click({ clickCount: 3 }).catch(() => {});
-  await handle.type(code, { delay: 40 }).catch(() => {});
-  const value = await handle.evaluate((el) => String(el.value || '').trim()).catch(() => '');
-  return value.length > 0;
+    if (!(await setValue(code))) continue;
+
+    await sleep(400);
+    if (await checkValue()) return true;
+
+    // Respaldo: escribir con teclado real (algunos sitios lo exigen)
+    const handle = await frame.$(selector).catch(() => null);
+    if (handle) {
+      await handle.click({ clickCount: 3 }).catch(() => {});
+      await handle.type(code, { delay: 50 }).catch(() => {});
+      await sleep(300);
+      if (await checkValue()) return true;
+    }
+  }
+
+  log('⚠️ No se encontró o no quedó escrito el campo del captcha.');
+  return false;
 }
 
 // Prepara la imagen del captcha: escala x3 + gris + binarizado (igual que el bot de reportes)
@@ -635,17 +669,21 @@ async function reloadImageCaptcha(page) {
 async function solveImageCaptcha(apiKey, page, controller) {
   if (!(await markImageCaptcha(page))) return false;
 
-  const imageHandle = await page.$('[data-momonga-captcha-image]');
+  const imageHandle = await findInFrames(page, '[data-momonga-captcha-image]');
   if (!imageHandle) return false;
-  const box = await imageHandle.boundingBox();
-  if (!box || !box.width || !box.height) return false;
 
-  const rawShot = await page.screenshot({ clip: box, encoding: 'base64' });
+  const rawShot = await imageHandle.screenshot({ encoding: 'base64' }).catch(async () => {
+    const box = await imageHandle.boundingBox();
+    if (!box || !box.width || !box.height) return null;
+    return page.screenshot({ clip: box, encoding: 'base64' });
+  });
+  if (!rawShot) return false;
+
   const processed = await preprocessCaptchaImage(page, rawShot);
   const imageBase64 = processed || rawShot;
 
   controller.log('🤖 Enviando CAPTCHA de imagen a 2Captcha...');
-  const submitRes = await fetch(`${TWOCAPTCHA_BASE}/in.php`, {
+  const submitRes = await twoCaptchaFetch(`${TWOCAPTCHA_BASE}/in.php`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ key: apiKey, method: 'base64', body: imageBase64, json: '1' })
@@ -656,15 +694,16 @@ async function solveImageCaptcha(apiKey, page, controller) {
   }
 
   const taskId = submitData.request;
-  controller.log(`⏳ Tarea de imagen creada (${taskId}). Esperando resolución...`);
+  controller.log(`⏳ Tarea de imagen creada (${taskId}). Esperando resolución (hasta 5 min)...`);
 
-  for (let i = 0; i < 24; i++) {
+  const startedAt = Date.now();
+  for (let i = 0; i < 60; i++) {
     await sleep(5000);
-    const res = await fetch(`${TWOCAPTCHA_BASE}/res.php?key=${apiKey}&action=get&id=${taskId}&json=1`);
+    const res = await twoCaptchaFetch(`${TWOCAPTCHA_BASE}/res.php?key=${apiKey}&action=get&id=${taskId}&json=1`);
     const data = await res.json();
     if (data.status === 1) {
       const code = String(data.request || '').trim().toUpperCase();
-      const filled = await fillCaptchaInput(page, code);
+      const filled = await fillCaptchaInput(page, code, controller);
       if (!filled) {
         throw new Error('2Captcha resolvió el código, pero no se pudo escribir en el campo del captcha.');
       }
@@ -673,9 +712,12 @@ async function solveImageCaptcha(apiKey, page, controller) {
     if (data.request !== 'CAPCHA_NOT_READY') {
       throw new Error(`Respuesta de error: ${data.request}`);
     }
+    if (i > 0 && i % 3 === 0) {
+      controller.log(`⏳ Aún esperando a 2Captcha... (${Math.round((Date.now() - startedAt) / 1000)}s)`);
+    }
   }
 
-  throw new Error('Tiempo de espera agotado para el CAPTCHA de imagen.');
+  throw new Error('Tiempo de espera agotado para el CAPTCHA de imagen (5 min).');
 }
 
 async function handleCaptchaIfPresent(page, controller) {
@@ -1612,13 +1654,44 @@ async function clickNextStep(page, controller) {
   return true;
 }
 
+async function detectCaptchaFields(page) {
+  for (const frame of page.frames()) {
+    const found = await frame.evaluate(() => {
+      const fields = Array.from(document.querySelectorAll('input, textarea'));
+      const field = fields.find((item) => /captcha|code from|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`));
+      const recaptcha = document.querySelector('textarea[name="g-recaptcha-response"], textarea#g-recaptcha-response');
+      return { imageField: Boolean(field), recaptcha: Boolean(recaptcha) };
+    }).catch(() => ({ imageField: false, recaptcha: false }));
+    if (found.imageField || found.recaptcha) return found;
+  }
+  return { imageField: false, recaptcha: false };
+}
+
+async function isCaptchaSolved(page) {
+  const selector = CAPTCHA_INPUT_SELECTORS.join(', ');
+  for (const frame of page.frames()) {
+    const solved = await frame.evaluate((sel) => {
+      const input = document.querySelector(sel);
+      if (input && String(input.value || '').trim()) return true;
+      const recaptcha = document.querySelector('textarea[name="g-recaptcha-response"], textarea#g-recaptcha-response');
+      return Boolean(recaptcha && recaptcha.value.trim());
+    }, selector).catch(() => false);
+    if (solved) return true;
+  }
+  return false;
+}
+
+async function waitForCaptchaSolved(page, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await isCaptchaSolved(page)) return true;
+    await sleep(1000);
+  }
+  return false;
+}
+
 async function waitForManualCaptcha(page, controller) {
-  const captcha = await page.evaluate(() => {
-    const fields = Array.from(document.querySelectorAll('input, textarea'));
-    const field = fields.find((item) => /captcha|code from|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`));
-    const recaptcha = document.querySelector('textarea[name="g-recaptcha-response"], textarea#g-recaptcha-response');
-    return { imageField: Boolean(field), recaptcha: Boolean(recaptcha) };
-  });
+  const captcha = await detectCaptchaFields(page);
 
   if (!captcha.imageField && !captcha.recaptcha) return true;
 
@@ -1633,12 +1706,7 @@ async function waitForManualCaptcha(page, controller) {
 
   await handleCaptchaIfPresent(page, controller);
 
-  const solvedAuto = await page.waitForFunction(() => {
-    const fields = Array.from(document.querySelectorAll('input, textarea'));
-    const imageField = fields.find((item) => /captcha|code from|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`));
-    const recaptcha = document.querySelector('textarea[name="g-recaptcha-response"], textarea#g-recaptcha-response');
-    return Boolean((imageField && imageField.value.trim()) || (recaptcha && recaptcha.value.trim()));
-  }, { timeout: 15000 }).then(() => true).catch(() => false);
+  const solvedAuto = await waitForCaptchaSolved(page, 15000);
 
   if (solvedAuto) {
     controller.setCycleStage('captcha', 'CAPTCHA resuelto automáticamente.');
@@ -1648,12 +1716,7 @@ async function waitForManualCaptcha(page, controller) {
 
   controller.setCycleStage('captcha', 'Esperando CAPTCHA manual.');
   controller.log('🧩 CAPTCHA no resuelto automáticamente. Introduce el código manualmente en Chrome; el proceso esperará hasta 5 minutos.');
-  const solved = await page.waitForFunction(() => {
-    const fields = Array.from(document.querySelectorAll('input, textarea'));
-    const imageField = fields.find((item) => /captcha|code from|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`));
-    const recaptcha = document.querySelector('textarea[name="g-recaptcha-response"], textarea#g-recaptcha-response');
-    return Boolean((imageField && imageField.value.trim()) || (recaptcha && recaptcha.value.trim()));
-  }, { timeout: 300000 }).then(() => true).catch(() => false);
+  const solved = await waitForCaptchaSolved(page, 300000);
 
   if (!solved) {
     controller.setCycleStage('error', 'Tiempo agotado esperando CAPTCHA.');
