@@ -168,6 +168,16 @@ async function runTests() {
     record('bloqueo: detecta ban_message y para todo', ok, ok ? 'ok' : 'no');
   });
 
+  // 4b) Detección de bloqueo por la página "scam-page" (fraud bots / phished)
+  await withStack({
+    scenario: 'scam-page',
+    profiles: [{ id: 'perfil-scam', email: 'cuenta@ejemplo.com', settings: { rotateAds: true, randomizedDelay: false, publishOnStart: false } }]
+  }, async ({ page, out }) => {
+    await startFirst(page);
+    const ok = await waitForLog(out, /PARADA DE EMERGENCIA/i, 60000);
+    record('bloqueo: detecta la scam-page (fraud bots) y para todo', ok, ok ? 'ok' : 'no');
+  });
+
   // 5) Publicar con el botón div#input_send
   await withStack({
     scenario: 'input-send',

@@ -35,6 +35,19 @@ app.get('/users/ban_message', (request, response) => {
 });
 
 app.get('/users/posts/list', (request, response) => {
+  if (scenario === 'scam-page') {
+    return response.send(layout('MegaPersonals: Classified hookups', `
+      <div class="container scam-page">
+        <div class="marg-top-25 alert alert-danger" role="alert">
+          <h2><b>Our fraud bots have<br>been triggered.</b></h2>
+          <h2><b>You may have been<br>Phished by a<br>scammer.</b></h2>
+          <img src="/resources/img/banned-message-small.png" class="banned-message-small">
+          <a class="not-abuse-link" href="/public/support_request">I don't know why I am blocked</a>
+        </div>
+      </div>
+    `));
+  }
+
   if (scenario === 'blocked') {
     return response.send(layout('My Posts', `
       <h2>Your account has been suspended</h2>

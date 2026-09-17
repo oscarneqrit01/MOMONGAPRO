@@ -880,6 +880,12 @@ const BLOCK_PATTERNS = [
   /violat(e|ion|ed)[^.]{0,40}(terms|policy|policies)/i,
   /has sido (suspendido|bloqueado|baneado)/i,
   /su cuenta (ha sido|fue) (suspendida|bloqueada|baneada|desactivada)/i,
+  // Página "scam-page" de MegaPersonals (bloqueo de la cuenta)
+  /fraud bots? (have|has) been triggered/i,
+  /you may have been\s*phished/i,
+  /phished by a\s*scammer/i,
+  /i (don'?t|do not) know why i am blocked/i,
+  /\bscam-page\b/i,
   /\bsuspended\b/i,
   /\bbanned\b/i,
   /\bblocked\b/i
@@ -893,6 +899,9 @@ async function detectBlock(page) {
     if (/\/users\/ban_message|\bban_message\b|\/banned\b|\/suspended\b/i.test(url)) return true;
 
     return await page.evaluate((patternsSource) => {
+      // Marcadores fuertes del bloqueo de MegaPersonals (página "scam-page")
+      if (document.querySelector('.scam-page, .banned-message-small, img[src*="banned"], a[href*="scam_request"]')) return true;
+
       const patterns = patternsSource.map((source) => new RegExp(source, 'i'));
       const parts = [document.title || '', window.location.href || ''];
 
@@ -900,8 +909,9 @@ async function detectBlock(page) {
         'h1', 'h2', 'h3',
         '[role="alert"]',
         '.alert', '.error', '.error-message', '.notice-error',
+        '.scam-page', '.banned-message-small',
         '[class*="alert" i]', '[class*="error" i]', '[class*="suspend" i]', '[class*="banned" i]', '[class*="blocked" i]',
-        '[class*="restrict" i]', '[class*="deactivat" i]', '[class*="denied" i]',
+        '[class*="restrict" i]', '[class*="deactivat" i]', '[class*="denied" i]', '[class*="scam" i]',
         '[id*="alert" i]', '[id*="error" i]', '[id*="suspend" i]', '[id*="banned" i]', '[id*="blocked" i]'
       ];
 
