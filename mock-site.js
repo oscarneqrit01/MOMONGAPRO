@@ -113,6 +113,7 @@ app.get('/users/posts/create', (request, response) => {
     <h2>Create post</h2>
     <form id="post-form" onsubmit="${onSubmit}">
       <div id="step-one">
+        ${scenario === 'captcha-pending' ? '<input type="hidden" name="captcha_token" value="">' : ''}
         <label>Name <input name="name"></label>
         <label>Headline <input name="headline"></label>
         <label>Age <input name="age"></label>

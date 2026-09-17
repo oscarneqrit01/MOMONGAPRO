@@ -532,9 +532,9 @@ async function solveCaptcha(apiKey, siteKey, pageUrl, page) {
 }
 
 const CAPTCHA_INPUT_SELECTORS = [
-  '[data-momonga-captcha-input]',
   '#captcha_code',
   'input[name="captchaCode"]',
+  '[data-momonga-captcha-input]',
   'input[name*="captcha" i]',
   'input[id*="captcha" i]',
   'input[placeholder*="picture" i]',
@@ -547,7 +547,9 @@ async function markImageCaptcha(page) {
     const marked = await frame.evaluate((inputSelectors) => {
       const bySelector = document.querySelector(inputSelectors.join(', '));
       const fields = Array.from(document.querySelectorAll('input, textarea'));
-      const input = bySelector
+      // El campo real de MegaPersonals es #captcha_code: forzarlo antes que cualquier heurística.
+      const input = document.getElementById('captcha_code')
+        || bySelector
         || fields.find((item) => /captcha|code from|picture|verification/i.test(`${item.name || ''} ${item.id || ''} ${item.placeholder || ''}`))
         || fields.find((item) => item.type === 'text' && !/email/i.test(`${item.name || ''} ${item.id || ''}`));
       if (!input) return false;
@@ -586,7 +588,8 @@ async function fillCaptchaInput(page, code, controller) {
   const log = (msg) => { if (controller) controller.log(msg); };
 
   for (const frame of page.frames()) {
-    const handle = await frame.$(selector).catch(() => null);
+    let handle = await frame.$('#captcha_code').catch(() => null);
+    if (!handle) handle = await frame.$(selector).catch(() => null);
     if (!handle) continue;
 
     const checkValue = () => handle.evaluate((el, val) => String(el.value || '').trim() === val, code).catch(() => false);
@@ -1700,7 +1703,7 @@ async function isCaptchaSolved(page) {
   const selector = CAPTCHA_INPUT_SELECTORS.join(', ');
   for (const frame of page.frames()) {
     const solved = await frame.evaluate((sel) => {
-      const input = document.querySelector(sel);
+      const input = document.getElementById('captcha_code') || document.querySelector(sel);
       if (input && String(input.value || '').trim()) return true;
       const recaptcha = document.querySelector('textarea[name="g-recaptcha-response"], textarea#g-recaptcha-response');
       return Boolean(recaptcha && recaptcha.value.trim());
