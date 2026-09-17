@@ -2022,7 +2022,8 @@ emitActive() {
 
   async bumpCycle() {
     if (this._operationPromise) {
-      this.log('Ciclo omitido: ya hay una publicación en curso.');
+      this.log('Ciclo de bump omitido: hay una publicación en curso. Se reprograma.');
+      this.scheduleNext();
       return;
     }
     this._operationPromise = this._bumpCycleInternal();
@@ -2090,10 +2091,17 @@ emitActive() {
   async repostCycle() {
     if (!this.started || this.paused || !this.autoRepostActive) return;
     if (this._operationPromise) {
-      this.log('Republicación omitida: ya hay una publicación en curso.');
+      this.log('Republicación omitida: hay una publicación en curso. Se reprograma.');
       this.scheduleRepost();
       return;
     }
+
+    // Evita que el temporizador de bump dispare mientras se remueve/republica el post.
+    if (this._cycleTimer) {
+      clearTimeout(this._cycleTimer);
+      this._cycleTimer = null;
+    }
+
     this.log('🔄 Iniciando ciclo automático de borrado y republicación...');
     this._operationPromise = deleteAndRepost(this.page, this);
     try {
@@ -2101,7 +2109,12 @@ emitActive() {
     } finally {
       this._operationPromise = null;
     }
-    if (this.started && !this.paused && this.autoRepostActive) this.scheduleRepost();
+
+    // Tras el repost, reprograma ambos ciclos para que no queden desincronizados.
+    if (this.started && !this.paused) {
+      this.scheduleNext();
+      if (this.autoRepostActive) this.scheduleRepost();
+    }
   }
 
   async publishNow() {
