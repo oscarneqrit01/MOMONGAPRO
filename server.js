@@ -14,6 +14,7 @@ const STATE_PATH = process.env.STATE_PATH || path.join(__dirname, 'state.json');
 const PORT = process.env.PORT || 3000;
 const DEFAULT_URL = 'https://megapersonals.eu/';
 const DEFAULT_SUPPORT_EMAIL = 'support@megapersonals.eu';
+const TWOCAPTCHA_BASE = (process.env.TWOCAPTCHA_BASE || 'https://2captcha.com').replace(/\/+$/, '');
 
 function siteUrls(controller) {
   const configuredUrl = controller?.cfg?.url || DEFAULT_URL;
@@ -455,7 +456,7 @@ async function detectCaptchaSiteKey(page) {
 async function solveCaptcha(apiKey, siteKey, pageUrl, page) {
   try {
     console.log('🤖 Enviando CAPTCHA a 2Captcha...');
-    const submitRes = await fetch(`https://2captcha.com/in.php?key=${apiKey}&method=userrecaptcha&googlekey=${siteKey}&pageurl=${encodeURIComponent(pageUrl)}&json=1`);
+    const submitRes = await fetch(`${TWOCAPTCHA_BASE}/in.php?key=${apiKey}&method=userrecaptcha&googlekey=${siteKey}&pageurl=${encodeURIComponent(pageUrl)}&json=1`);
     const submitData = await submitRes.json();
 
     if (submitData.status !== 1) {
@@ -468,7 +469,7 @@ async function solveCaptcha(apiKey, siteKey, pageUrl, page) {
     for (let i = 0; i < 24; i++) {
       await sleep(5000);
 
-      const res = await fetch(`https://2captcha.com/res.php?key=${apiKey}&action=get&id=${taskId}&json=1`);
+      const res = await fetch(`${TWOCAPTCHA_BASE}/res.php?key=${apiKey}&action=get&id=${taskId}&json=1`);
       const data = await res.json();
 
       if (data.status === 1) {
@@ -644,7 +645,7 @@ async function solveImageCaptcha(apiKey, page, controller) {
   const imageBase64 = processed || rawShot;
 
   controller.log('🤖 Enviando CAPTCHA de imagen a 2Captcha...');
-  const submitRes = await fetch('https://2captcha.com/in.php', {
+  const submitRes = await fetch(`${TWOCAPTCHA_BASE}/in.php`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ key: apiKey, method: 'base64', body: imageBase64, json: '1' })
@@ -659,7 +660,7 @@ async function solveImageCaptcha(apiKey, page, controller) {
 
   for (let i = 0; i < 24; i++) {
     await sleep(5000);
-    const res = await fetch(`https://2captcha.com/res.php?key=${apiKey}&action=get&id=${taskId}&json=1`);
+    const res = await fetch(`${TWOCAPTCHA_BASE}/res.php?key=${apiKey}&action=get&id=${taskId}&json=1`);
     const data = await res.json();
     if (data.status === 1) {
       const code = String(data.request || '').trim().toUpperCase();

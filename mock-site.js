@@ -6,6 +6,8 @@ const scenario = String(process.env.MOCK_SCENARIO || 'normal').trim().toLowerCas
 let bumpCount = 0;
 let repostCount = 0;
 let bumpedIds = [];
+let lastCaptcha = '';
+let publishClicks = 0;
 
 app.use(express.urlencoded({ extended: false }));
 
@@ -93,10 +95,16 @@ app.get('/users/posts/create', (request, response) => {
     ? '<option>--- Select City ---</option><option>Montreal</option>'
     : '<option>--- Select City ---</option><option>Charleston, SC</option><option>Montreal</option>';
   const photoInput = scenario === 'missing-photos' ? '' : '<label>Photos <input type="file" multiple></label>';
-  const captchaInput = scenario === 'captcha-pending' ? '<label>Captcha <input name="captcha" placeholder="Enter code from the picture"></label>' : '';
+  const captchaImage = `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="140" height="50"><rect width="140" height="50" fill="#0b3b2e"/><text x="70" y="35" font-family="monospace" font-size="30" fill="#0a0a0a" text-anchor="middle">Z8VQ</text></svg>').toString('base64')}`;
+  const captchaInput = scenario === 'captcha-pending'
+    ? `<label>Captcha <img id="captcha_image_itself" src="${captchaImage}" width="140" height="50"><input id="captcha_code" name="captchaCode" placeholder="Enter code from the picture" type="text" autocapitalize="characters"></label>`
+    : '';
+  const onSubmit = scenario === 'captcha-pending'
+    ? `event.preventDefault();fetch('/record-captcha?value='+encodeURIComponent(document.getElementById('captcha_code').value)).then(()=>{window.location.href='${publishTarget}'});`
+    : `event.preventDefault();window.location.href='${publishTarget}'`;
   response.send(layout('Create post', `
     <h2>Create post</h2>
-    <form id="post-form" onsubmit="event.preventDefault();window.location.href='${publishTarget}'">
+    <form id="post-form" onsubmit="${onSubmit}">
       <div id="step-one">
         <label>Name <input name="name"></label>
         <label>Headline <input name="headline"></label>
@@ -114,6 +122,16 @@ app.get('/users/posts/create', (request, response) => {
       </div>
     </form>
   `));
+});
+
+app.get('/record-captcha', (request, response) => {
+  lastCaptcha = String(request.query.value || '');
+  publishClicks += 1;
+  response.json({ ok: true });
+});
+
+app.get('/captcha-value', (request, response) => {
+  response.json({ captcha: lastCaptcha, publishClicks });
 });
 
 app.listen(port, '127.0.0.1', () => {
