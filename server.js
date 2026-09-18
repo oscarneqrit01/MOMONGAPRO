@@ -488,6 +488,37 @@ const TG_FIELDS = {
   proxy: 'proxy'
 };
 
+// Los nombres de cuenta pueden tener espacios ("Mega Oreja"): los detectamos por la lista real.
+function tgKnownIds() {
+  return [...controllers.keys()].sort((a, b) => b.length - a.length);
+}
+
+function tgParseVer(raw) {
+  const m = raw.match(/^\/ver\s+([\s\S]+)$/i);
+  if (!m) return null;
+  const rest = m[1].trim();
+  for (const id of tgKnownIds()) {
+    if (rest.toLowerCase() === id.toLowerCase() || rest.toLowerCase().startsWith(`${id.toLowerCase()} `)) return id;
+  }
+  return rest.split(/\s+/)[0];
+}
+
+function tgParseSet(raw) {
+  const m = raw.match(/^\/set\s+([\s\S]+)$/i);
+  if (!m) return null;
+  const rest = m[1].trim();
+  for (const id of tgKnownIds()) {
+    if (rest.toLowerCase().startsWith(`${id.toLowerCase()} `)) {
+      const after = rest.slice(id.length).trim();
+      const fm = after.match(/^(\S+)\s+([\s\S]*)$/);
+      if (fm) return { id, field: fm[1], value: fm[2].trim() };
+    }
+  }
+  const fm = rest.match(/^(\S+)\s+(\S+)\s+([\s\S]*)$/);
+  if (fm) return { id: fm[1], field: fm[2], value: fm[3].trim() };
+  return null;
+}
+
 function tgMask(value) {
   const v = String(value || '');
   if (v.length <= 6) return v ? '••••' : '(vacío)';
@@ -607,17 +638,17 @@ async function startTelegramBot() {
             const raw = String(u.message.text || '').trim();
             const text = raw.toLowerCase();
             const chat = u.message.chat.id;
-            const ver = raw.match(/^\/ver\s+(\S+)/i);
-            const set = raw.match(/^\/set\s+(\S+)\s+(\S+)\s+([\s\S]*)$/i);
+            const verId = /^\/ver\s+/i.test(raw) ? tgParseVer(raw) : null;
+            const setCmd = /^\/set\s+/i.test(raw) ? tgParseSet(raw) : null;
             if (text === '/start' || text === '/menu' || text === '/cuentas' || text === '/estado') {
               console.log('[telegram] menú enviado a', fromChat);
               await showAccountsMenu(token, chat);
-            } else if (ver) {
-              console.log('[telegram] /ver', ver[1]);
-              await tgSend(token, chat, tgView(ver[1]));
-            } else if (set) {
-              console.log('[telegram] /set', set[1], set[2]);
-              await tgSend(token, chat, tgSetField(set[1], set[2], set[3].trim()));
+            } else if (verId) {
+              console.log('[telegram] /ver', verId);
+              await tgSend(token, chat, tgView(verId));
+            } else if (setCmd) {
+              console.log('[telegram] /set', setCmd.id, setCmd.field);
+              await tgSend(token, chat, tgSetField(setCmd.id, setCmd.field, setCmd.value));
             } else if (text === '/ayuda' || text === '/help') {
               await tgSend(token, chat, '*Comandos*\n/menu — cuentas y botones\n/ver <id> — ver una cuenta completa\n/set <id> <campo> <valor> — editar un campo\n\nCampos: nombre, titulo, ciudad, edad, ubicacion, telefono, texto, fotos, email, password, apikey, proxy');
             }
