@@ -1147,7 +1147,7 @@ async function checkForBlock(page, controller) {
 // --- Cumplimiento: control de riesgo que suele disparar reportes ---
 const recentBumpTimes = new Map();
 const textHashOwners = new Map();
-const lastPhotoSets = new Map();
+const photoSetOwners = new Map();
 
 function hashText(text) {
   return crypto.createHash('sha1').update(String(text || '').trim().toLowerCase()).digest('hex');
@@ -1201,10 +1201,13 @@ function assessComplianceRisk(controller) {
 
   const photoSet = hashPhotoSet(details.photosPath);
   if (photoSet) {
-    if (lastPhotoSets.get(controller.id) === photoSet) {
-      reasons.push('mismas fotos que el ciclo anterior');
+    const owners = photoSetOwners.get(photoSet) || new Set();
+    const others = [...owners].filter((id) => id !== controller.id);
+    if (others.length > 0) {
+      reasons.push(`mismas fotos que otra cuenta (${others.join(', ')})`);
     }
-    lastPhotoSets.set(controller.id, photoSet);
+    owners.add(controller.id);
+    photoSetOwners.set(photoSet, owners);
   }
 
   return reasons;
