@@ -1192,6 +1192,7 @@
           <button class="btn btn-export" id="importProfilesBtn">Importar perfiles</button>
           <input type="file" id="importProfilesInput" accept=".json,application/json" style="display:none" />
           <button class="btn btn-export" id="healthBtn">Salud del sistema</button>
+          <button class="btn btn-export" id="notifyBtn">Notificaciones</button>
           <button class="btn btn-export" id="appealsBtn">Bloqueos detectados</button>
           <button class="btn btn-export" id="changePasswordBtn">Cambiar contraseña</button>
         </div>
@@ -1302,6 +1303,35 @@
     </form>
   </div>
 
+  <div class="modal-backdrop" id="notifyModal" role="dialog" aria-modal="true" aria-labelledby="notifyModalTitle">
+    <form class="modal" id="notifyForm">
+      <div class="modal-header">
+        <h2 id="notifyModalTitle">Notificaciones</h2>
+        <button class="modal-close" id="closeNotifyModalBtn" type="button" aria-label="Cerrar">&times;</button>
+      </div>
+      <div class="form-grid">
+        <div class="form-field full">
+          <label for="telegramToken">Token del bot de Telegram</label>
+          <input id="telegramToken" name="telegramToken" type="text" placeholder="123456:ABC-DEF..." />
+        </div>
+        <div class="form-field full">
+          <label for="telegramChatId">Chat ID de Telegram</label>
+          <input id="telegramChatId" name="telegramChatId" type="text" placeholder="Ej: 123456789" />
+        </div>
+        <div class="form-field full">
+          <label for="discordWebhook">Webhook de Discord (opcional)</label>
+          <input id="discordWebhook" name="discordWebhook" type="text" placeholder="https://discord.com/api/webhooks/..." />
+        </div>
+      </div>
+      <div class="form-error" id="notifyFormError" role="alert"></div>
+      <div class="modal-actions">
+        <button class="cancel-btn" id="cancelNotifyModalBtn" type="button">Cancelar</button>
+        <button class="cancel-btn" id="testNotifyBtn" type="button">Probar</button>
+        <button class="save-btn" type="submit">Guardar</button>
+      </div>
+    </form>
+  </div>
+
   <div class="modal-backdrop" id="healthModal" role="dialog" aria-modal="true" aria-labelledby="healthModalTitle">
     <div class="modal">
       <div class="modal-header">
@@ -1350,6 +1380,9 @@
     const appealsList = document.getElementById('appealsList');
     const healthModal = document.getElementById('healthModal');
     const healthList = document.getElementById('healthList');
+    const notifyModal = document.getElementById('notifyModal');
+    const notifyForm = document.getElementById('notifyForm');
+    const notifyFormError = document.getElementById('notifyFormError');
     const pendingSettingsSaves = {};
 
     function openAddModal() {
@@ -1577,6 +1610,29 @@
 
     function closeHealthModal() {
       healthModal.classList.remove('open');
+    }
+
+    async function openNotifyModal() {
+      notifyFormError.textContent = '';
+      notifyModal.classList.add('open');
+      try {
+        const cfg = await (await fetch('/api/notifications')).json();
+        document.getElementById('telegramToken').value = cfg.telegramToken || '';
+        document.getElementById('telegramChatId').value = cfg.telegramChatId || '';
+        document.getElementById('discordWebhook').value = cfg.discordWebhook || '';
+      } catch (_) {}
+    }
+
+    function closeNotifyModal() {
+      notifyModal.classList.remove('open');
+    }
+
+    function notifyFormData() {
+      return {
+        telegramToken: document.getElementById('telegramToken').value.trim(),
+        telegramChatId: document.getElementById('telegramChatId').value.trim(),
+        discordWebhook: document.getElementById('discordWebhook').value.trim()
+      };
     }
 
     async function loadProfiles() {
@@ -2297,6 +2353,39 @@
     });
     socket.on('health', () => {
       if (healthModal.classList.contains('open')) openHealthModal();
+    });
+
+    document.getElementById('notifyBtn').addEventListener('click', openNotifyModal);
+    document.getElementById('closeNotifyModalBtn').addEventListener('click', closeNotifyModal);
+    document.getElementById('cancelNotifyModalBtn').addEventListener('click', closeNotifyModal);
+    notifyModal.addEventListener('click', (event) => {
+      if (event.target === notifyModal) closeNotifyModal();
+    });
+
+    document.getElementById('testNotifyBtn').addEventListener('click', async () => {
+      notifyFormError.textContent = '';
+      try {
+        const res = await fetch('/api/notifications/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(notifyFormData()) });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'No se pudo enviar la prueba.');
+        alert('✅ ' + (data.message || 'Prueba enviada. Revisa tu Telegram.'));
+      } catch (error) {
+        notifyFormError.textContent = error.message;
+      }
+    });
+
+    notifyForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      notifyFormError.textContent = '';
+      try {
+        const res = await fetch('/api/notifications', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(notifyFormData()) });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'No se pudo guardar.');
+        closeNotifyModal();
+        alert('✅ Notificaciones guardadas.');
+      } catch (error) {
+        notifyFormError.textContent = error.message;
+      }
     });
 
     document.getElementById('openAppealsFolderBtn').addEventListener('click', async () => {

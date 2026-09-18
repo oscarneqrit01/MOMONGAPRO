@@ -8,6 +8,7 @@ profiles/
 config.json
 state.json
 panel-auth.json
+notifications.json
 .secrets-key
 backups/
 test/.tmp/

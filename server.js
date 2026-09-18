@@ -9,6 +9,18 @@ const puppeteer = require('puppeteer');
 const sharp = require('sharp');
 const { ProxyAgent, fetch: undiciFetch } = require('undici');
 
+// Carga el archivo .env (sin dependencias) para poder configurar todo ahí.
+try {
+  const envPath = path.join(__dirname, '.env');
+  if (fs.existsSync(envPath)) {
+    for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*)\s*$/);
+      if (!m) continue;
+      if (process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+    }
+  }
+} catch (_) {}
+
 const CONFIG_PATH = process.env.CONFIG_PATH || path.join(__dirname, 'config.json');
 const STATE_PATH = process.env.STATE_PATH || path.join(__dirname, 'state.json');
 const PORT = process.env.PORT || 3000;
@@ -366,12 +378,23 @@ function pruneLogs(maxDays = 30) {
   }
 }
 
+const NOTIFY_PATH = process.env.NOTIFY_PATH || path.join(__dirname, 'notifications.json');
+
+function loadNotifyConfig() {
+  try { return JSON.parse(fs.readFileSync(NOTIFY_PATH, 'utf8')) || {}; } catch (_) { return {}; }
+}
+
+function saveNotifyConfig(cfg) {
+  fs.writeFileSync(NOTIFY_PATH, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8');
+}
+
 async function notify(message) {
   const text = `MOMONGA PRO\n${message}`;
   const tasks = [];
+  const cfg = loadNotifyConfig();
 
-  const tgToken = process.env.TELEGRAM_BOT_TOKEN;
-  const tgChat = process.env.TELEGRAM_CHAT_ID;
+  const tgToken = cfg.telegramToken || process.env.TELEGRAM_BOT_TOKEN;
+  const tgChat = cfg.telegramChatId || process.env.TELEGRAM_CHAT_ID;
   if (tgToken && tgChat) {
     tasks.push(undiciFetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
       method: 'POST',
@@ -380,7 +403,7 @@ async function notify(message) {
     }).catch(() => {}));
   }
 
-  const discord = process.env.DISCORD_WEBHOOK_URL;
+  const discord = cfg.discordWebhook || process.env.DISCORD_WEBHOOK_URL;
   if (discord) {
     tasks.push(undiciFetch(discord, {
       method: 'POST',
@@ -3360,6 +3383,64 @@ app.get('/api/health', (req, res) => {
 app.post('/api/health/balance', async (req, res) => {
   await refreshTwoCaptchaBalance();
   res.json({ success: true, ...twoCaptchaStats });
+});
+
+app.get('/api/notifications', (req, res) => {
+  const cfg = loadNotifyConfig();
+  res.json({
+    telegramToken: cfg.telegramToken || process.env.TELEGRAM_BOT_TOKEN || '',
+    telegramChatId: cfg.telegramChatId || process.env.TELEGRAM_CHAT_ID || '',
+    discordWebhook: cfg.discordWebhook || process.env.DISCORD_WEBHOOK_URL || ''
+  });
+});
+
+app.post('/api/notifications', (req, res) => {
+  try {
+    const cfg = {
+      telegramToken: String(req.body?.telegramToken || '').trim(),
+      telegramChatId: String(req.body?.telegramChatId || '').trim(),
+      discordWebhook: String(req.body?.discordWebhook || '').trim()
+    };
+    saveNotifyConfig(cfg);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/notifications/test', async (req, res) => {
+  try {
+    const cfg = {
+      telegramToken: String(req.body?.telegramToken || '').trim(),
+      telegramChatId: String(req.body?.telegramChatId || '').trim(),
+      discordWebhook: String(req.body?.discordWebhook || '').trim()
+    };
+    if (cfg.telegramToken || cfg.discordWebhook) saveNotifyConfig(cfg);
+
+    const tgToken = cfg.telegramToken;
+    const tgChat = cfg.telegramChatId;
+    if (tgToken && tgChat) {
+      const r = await undiciFetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: tgChat, text: 'MOMONGA PRO\n✅ Prueba de notificación. ¡Funciona!' })
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || data.ok === false) {
+        return res.status(400).json({ success: false, error: data.description || `Telegram respondió ${r.status}` });
+      }
+      return res.json({ success: true, message: 'Enviado a Telegram.' });
+    }
+
+    if (cfg.discordWebhook) {
+      await notify('✅ Prueba de notificación.');
+      return res.json({ success: true, message: 'Enviado a Discord.' });
+    }
+
+    res.status(400).json({ success: false, error: 'Falta el token y el chat ID de Telegram.' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 app.get('/api/profiles', (req, res) => {

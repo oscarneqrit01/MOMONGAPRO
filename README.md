@@ -24,7 +24,7 @@ Panel multi-perfil para automatizar **bumps** y **reposts** en sitios tipo MegaP
 - **Panel web** en tiempo real (Socket.IO): **Abrir Página** / Iniciar / Pausar / Detener / Publicar, contadores, estado y registro en vivo. "Abrir Página" solo abre el navegador; el conteo empieza únicamente al pulsar **Iniciar**.
 - **Estadísticas**: bumps de hoy, total y último bump.
 - **Logs a archivo** diarios con rotación (no se pierden al cerrar la terminal).
-- **Notificaciones** por Telegram y/o Discord ante fallos y paradas de emergencia.
+- **Notificaciones** por Telegram y/o Discord ante fallos, pausas y paradas de emergencia. Se configuran desde el panel (botón **Notificaciones**) o en `.env`, con botón de **Probar**.
 - **Detección automática de Chrome** (Windows/macOS/Linux) o navegador propio de Puppeteer.
 - **Salud del sistema**: panel con última operación, última OK, errores, avisos y bumps de hoy por perfil; además del saldo y consumo de 2Captcha.
 - **Auto-recuperación**: si Chrome se cae o se cierra a mitad de ciclo, el perfil lo reabre solo y continúa.
