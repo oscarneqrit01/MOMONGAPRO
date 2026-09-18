@@ -3350,6 +3350,7 @@ emitActive() {
     this.started = false;
     this.paused = false;
     this._stopping = true;
+    await stopLiveView(this);
     if (this._cycleTimer) clearTimeout(this._cycleTimer);
     if (this._countdownTimer) clearInterval(this._countdownTimer);
     if (this._repostTimer) clearTimeout(this._repostTimer);
@@ -4089,6 +4090,46 @@ app.patch('/api/profiles/:id/autorepost', (req, res) => {
   }
 });
 
+// --- Vista en vivo (screencast del navegador del perfil) ---
+async function startLiveView(controller) {
+  if (!controller || !controller.page) return { ok: false, error: 'El navegador de esa cuenta no está abierto.' };
+  if (controller._liveSession) return { ok: true };
+  try {
+    const session = await controller.page.createCDPSession();
+    controller._liveSession = session;
+    session.on('Page.screencastFrame', async (frame) => {
+      io.emit('live-frame', { id: controller.id, data: frame.data, width: frame.metadata.deviceWidth, height: frame.metadata.deviceHeight });
+      try { await session.send('Page.screencastFrameAck', { sessionId: frame.sessionId }); } catch (_) {}
+    });
+    await session.send('Page.startScreencast', { format: 'jpeg', quality: 55, maxWidth: 760, maxHeight: 1500, everyNthFrame: 1 });
+    controller.log('👁 Vista en vivo iniciada.');
+    return { ok: true };
+  } catch (error) {
+    controller._liveSession = null;
+    return { ok: false, error: error.message };
+  }
+}
+
+async function stopLiveView(controller) {
+  if (!controller || !controller._liveSession) return;
+  const session = controller._liveSession;
+  controller._liveSession = null;
+  try { await session.send('Page.stopScreencast'); } catch (_) {}
+  try { await session.detach(); } catch (_) {}
+}
+
+async function handleLiveInput(controller, payload) {
+  if (!controller || !controller.page) return;
+  try {
+    const { type, x, y, key, text, deltaY } = payload || {};
+    if (type === 'click') await controller.page.mouse.click(x, y);
+    else if (type === 'move') await controller.page.mouse.move(x, y);
+    else if (type === 'scroll') await controller.page.mouse.wheel({ deltaY: deltaY || 0 });
+    else if (type === 'key') await controller.page.keyboard.press(key);
+    else if (type === 'text') await controller.page.keyboard.type(String(text || ''));
+  } catch (_) {}
+}
+
 io.on('connection', (socket) => {
   console.log('🔌 Interfaz conectada.');
 
@@ -4189,6 +4230,22 @@ io.on('connection', (socket) => {
   socket.on('appeal-profile', (id) => {
     const controller = controllers.get(id);
     if (controller) createManualAppeal(controller);
+  });
+
+  socket.on('live-start', async (id) => {
+    const controller = controllers.get(id);
+    const result = await startLiveView(controller);
+    socket.emit('live-status', { id, ...result });
+  });
+
+  socket.on('live-stop', async (id) => {
+    const controller = controllers.get(id);
+    await stopLiveView(controller);
+  });
+
+  socket.on('live-input', async (payload) => {
+    const controller = controllers.get(payload && payload.id);
+    await handleLiveInput(controller, payload);
   });
 
   socket.on('update-interval', ({ id, min, max }) => {
