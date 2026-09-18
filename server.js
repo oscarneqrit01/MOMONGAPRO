@@ -1867,20 +1867,28 @@ async function bumpAllAdsOneByOne(page, controller) {
   if (await checkForBlock(page, controller)) return false;
 
   const ads = await page.evaluate(() => {
-    const links = Array.from(document.querySelectorAll('a[href*="/users/posts/bump/"]'));
     const seen = new Set();
     const result = [];
-    for (const link of links) {
-      const match = (link.getAttribute('href') || '').match(/\/users\/posts\/bump\/(\d+)/);
-      if (!match || seen.has(match[1])) continue;
-      seen.add(match[1]);
-      let title = '';
-      const container = link.closest('.post_header, .post, li, tr, article, section, div');
-      if (container) {
-        const node = container.querySelector('.post_title_caption, .post_title, h2, h3');
-        if (node) title = (node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    const collect = (selector, re) => {
+      for (const link of document.querySelectorAll(selector)) {
+        const raw = link.getAttribute('href') || '';
+        const match = raw.match(re);
+        if (!match || seen.has(match[1])) continue;
+        seen.add(match[1]);
+        let title = '';
+        const container = link.closest('.post_header, .post, li, tr, article, section, div');
+        if (container) {
+          const node = container.querySelector('.post_title_caption, .post_title, h2, h3');
+          if (node) title = (node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+        }
+        result.push({ id: match[1], title, href: link.href || raw });
       }
-      result.push({ id: match[1], title });
+    };
+    // 1) Enlaces de selección de anuncio (listan TODOS los posts)
+    collect('a[href*="/users/posts/select/"]', /\/users\/posts\/select\/(\d+)/);
+    // 2) Fallback: enlaces de bump directos
+    if (result.length === 0) {
+      collect('a[href*="/users/posts/bump/"]', /\/users\/posts\/bump\/(\d+)/);
     }
     return result;
   }).catch(() => []);
@@ -1905,12 +1913,34 @@ async function bumpAllAdsOneByOne(page, controller) {
 
   controller.log(`🔄 Anuncio ${position}/${ads.length} (ID ${targetId}${target.title ? ` · ${target.title}` : ''}).`);
 
-  const clicked = await page.evaluate((postId) => {
-    const link = document.querySelector(`a[href*="/users/posts/bump/${postId}"]`);
-    if (!link) return false;
-    link.click();
-    return true;
-  }, targetId).catch(() => false);
+  const viaSelect = target.href && target.href.indexOf('/users/posts/select/') > -1;
+  let clicked = false;
+
+  if (viaSelect) {
+    // Ir a la pagina del anuncio y pulsar "Bump to Top" (metodo fiable)
+    try {
+      await page.goto(target.href, { waitUntil: 'networkidle2', timeout: 60000 });
+    } catch (error) {
+      controller.log(`No se pudo abrir el anuncio ${targetId}: ${error.message}`);
+      return false;
+    }
+    if (await checkForBlock(page, controller)) return false;
+    await sleep(2500);
+    clicked = await page.evaluate(() => {
+      const btn = document.getElementById('managePublishAd');
+      if (!btn) return false;
+      btn.click();
+      return true;
+    }).catch(() => false);
+  } else {
+    // Bump directo por enlace
+    clicked = await page.evaluate((postId) => {
+      const link = document.querySelector(`a[href*="/users/posts/bump/${postId}"]`);
+      if (!link) return false;
+      link.click();
+      return true;
+    }, targetId).catch(() => false);
+  }
 
   if (!clicked) {
     controller.log(`❌ No se encontró el botón de bump del anuncio ${targetId}.`);
