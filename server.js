@@ -491,6 +491,19 @@ const TG_FIELDS = {
   proxy: 'proxy'
 };
 
+// Arma un cuerpo multipart/form-data (FormData+Blob no funciona con este fetch)
+function buildMultipart(fields, fileField, fileName, fileBuffer, fileType) {
+  const boundary = `----momonga${crypto.randomBytes(8).toString('hex')}`;
+  const parts = [];
+  for (const [name, value] of Object.entries(fields)) {
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+  }
+  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fileField}"; filename="${fileName}"\r\nContent-Type: ${fileType}\r\n\r\n`));
+  parts.push(fileBuffer);
+  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+  return { boundary, body: Buffer.concat(parts) };
+}
+
 // Manda una captura del panel web completo a Telegram (como ver la misma página).
 async function tgSendPanelScreenshot(token, chatId) {
   let browser;
@@ -503,11 +516,12 @@ async function tgSendPanelScreenshot(token, chatId) {
     await sleep(2500);
     const pngBase64 = await page.screenshot({ fullPage: true, encoding: 'base64' });
     const buffer = Buffer.from(pngBase64, 'base64');
-    const form = new FormData();
-    form.append('chat_id', String(chatId));
-    form.append('caption', 'MOMONGA PRO — Panel completo');
-    form.append('photo', new Blob([buffer], { type: 'image/png' }), 'panel.png');
-    const r = await undiciFetch(`https://api.telegram.org/bot${token}/sendPhoto`, { method: 'POST', body: form });
+    const { boundary, body } = buildMultipart({ chat_id: String(chatId), caption: 'MOMONGA PRO — Panel completo' }, 'photo', 'panel.png', buffer, 'image/png');
+    const r = await undiciFetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+      body
+    });
     const data = await r.json().catch(() => ({}));
     if (!data.ok) await tgSend(token, chatId, `No se pudo enviar la captura: ${data.description || r.status}`);
   } catch (error) {
