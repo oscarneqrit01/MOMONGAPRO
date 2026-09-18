@@ -4225,6 +4225,58 @@ app.delete('/api/profiles/:id', async (req, res) => {
   }
 });
 
+app.patch('/api/profiles/:id/rename', async (req, res) => {
+  try {
+    const oldId = String(req.params.id || '');
+    const newId = String((req.body || {}).newId || '').trim();
+
+    if (!newId) return res.status(400).json({ success: false, error: 'Escribe un nombre.' });
+    if (newId === oldId) return res.json({ success: true, id: newId });
+    if (/[\\/:*?"<>|]/.test(newId)) {
+      return res.status(400).json({ success: false, error: 'El nombre no puede tener estos caracteres: \\ / : * ? " < > |' });
+    }
+
+    const config = loadConfig();
+    const profile = config.find(item => item.id === oldId);
+    if (!profile) return res.status(404).json({ success: false, error: 'Perfil no encontrado.' });
+    if (config.some(item => item.id === newId)) {
+      return res.status(409).json({ success: false, error: 'Ya existe un navegador con ese nombre.' });
+    }
+
+    const controller = controllers.get(oldId);
+    if (controller) {
+      try { await controller.stop(); } catch (_) {}
+      controllers.delete(oldId);
+    }
+
+    // Renombra la carpeta de sesión (profiles/perfil_<id>) para no perder el login
+    const oldDir = path.join(__dirname, 'profiles', `perfil_${oldId}`);
+    const newDir = path.join(__dirname, 'profiles', `perfil_${newId}`);
+    try {
+      if (fs.existsSync(oldDir) && !fs.existsSync(newDir)) fs.renameSync(oldDir, newDir);
+    } catch (error) {
+      console.error('No se pudo renombrar la carpeta de perfil:', error.message);
+    }
+
+    profile.id = newId;
+    saveConfig(config);
+
+    if (controller) {
+      controller.cfg = profile;
+      controller.id = newId;
+      controllers.set(newId, controller);
+    } else {
+      controllers.set(newId, new ProfileController(profile));
+    }
+
+    io.emit('profiles-updated', config);
+    saveState();
+    res.json({ success: true, id: newId });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.patch('/api/profiles/:id/autorepost', (req, res) => {
   try {
     const config = loadConfig();

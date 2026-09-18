@@ -1698,6 +1698,7 @@
             <button class="small-btn blue" data-action="publish" data-id="${profile.id}">Publicar Ya</button>
             <button class="small-btn dark" data-action="retry" data-id="${profile.id}">Reintentar Paso</button>
             <button class="small-btn amber" data-action="appeal" data-id="${profile.id}">Apelar</button>
+            <button class="small-btn" data-action="rename" data-id="${profile.id}">Renombrar</button>
           </div>
 
           <div class="subpanel">
@@ -1907,6 +1908,23 @@
           if (action === 'publish') socket.emit('publish-profile', id);
           if (action === 'retry') socket.emit('retry-profile', id);
           if (action === 'appeal') socket.emit('appeal-profile', id);
+          if (action === 'rename') {
+            const newName = prompt('Nuevo nombre para el perfil:', id);
+            if (newName === null) return;
+            const clean = newName.trim();
+            if (!clean || clean === id) return;
+            try {
+              const resp = await fetch(`/api/profiles/${encodeURIComponent(id)}/rename`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ newId: clean })
+              });
+              const data = await resp.json().catch(() => ({}));
+              if (!resp.ok) alert(data.error || 'No se pudo renombrar el perfil.');
+            } catch (error) {
+              alert('No se pudo renombrar: ' + error.message);
+            }
+          }
           if (action === 'save-interval') {
             const minInput = document.querySelector(`[data-bump-min="${id}"]`);
             const maxInput = document.querySelector(`[data-bump-max="${id}"]`);
