@@ -415,6 +415,128 @@ async function notify(message) {
   await Promise.all(tasks);
 }
 
+// --- Control por Telegram (menú con botones para todas las cuentas) ---
+function tgConfig() {
+  const cfg = loadNotifyConfig();
+  return {
+    token: cfg.telegramToken || process.env.TELEGRAM_BOT_TOKEN || '',
+    chatId: String(cfg.telegramChatId || process.env.TELEGRAM_CHAT_ID || '').trim()
+  };
+}
+
+async function tgCall(token, method, payload) {
+  try {
+    const r = await undiciFetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return await r.json().catch(() => ({}));
+  } catch (_) {
+    return {};
+  }
+}
+
+function accountsText() {
+  const list = [...controllers.values()];
+  if (list.length === 0) return 'MOMONGA PRO\n\nNo hay cuentas configuradas.';
+  const lines = list.map((c) => {
+    const estado = c.started ? (c.paused ? '⏸ pausado' : '🟢 activo') : '⚪ detenido';
+    return `• *${c.id}* — ${estado}\n   ${c.cycleStage || '-'} · bumps hoy: ${c.stats.bumpsToday || 0}`;
+  });
+  return `MOMONGA PRO — Cuentas (${list.length})\n\n${lines.join('\n')}`;
+}
+
+function accountsKeyboard() {
+  const rows = [
+    [
+      { text: '▶️ Iniciar todos', callback_data: 'all:start' },
+      { text: '⏸ Pausar todos', callback_data: 'all:pause' },
+      { text: '⏹ Detener todos', callback_data: 'all:stop' }
+    ]
+  ];
+  for (const c of controllers.values()) {
+    const id = String(c.id).slice(0, 40);
+    rows.push([
+      { text: `▶️ ${id}`, callback_data: `start:${id}` },
+      { text: '⏸', callback_data: `pause:${id}` },
+      { text: '⏹', callback_data: `stop:${id}` },
+      { text: '📢', callback_data: `publish:${id}` }
+    ]);
+  }
+  rows.push([{ text: '🔄 Actualizar', callback_data: 'menu' }]);
+  return { inline_keyboard: rows };
+}
+
+async function showAccountsMenu(token, chatId, messageId) {
+  const payload = {
+    chat_id: chatId,
+    text: accountsText(),
+    parse_mode: 'Markdown',
+    disable_web_page_preview: true,
+    reply_markup: accountsKeyboard()
+  };
+  if (messageId) {
+    const r = await tgCall(token, 'editMessageText', { ...payload, message_id: messageId });
+    if (r && r.ok === false) await tgCall(token, 'sendMessage', payload);
+  } else {
+    await tgCall(token, 'sendMessage', payload);
+  }
+}
+
+async function handleTgCallback(token, query) {
+  const data = String(query.data || '');
+  const [action, id] = data.split(':');
+  const controller = id ? controllers.get(id) : null;
+  let aviso = '';
+  try {
+    if (action === 'all' && id === 'start') { for (const c of controllers.values()) c.start(); aviso = 'Iniciando todas...'; }
+    else if (action === 'all' && id === 'pause') { for (const c of controllers.values()) c.pause(); aviso = 'Pausando todas...'; }
+    else if (action === 'all' && id === 'stop') { for (const c of controllers.values()) c.stop(); aviso = 'Deteniendo todas...'; }
+    else if (controller && action === 'start') { controller.start(); aviso = `${id}: iniciando...`; }
+    else if (controller && action === 'pause') { if (controller.paused) controller.resume(); else controller.pause(); aviso = `${id}: ${controller.paused ? 'pausado' : 'reanudado'}`; }
+    else if (controller && action === 'stop') { controller.stop(); aviso = `${id}: detenido`; }
+    else if (controller && action === 'publish') { controller.publishNow(); aviso = `${id}: publicando...`; }
+  } catch (error) {
+    aviso = `Error: ${error.message}`;
+  }
+  await tgCall(token, 'answerCallbackQuery', { callback_query_id: query.id, text: aviso || 'ok' });
+  await showAccountsMenu(token, query.message.chat.id, query.message.message_id);
+}
+
+let _tgPolling = false;
+async function startTelegramBot() {
+  if (_tgPolling) return;
+  _tgPolling = true;
+  let offset = 0;
+  while (true) {
+    const { token, chatId } = tgConfig();
+    if (!token) { await sleep(5000); continue; }
+    try {
+      const r = await undiciFetch(`https://api.telegram.org/bot${token}/getUpdates?timeout=25&offset=${offset}`, { signal: AbortSignal.timeout(35000) });
+      const data = await r.json();
+      if (data && data.ok) {
+        for (const u of data.result || []) {
+          offset = u.update_id + 1;
+          const fromChat = String((u.message && u.message.chat.id) || (u.callback_query && u.callback_query.message.chat.id) || '');
+          if (chatId && fromChat !== chatId) continue; // solo el dueño
+          if (u.message) {
+            const text = String(u.message.text || '').trim().toLowerCase();
+            if (text === '/start' || text === '/menu' || text === '/cuentas' || text === '/estado') {
+              console.log('[telegram] menú enviado a', fromChat);
+              await showAccountsMenu(token, u.message.chat.id);
+            }
+          } else if (u.callback_query) {
+            console.log('[telegram] botón:', u.callback_query.data);
+            await handleTgCallback(token, u.callback_query);
+          }
+        }
+      }
+    } catch (_) {}
+    await sleep(2000);
+  }
+}
+
 async function validateProxy(proxy, timeoutMs = 15000) {
   if (!proxy || !proxy.host) return { skipped: true };
 
@@ -3972,6 +4094,7 @@ server.listen(PORT, () => {
   refreshTwoCaptchaBalance();
   setInterval(refreshTwoCaptchaBalance, 30 * 60 * 1000).unref();
   setInterval(checkProxiesHealth, 10 * 60 * 1000).unref();
+  startTelegramBot();
 });
 
 server.on('error', (error) => {
