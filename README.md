@@ -15,6 +15,10 @@ Panel multi-perfil para automatizar **bumps** y **reposts** en sitios tipo MegaP
 - **Copia de anuncio**: extrae ciudad/edad/texto y descarga+limpia las fotos del anuncio actual (quita EXIF y altera ligeramente la imagen).
 - **Parada de emergencia**: si detecta señales de suspensión/bloqueo en cualquier perfil, detiene todos los perfiles.
 - **Cumplimiento**: avisa (sin cambiar el intervalo) si detecta riesgo de reportes: texto idéntico entre cuentas, **mismas fotos que otra cuenta** o publicaciones muy seguidas.
+- **Rotación de texto/título**: puedes poner varias variantes y el programa **rota** entre ellas en cada ciclo (evita publicar el texto idéntico siempre).
+- **Auto-pausa por fallos**: si un perfil falla 3 veces seguidas, se **pausa solo** y avisa.
+- **Backoff en HTTP 429**: ante un rate-limit **espera y reintenta** (no detiene todo); solo para si se repite.
+- **Importar / Exportar perfiles**: botones en el panel para respaldar o pasar la configuración a otra PC.
 - **Apelaciones**: al detectar un bloqueo guarda evidencia (captura, HTML, mensaje, URL, perfil y paso) en `logs/appeals/`, genera un borrador de apelación en inglés y, si el navegador tiene `supportEmail`, **abre el correo (Outlook) automáticamente** con el texto listo. En el panel puedes ver, **descargar o copiar la captura**, **abrir la carpeta de evidencias** y **enviar por correo**, ya que el formulario del sitio puede no permitir adjuntar archivos.
 - **Auto-arranque (opcional)**: con `AUTO_START=1`, al reiniciar el servidor reanuda los perfiles que estaban activos. Por defecto está **desactivado**.
 - **Panel web** en tiempo real (Socket.IO): **Abrir Página** / Iniciar / Pausar / Detener / Publicar, contadores, estado y registro en vivo. "Abrir Página" solo abre el navegador; el conteo empieza únicamente al pulsar **Iniciar**.

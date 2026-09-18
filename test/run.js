@@ -96,8 +96,14 @@ async function withStack(opts, fn) {
   }
 }
 
-async function startAll(page) { await page.click('#startAllBtn'); }
-async function startFirst(page) { await page.click('[data-action="start"]'); }
+async function clickRetry(page, selector, tries = 6) {
+  for (let i = 0; i < tries; i++) {
+    try { await page.click(selector); return true; } catch (_) { await sleep(1000); }
+  }
+  return false;
+}
+async function startAll(page) { await clickRetry(page, '#startAllBtn'); }
+async function startFirst(page) { await clickRetry(page, '[data-action="start"]'); }
 
 async function waitForLog(getOut, re, ms = 180000) {
   const end = Date.now() + ms;
@@ -150,7 +156,7 @@ async function runTests() {
     };
     for (let k = 0; k < 3; k++) {
       const before = (await getIds()).length;
-      await page.click('[data-action="publish"]');
+      await clickRetry(page, '[data-action="publish"]');
       let count = before;
       for (let j = 0; j < 60 && count <= before; j++) { await sleep(1500); count = (await getIds()).length; }
       await sleep(3000);
@@ -251,9 +257,72 @@ async function runTests() {
   }, async ({ page, out }) => {
     await startFirst(page);
     await sleep(3000);
-    await page.click('[data-action="appeal"]');
+    await clickRetry(page, '[data-action="appeal"]');
     const ok = await waitForLog(out, /Apelación manual creada/i, 20000);
     record('apelacion: boton Apelar crea el borrador', ok, ok ? 'ok' : 'no');
+  });
+
+  // 12) Eliminar bloqueos detectados
+  await withStack({
+    scenario: 'scam-page',
+    profiles: [{ id: 'perfil-del', email: 'cuenta@ejemplo.com', settings: { rotateAds: true, randomizedDelay: false, publishOnStart: false } }]
+  }, async ({ page, out }) => {
+    await startFirst(page);
+    await waitForLog(out, /PARADA DE EMERGENCIA/i, 60000);
+    const r = await page.evaluate(async () => {
+      const before = await (await fetch('/api/appeals')).json();
+      if (!before.length) return { ok: false, reason: 'sin registros' };
+      const del = await (await fetch('/api/appeals/' + encodeURIComponent(before[0].id), { method: 'DELETE' })).json();
+      const after = await (await fetch('/api/appeals')).json();
+      return { ok: del.success && after.length === before.length - 1 };
+    });
+    record('bloqueos: se pueden eliminar', r.ok, JSON.stringify(r));
+  });
+
+  // 13) Exportar / Importar perfiles
+  await withStack({
+    scenario: 'normal',
+    profiles: [{ id: 'perfil-exp', email: 'a@b.com' }]
+  }, async ({ page }) => {
+    const r = await page.evaluate(async () => {
+      const exp = await (await fetch('/api/profiles/export')).json();
+      const hasExport = Array.isArray(exp) && exp.length >= 1;
+      const imp = await (await fetch('/api/profiles/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profiles: [{ id: 'perfil-importado', port: 9999, email: 'x@y.com' }] }) })).json();
+      const list = await (await fetch('/api/profiles')).json();
+      return { hasExport, imp, found: list.some((p) => p.id === 'perfil-importado') };
+    });
+    record('perfiles: exportar', r.hasExport, String(r.hasExport));
+    record('perfiles: importar', r.imp.success && r.found, JSON.stringify(r.imp));
+  });
+
+  // 14) HTTP 429 -> backoff (sin detener todo)
+  await withStack({
+    scenario: 'http-429',
+    profiles: [{ id: 'perfil-429', settings: { rotateAds: true, randomizedDelay: false, publishOnStart: false } }]
+  }, async ({ page, out }) => {
+    await startFirst(page);
+    const ok = await waitForLog(out, /rate-limit.*espero y reintento/i, 60000);
+    record('429: backoff sin detener todo', ok && !/PARADA DE EMERGENCIA/i.test(out()), ok ? 'ok' : 'no');
+  });
+
+  // 15) Rotación de texto (variantes)
+  await withStack({
+    scenario: 'normal',
+    profiles: [{ id: 'perfil-var', autoRepostActive: true, repostIntervalMin: 1, adDetails: { name: 'N', headline: 'H', city: 'Montreal', age: '25', location: 'L', phone: '5555555555', text: 'texto base', textVariants: ['variante uno', 'variante dos'], photosPath: '' } }]
+  }, async ({ page, out }) => {
+    await startFirst(page);
+    const ok = await waitForLog(out, /Usando variante de texto/i, 150000);
+    record('texto: rota variantes en cada ciclo', ok, ok ? 'ok' : 'no');
+  });
+
+  // 16) Auto-pausa por fallos seguidos
+  await withStack({
+    scenario: 'no-bump',
+    profiles: [{ id: 'perfil-fail', intervalMinutes: 1, bumpMinMinutes: 1, bumpMaxMinutes: 1, settings: { rotateAds: false, randomizedDelay: false, publishOnStart: true } }]
+  }, async ({ page, out }) => {
+    await startFirst(page);
+    const ok = await waitForLog(out, /3 fallos seguidos/i, 300000);
+    record('fallos: auto-pausa tras 3 fallos seguidos', ok, ok ? 'ok' : 'no');
   });
 
   // Limpiar apelaciones creadas por las pruebas (perfiles "perfil-*")

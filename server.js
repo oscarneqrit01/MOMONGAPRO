@@ -206,6 +206,42 @@ app.post('/api/appeals/open-folder', (req, res) => {
   }
 });
 
+function writeAppealsIndex(index) {
+  fs.mkdirSync(APPEALS_DIR, { recursive: true });
+  fs.writeFileSync(path.join(APPEALS_DIR, 'index.json'), `${JSON.stringify(index.slice(-200), null, 2)}\n`, 'utf8');
+}
+
+function deleteAppealFiles(record) {
+  for (const f of [record.screenshot, record.html]) {
+    if (!f) continue;
+    try { fs.unlinkSync(path.join(APPEALS_DIR, path.basename(f))); } catch (_) {}
+  }
+}
+
+app.delete('/api/appeals/:id', (req, res) => {
+  try {
+    const index = readAppealsIndex();
+    const record = index.find((item) => item.id === req.params.id);
+    if (!record) return res.status(404).json({ success: false, error: 'Bloqueo no encontrado.' });
+    deleteAppealFiles(record);
+    writeAppealsIndex(index.filter((item) => item.id !== req.params.id));
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/appeals', (req, res) => {
+  try {
+    const index = readAppealsIndex();
+    for (const record of index) deleteAppealFiles(record);
+    writeAppealsIndex([]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 io.use((socket, next) => {
   const cookies = parseCookies(socket.handshake.headers.cookie);
   if (cookies[AUTH_COOKIE] === AUTH_TOKEN) return next();
@@ -403,7 +439,8 @@ function saveState() {
         cycleDetail: controller.cycleDetail,
         cycleUpdatedAt: controller.cycleUpdatedAt,
         cycleDeleteCompleted: Boolean(controller.cycleDeleteCompleted),
-        rotateQueue: Array.isArray(controller.rotateQueue) ? controller.rotateQueue : []
+        rotateQueue: Array.isArray(controller.rotateQueue) ? controller.rotateQueue : [],
+        variantIndex: controller.variantIndex || {}
       };
     }
     backupFile(STATE_PATH, 'state');
@@ -1127,12 +1164,26 @@ async function createManualAppeal(controller, reason = 'Apelación manual desde 
 }
 
 async function checkForBlock(page, controller) {
-  // HTTP 403/429/5xx en el documento principal (rate-limit / bloqueo), aunque el texto no lo diga
+  // HTTP 403/429/5xx en el documento principal, aunque el texto no lo diga
   if (controller && controller._httpBlock && Date.now() - controller._httpBlock.at < 60000) {
     const { status, url } = controller._httpBlock;
     controller._httpBlock = null;
-    await captureBlockEvidence(page, controller, `HTTP ${status} (rate-limit/bloqueo) en ${url}`);
-    await emergencyStop(`HTTP ${status} (posible rate-limit/bloqueo).`, controller.id);
+
+    // 429 (rate-limit) y 5xx: esperar y reintentar; solo parar todo si se repite.
+    if (status === 429 || status >= 500) {
+      controller._httpRateCount = (controller._httpRateCount || 0) + 1;
+      if (controller._httpRateCount >= 3) {
+        await captureBlockEvidence(page, controller, `HTTP ${status} repetido (${controller._httpRateCount} veces) en ${url}`);
+        await emergencyStop(`HTTP ${status} repetido (posible rate-limit/bloqueo).`, controller.id);
+        return true;
+      }
+      controller.warn(`HTTP ${status} (rate-limit): espero y reintento el próximo ciclo (sin detener todo).`);
+      return true;
+    }
+
+    // 403 u otros: bloqueo de la cuenta
+    await captureBlockEvidence(page, controller, `HTTP ${status} (bloqueo) en ${url}`);
+    await emergencyStop(`HTTP ${status} (posible bloqueo).`, controller.id);
     return true;
   }
 
@@ -1385,7 +1436,7 @@ async function returnToPostsList(page, controller) {
 
 async function performBump(page, controller) {
   const urls = siteUrls(controller);
-  if (await doBump(page, controller)) return;
+  if (await doBump(page, controller)) return true;
 
   controller.log('Buscando el anuncio en Mis Anuncios...');
   try {
@@ -1393,14 +1444,15 @@ async function performBump(page, controller) {
   } catch (error) {
     controller.log(`No se pudo abrir Mis Anuncios: ${error.message}`);
     controller.log('No se encontró botón de bump/publicación.');
-    return;
+    return false;
   }
 
-  if (await checkForBlock(page, controller)) return;
+  if (await checkForBlock(page, controller)) return false;
 
-  if (await doBump(page, controller)) return;
+  if (await doBump(page, controller)) return true;
 
   controller.log('⚠️ No se encontró el botón Bump to Top. Puede que el anuncio ya esté arriba o no sea elegible para bump.');
+  return false;
 }
 
 // Bump de todos los anuncios de la cuenta uno por uno (rota en cada ciclo, sin borrar)
@@ -1977,6 +2029,20 @@ async function detectCaptchaRejected(page) {
   }).catch(() => false);
 }
 
+// Devuelve la siguiente variante de texto/título (rota) o el valor normal si no hay variantes.
+function pickVariant(controller, field) {
+  const details = controller.cfg.adDetails || {};
+  const variants = Array.isArray(details[`${field}Variants`])
+    ? details[`${field}Variants`].map((v) => String(v || '')).filter((v) => v.trim())
+    : [];
+  if (variants.length === 0) return String(details[field] || '');
+  if (!controller.variantIndex) controller.variantIndex = {};
+  const idx = Math.abs(Number(controller.variantIndex[field]) || 0) % variants.length;
+  controller.variantIndex[field] = (idx + 1) % variants.length;
+  saveState();
+  return variants[idx];
+}
+
 async function deleteAndRepost(page, controller, options = {}) {
   const urls = siteUrls(controller);
   const details = controller.cfg.adDetails || {};
@@ -2035,10 +2101,14 @@ async function deleteAndRepost(page, controller, options = {}) {
 
     if (await checkForBlock(page, controller)) return false;
 
+    const headlineToUse = pickVariant(controller, 'headline');
+    const textToUse = pickVariant(controller, 'text');
+    if (headlineToUse && headlineToUse !== details.headline) controller.log(`🔤 Usando variante de título.`);
+    if (textToUse && textToUse !== details.text) controller.log(`🔤 Usando variante de texto.`);
     await fillExactField(page, '#name', details.name) || await fillFieldByLabel(page, '^\\s*name', details.name);
-    await fillFieldByLabel(page, '^\\s*headline', details.headline);
+    await fillFieldByLabel(page, '^\\s*headline', headlineToUse);
     await fillExactField(page, '#age', details.age) || await fillFieldByLabel(page, '^\\s*age', details.age);
-    await fillFieldByLabel(page, '^\\s*body', details.text);
+    await fillFieldByLabel(page, '^\\s*body', textToUse);
     controller.setCycleStage('city', `Seleccionando ciudad: ${details.city}.`);
     if (!(await selectCity(page, details.city, controller))) return false;
     const locationFilled = await fillExactField(page, '#location', details.location)
@@ -2283,7 +2353,9 @@ function validateCycleConfig(profile) {
   const phoneDigits = String(details.phone || '').replace(/\D/g, '');
 
   if (!String(details.city || '').trim()) errors.push('falta la ciudad');
-  if (!String(details.text || '').trim()) errors.push('falta el texto del anuncio');
+  const hasText = String(details.text || '').trim()
+    || (Array.isArray(details.textVariants) && details.textVariants.some((v) => String(v || '').trim()));
+  if (!hasText) errors.push('falta el texto del anuncio');
   if (details.phone && (phoneDigits.length < 7 || phoneDigits.length > 15)) errors.push('teléfono inválido');
   if (details.age && (!Number.isInteger(Number(details.age)) || Number(details.age) < 18 || Number(details.age) > 100)) errors.push('edad inválida');
 
@@ -2525,6 +2597,7 @@ class ProfileController {
     this.cycleUpdatedAt = 0;
     this.cycleDeleteCompleted = false;
     this.rotateQueue = [];
+    this.variantIndex = {};
     this._stopping = false;
     this._recovering = false;
     this.stats = { totalBumps: 0, bumpsToday: 0, lastBumpAt: 0, date: todayKey() };
@@ -2535,6 +2608,7 @@ class ProfileController {
       lastError: '',
       lastErrorAt: 0,
       errors: 0,
+      consecutiveFailures: 0,
       warnings: []
     };
     this.settings = {
@@ -2573,6 +2647,21 @@ class ProfileController {
     io.emit('health', this.healthSnapshot());
   }
 
+  // Auto-pausa si falla varias veces seguidas
+  recordCycleResult(ok) {
+    if (ok) {
+      this.health.consecutiveFailures = 0;
+      return;
+    }
+    this.health.consecutiveFailures = (this.health.consecutiveFailures || 0) + 1;
+    io.emit('health', this.healthSnapshot());
+    if (this.health.consecutiveFailures >= 3 && this.started && !this.paused) {
+      this.warn('3 fallos seguidos: pauso el perfil por seguridad.');
+      this.pause();
+      notify(`⚠️ Perfil "${this.id}" pausado tras 3 fallos seguidos.`);
+    }
+  }
+
   healthSnapshot() {
     return {
       id: this.id,
@@ -2585,6 +2674,7 @@ class ProfileController {
       lastError: this.health.lastError,
       lastErrorAt: this.health.lastErrorAt,
       errors: this.health.errors,
+      consecutiveFailures: this.health.consecutiveFailures || 0,
       warnings: this.health.warnings.slice(-10),
       bumpsToday: this.stats.bumpsToday,
       dailyLimit: this.limits.dailyLimit,
@@ -2715,6 +2805,7 @@ emitActive() {
           this._httpBlock = { status, url: response.url(), at: Date.now() };
         } else if (status >= 200 && status < 400) {
           this._httpBlock = null;
+          this._httpRateCount = 0;
         }
       } catch (_) {}
     });
@@ -2876,11 +2967,13 @@ emitActive() {
 
     if (this.settings.publishOnStart) {
       this.log('Publicación al iniciar activada.');
+      let startOk = false;
       if (this.settings.rotateAds) {
-        await bumpAllAdsOneByOne(this.page, this);
+        startOk = await bumpAllAdsOneByOne(this.page, this);
       } else {
-        await performBump(this.page, this);
+        startOk = await performBump(this.page, this);
       }
+      this.recordCycleResult(startOk);
     }
 
     this.setCycleStage('running', 'Conteo automático activo.');
@@ -3026,13 +3119,19 @@ emitActive() {
 
     // Revisa la sesión antes de operar; si murió, re-loguea.
     await ensureSession(this.page, this);
-    if (await checkForBlock(this.page, this)) return;
-
-    if (this.settings.rotateAds) {
-      await bumpAllAdsOneByOne(this.page, this);
-    } else {
-      await performBump(this.page, this);
+    if (await checkForBlock(this.page, this)) {
+      // Si fue un rate-limit (no paró todo), reprograma para reintentar.
+      if (this.started && !this.paused) this.scheduleNext();
+      return;
     }
+
+    let ok = false;
+    if (this.settings.rotateAds) {
+      ok = await bumpAllAdsOneByOne(this.page, this);
+    } else {
+      ok = await performBump(this.page, this);
+    }
+    this.recordCycleResult(ok);
     this.log('Ciclo completado.');
 
     this.scheduleNext();
@@ -3092,12 +3191,14 @@ emitActive() {
     if (risk.length > 0) warnComplianceRisk(this, risk);
 
     this.log('🔄 Iniciando ciclo automático de borrado y republicación...');
-    this._operationPromise = deleteAndRepost(this.page, this);
+    let ok = false;
+    this._operationPromise = deleteAndRepost(this.page, this).then((r) => { ok = r; });
     try {
       await this._operationPromise;
     } finally {
       this._operationPromise = null;
     }
+    this.recordCycleResult(ok);
 
     // Tras el repost, reprograma ambos ciclos para que no queden desincronizados.
     if (this.started && !this.paused) {
@@ -3172,7 +3273,11 @@ emitActive() {
 
     // Revisa la sesión antes de operar; si murió, re-loguea.
     await ensureSession(this.page, this);
-    if (await checkForBlock(this.page, this)) return;
+    if (await checkForBlock(this.page, this)) {
+      // Si fue un rate-limit (no paró todo), reprograma para reintentar.
+      if (this.started && !this.paused) this.scheduleNext();
+      return;
+    }
 
     if (this.settings.rotateAds) {
       await bumpAllAdsOneByOne(this.page, this);
@@ -3212,6 +3317,7 @@ function buildControllers() {
         controller.cycleUpdatedAt = Number(saved.cycleUpdatedAt) || 0;
         controller.cycleDeleteCompleted = Boolean(saved.cycleDeleteCompleted);
         controller.rotateQueue = Array.isArray(saved.rotateQueue) ? saved.rotateQueue : [];
+        controller.variantIndex = (saved.variantIndex && typeof saved.variantIndex === 'object') ? saved.variantIndex : {};
       }
       controllers.set(profile.id, controller);
     }
@@ -3266,6 +3372,49 @@ app.get('/api/profiles', (req, res) => {
   }
 });
 
+app.get('/api/profiles/export', (req, res) => {
+  try {
+    const config = loadConfig();
+    res.setHeader('Content-Disposition', 'attachment; filename="momonga-perfiles.json"');
+    res.json(config);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/profiles/import', (req, res) => {
+  try {
+    const incoming = req.body?.profiles;
+    if (!Array.isArray(incoming) || incoming.length === 0) {
+      return res.status(400).json({ error: 'El archivo no contiene perfiles válidos.' });
+    }
+    const config = loadConfig();
+    let added = 0;
+    let updated = 0;
+    for (const raw of incoming) {
+      const id = String(raw?.id || '').trim();
+      if (!id) continue;
+      const clean = { ...raw, id };
+      const idx = config.findIndex((item) => item.id === id);
+      if (idx >= 0) {
+        config[idx] = clean;
+        updated += 1;
+      } else {
+        config.push(clean);
+        added += 1;
+      }
+      const existing = controllers.get(id);
+      if (existing) existing.cfg = clean;
+      else controllers.set(id, new ProfileController(clean));
+    }
+    saveConfig(config);
+    io.emit('profiles-updated', config);
+    res.json({ success: true, added, updated });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/profiles', (req, res) => {
   try {
     const { id, port, intervalMinutes, bumpMinMinutes, bumpMaxMinutes, url, email, password, supportEmail, supportUrl, proxy, adDetails, limits } = req.body || {};
@@ -3312,6 +3461,8 @@ app.post('/api/profiles', (req, res) => {
         location: String(adDetails?.location || '').trim(),
         phone: String(adDetails?.phone || '').trim(),
         text: String(adDetails?.text || ''),
+        textVariants: Array.isArray(adDetails?.textVariants) ? adDetails.textVariants.map((v) => String(v || '')).filter((v) => v.trim()) : [],
+        headlineVariants: Array.isArray(adDetails?.headlineVariants) ? adDetails.headlineVariants.map((v) => String(v || '')).filter((v) => v.trim()) : [],
         photosPath: String(adDetails?.photosPath || '').trim()
       },
       limits: {
@@ -3387,6 +3538,11 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
     }
 
     if (body.adDetails && typeof body.adDetails === 'object') {
+      const normVariants = (value, fallback) => {
+        if (Array.isArray(value)) return value.map((v) => String(v || '')).filter((v) => v.trim());
+        if (value !== undefined) return [];
+        return Array.isArray(fallback) ? fallback : [];
+      };
       profile.adDetails = {
         name: String(body.adDetails.name || '').trim(),
         headline: String(body.adDetails.headline || '').trim(),
@@ -3395,6 +3551,8 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
         location: String(body.adDetails.location || '').trim(),
         phone: String(body.adDetails.phone || '').trim(),
         text: String(body.adDetails.text || ''),
+        textVariants: normVariants(body.adDetails.textVariants, profile.adDetails?.textVariants),
+        headlineVariants: normVariants(body.adDetails.headlineVariants, profile.adDetails?.headlineVariants),
         photosPath: String(body.adDetails.photosPath || '').trim()
       };
     }

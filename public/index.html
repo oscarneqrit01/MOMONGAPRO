@@ -1188,6 +1188,9 @@
           <button class="btn btn-publish" id="publishAllBtn">Publicar en todos</button>
           <button class="btn btn-pause" id="pauseAllBtn">Pausar</button>
           <button class="btn btn-export" id="exportLogsBtn">Exportar logs</button>
+          <button class="btn btn-export" id="exportProfilesBtn">Exportar perfiles</button>
+          <button class="btn btn-export" id="importProfilesBtn">Importar perfiles</button>
+          <input type="file" id="importProfilesInput" accept=".json,application/json" style="display:none" />
           <button class="btn btn-export" id="healthBtn">Salud del sistema</button>
           <button class="btn btn-export" id="appealsBtn">Bloqueos detectados</button>
           <button class="btn btn-export" id="changePasswordBtn">Cambiar contraseña</button>
@@ -1322,6 +1325,7 @@
       <div id="appealsList" style="max-height: 60vh; overflow: auto; display: grid; gap: 10px;"></div>
       <div class="modal-actions">
         <button class="cancel-btn" id="openAppealsFolderBtn" type="button">Abrir carpeta de evidencias</button>
+        <button class="cancel-btn" id="deleteAllAppealsBtn" type="button" style="background:#c0392b;color:#fff;">Borrar todos</button>
         <button class="save-btn" id="cancelAppealsModalBtn" type="button">Cerrar</button>
       </div>
     </div>
@@ -1486,6 +1490,22 @@
           }
         });
         actions.appendChild(emailBtn);
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'small-btn red';
+        delBtn.textContent = 'Eliminar';
+        delBtn.addEventListener('click', async () => {
+          if (!confirm('¿Eliminar este bloqueo detectado?')) return;
+          try {
+            const res = await fetch(`/api/appeals/${encodeURIComponent(record.id)}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (!data.success) throw new Error(data.error || 'No se pudo eliminar.');
+            openAppealsModal();
+          } catch (error) {
+            alert('❌ ' + error.message);
+          }
+        });
+        actions.appendChild(delBtn);
 
         item.append(title, meta, detail, actions);
         appealsList.appendChild(item);
@@ -1735,6 +1755,16 @@
                 <div style="margin-bottom: 10px;">
                   <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">TEXTO EXACTO DE LA PUBLICACIÓN</label>
                   <textarea id="text-${profile.id}" placeholder="Pega o escribe el texto exacto aquí..." style="width: 100%; height: 60px; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 8px; border-radius: 4px; font-size: 11px; resize: none;">${profile.adDetails?.text || ''}</textarea>
+                </div>
+
+                <div style="margin-bottom: 10px;">
+                  <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">VARIANTES DE TEXTO (rota en cada ciclo). Separa cada variante con una línea que diga ---</label>
+                  <textarea id="textVariants-${profile.id}" placeholder="Texto variante 1...&#10;---&#10;Texto variante 2..." style="width: 100%; height: 70px; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 8px; border-radius: 4px; font-size: 11px; resize: vertical;">${(profile.adDetails?.textVariants || []).join('\n---\n')}</textarea>
+                </div>
+
+                <div style="margin-bottom: 10px;">
+                  <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">VARIANTES DE TÍTULO (una por línea, rota en cada ciclo)</label>
+                  <textarea id="headlineVariants-${profile.id}" placeholder="Título 1&#10;Título 2" style="width: 100%; height: 50px; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 8px; border-radius: 4px; font-size: 11px; resize: vertical;">${(profile.adDetails?.headlineVariants || []).join('\n')}</textarea>
                 </div>
 
                 <!-- Selector de Ciclo Automático "Delete and Repost" -->
@@ -1987,7 +2017,9 @@
           location: document.getElementById(`location-${profileId}`).value,
           phone: document.getElementById(`phone-${profileId}`).value,
           photosPath: document.getElementById(`photos-${profileId}`).value,
-          text: document.getElementById(`text-${profileId}`).value
+          text: document.getElementById(`text-${profileId}`).value,
+          textVariants: (document.getElementById(`textVariants-${profileId}`)?.value || '').split(/\n-{3,}\n/).map((s) => s.trim()).filter(Boolean),
+          headlineVariants: (document.getElementById(`headlineVariants-${profileId}`)?.value || '').split('\n').map((s) => s.trim()).filter(Boolean)
         }
       };
 
@@ -2177,6 +2209,32 @@
       URL.revokeObjectURL(link.href);
     });
 
+    document.getElementById('exportProfilesBtn').addEventListener('click', () => {
+      window.location.href = '/api/profiles/export';
+    });
+
+    const importProfilesInput = document.getElementById('importProfilesInput');
+    document.getElementById('importProfilesBtn').addEventListener('click', () => importProfilesInput.click());
+    importProfilesInput.addEventListener('change', async () => {
+      const file = importProfilesInput.files && importProfilesInput.files[0];
+      importProfilesInput.value = '';
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        const profiles = Array.isArray(parsed) ? parsed : parsed.profiles;
+        if (!Array.isArray(profiles) || profiles.length === 0) throw new Error('El archivo no tiene perfiles.');
+        if (!confirm(`¿Importar ${profiles.length} perfil(es)? Se actualizarán los que tengan el mismo nombre.`)) return;
+        const res = await fetch('/api/profiles/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profiles }) });
+        const result = await res.json();
+        if (!res.ok || !result.success) throw new Error(result.error || 'No se pudo importar.');
+        alert(`✅ Importado: ${result.added} nuevo(s), ${result.updated} actualizado(s).`);
+        await loadProfiles();
+      } catch (error) {
+        alert('❌ ' + error.message);
+      }
+    });
+
     document.querySelector('.add-btn').addEventListener('click', openAddModal);
     document.getElementById('closeModalBtn').addEventListener('click', closeAddModal);
     document.getElementById('cancelModalBtn').addEventListener('click', closeAddModal);
@@ -2246,6 +2304,18 @@
         const res = await fetch('/api/appeals/open-folder', { method: 'POST' });
         const data = await res.json();
         if (!data.success) throw new Error(data.error || 'No se pudo abrir la carpeta.');
+      } catch (error) {
+        alert('❌ ' + error.message);
+      }
+    });
+
+    document.getElementById('deleteAllAppealsBtn').addEventListener('click', async () => {
+      if (!confirm('¿Borrar TODOS los bloqueos detectados y sus capturas?')) return;
+      try {
+        const res = await fetch('/api/appeals', { method: 'DELETE' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'No se pudieron borrar.');
+        openAppealsModal();
       } catch (error) {
         alert('❌ ' + error.message);
       }

@@ -25,6 +25,10 @@ app.get('/', (request, response) => {
     response.status(403).send('<h1>403 Forbidden</h1>');
     return;
   }
+  if (scenario === 'http-429') {
+    response.status(429).send('<h1>429 Too Many Requests</h1>');
+    return;
+  }
   if (scenario === 'session-closed') {
     return response.send(layout('Login', '<h2>Session expired</h2><form><input type="email"><input type="password"><button>Login</button></form>'));
   }
@@ -73,10 +77,14 @@ app.get('/users/posts/list', (request, response) => {
     `));
   }
 
+  const bumpButton = scenario === 'no-bump'
+    ? ''
+    : `<button id="managePublishAd" onclick="window.location.href='/users/posts/success_publish/${Date.now()}'">Bump to Top</button>`;
+
   response.send(layout('My Posts', `
     <h2>My Posts</h2>
     <p id="post-status">Test ad is published.</p>
-    <button id="managePublishAd" onclick="window.location.href='/users/posts/success_publish/${Date.now()}'">Bump to Top</button>
+    ${bumpButton}
     ${scenario === 'deleted' ? '' : '<a href="/users/posts/delete-confirm">Delete</a>'}
     <p>Bumps confirmed: <strong>${bumpCount}</strong> | Reposts confirmed: <strong>${repostCount}</strong></p>
   `));
