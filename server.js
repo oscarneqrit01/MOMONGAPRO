@@ -40,6 +40,12 @@ function siteUrls(controller) {
   };
 }
 
+// Detecta errores tipicos de falta de internet / conexion perdida.
+function isNetworkError(error) {
+  const msg = String((error && error.message) || error || '');
+  return /ERR_INTERNET_DISCONNECTED|ERR_NAME_NOT_RESOLVED|ERR_CONNECTION_|ERR_NETWORK_CHANGED|ERR_NETWORK|ERR_TIMED_OUT|ERR_ADDRESS_UNREACHABLE|ERR_PROXY_CONNECTION|ERR_TUNNEL|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ECONNABORTED|getaddrinfo|net::ERR|Navigation timeout|Timeout .* exceeded|Target closed|Session closed|Protocol error/i.test(msg);
+}
+
 const AUTH_COOKIE = 'momonga_auth';
 const AUTH_STORE_PATH = process.env.PANEL_AUTH_PATH || path.join(__dirname, 'panel-auth.json');
 const DEFAULT_PANEL_PASSWORD = process.env.PANEL_PASSWORD || 'momonga';
@@ -3332,8 +3338,9 @@ emitActive() {
       this.browser = browser;
       this.page = page;
       this.log('Navegador abierto.');
-      this.log(`Conectando a ${this.cfg.url || DEFAULT_URL}...`);
-      await page.goto(this.cfg.url || DEFAULT_URL, {
+      const urls = siteUrls(this);
+      this.log(`Conectando a ${urls.manage}...`);
+      await page.goto(urls.manage, {
         waitUntil: 'networkidle2',
         timeout: 90000
       });
@@ -3404,10 +3411,14 @@ emitActive() {
     if (this.settings.publishOnStart) {
       this.log('Publicación al iniciar activada.');
       let startOk = false;
-      if (this.settings.rotateAds) {
-        startOk = await bumpAllAdsOneByOne(this.page, this);
-      } else {
-        startOk = await performBump(this.page, this);
+      try {
+        if (this.settings.rotateAds) {
+          startOk = await bumpAllAdsOneByOne(this.page, this);
+        } else {
+          startOk = await performBump(this.page, this);
+        }
+      } catch (error) {
+        this.warn(`⚠️ La publicación al iniciar falló (${error.message}). El conteo continúa.`);
       }
       this.recordCycleResult(startOk);
     }
@@ -3427,7 +3438,11 @@ emitActive() {
     if (this._blockWatch) clearInterval(this._blockWatch);
     this._blockWatch = setInterval(async () => {
       if (this.started && !this.paused && this.browser && this.page) {
-        await checkForBlock(this.page, this);
+        try {
+          await checkForBlock(this.page, this);
+        } catch (error) {
+          if (isNetworkError(error)) this.warn(`🌐 Sin internet (vigilancia): ${error.message}`);
+        }
       }
     }, 45000);
     if (this._blockWatch.unref) this._blockWatch.unref();
@@ -3520,6 +3535,17 @@ emitActive() {
     this._cycleTimer = setTimeout(() => this.bumpCycle(), waitMs);
   }
 
+  // Reintento corto (por ejemplo, tras perder internet) sin esperar el intervalo completo.
+  scheduleRetrySoon(minutes = 2) {
+    if (!this.started || this.paused) return;
+    if (this._cycleTimer) clearTimeout(this._cycleTimer);
+    const waitMs = Math.max(1, Number(minutes) || 2) * 60 * 1000;
+    this._nextBumpAt = Date.now() + waitMs;
+    this.log(`🔁 Reintento en ~${Math.round(waitMs / 60000)} min.`);
+    io.emit('timer', { id: this.id, time: mmss(waitMs) });
+    this._cycleTimer = setTimeout(() => this.bumpCycle(), waitMs);
+  }
+
   async bumpCycle() {
     if (this.limits.dailyLimit > 0 && this.stats.bumpsToday >= this.limits.dailyLimit) {
       this.log(`⛔ Tope diario alcanzado (${this.stats.bumpsToday}/${this.limits.dailyLimit}). No publico más hoy.`);
@@ -3534,6 +3560,17 @@ emitActive() {
     this._operationPromise = this._bumpCycleInternal();
     try {
       await this._operationPromise;
+    } catch (error) {
+      const netErr = isNetworkError(error);
+      if (netErr) {
+        this.warn(`🌐 Sin internet o conexión perdida (${error.message}). Reintento en 2 min.`);
+      } else {
+        this.warn(`⚠️ El ciclo falló (${error.message}). Se reprograma.`);
+      }
+      if (this.started && !this.paused) {
+        if (netErr) this.scheduleRetrySoon(2);
+        else this.scheduleNext();
+      }
     } finally {
       this._operationPromise = null;
     }
@@ -3631,6 +3668,19 @@ emitActive() {
     this._operationPromise = deleteAndRepost(this.page, this).then((r) => { ok = r; });
     try {
       await this._operationPromise;
+    } catch (error) {
+      const netErr = isNetworkError(error);
+      if (netErr) {
+        this.warn(`🌐 Sin internet o conexión perdida en republicación (${error.message}). Reintento en 2 min.`);
+      } else {
+        this.warn(`⚠️ La republicación falló (${error.message}). Se reprograma.`);
+      }
+      this.recordCycleResult(false);
+      if (this.started && !this.paused) {
+        this.scheduleNext();
+        if (this.autoRepostActive) this.scheduleRetrySoon(2);
+      }
+      return;
     } finally {
       this._operationPromise = null;
     }
@@ -3656,6 +3706,9 @@ emitActive() {
     this._operationPromise = this._publishNowInternal();
     try {
       await this._operationPromise;
+    } catch (error) {
+      this.warn(isNetworkError(error) ? `🌐 Sin internet al publicar (${error.message}). Se reprograma.` : `⚠️ La publicación falló (${error.message}). Se reprograma.`);
+      if (this.started && !this.paused) this.scheduleNext();
     } finally {
       this._operationPromise = null;
     }
@@ -3686,6 +3739,8 @@ emitActive() {
     this._operationPromise = deleteAndRepost(this.page, this, { resume: true });
     try {
       await this._operationPromise;
+    } catch (error) {
+      this.warn(isNetworkError(error) ? `🌐 Sin internet al reintentar (${error.message}). Se reprograma.` : `⚠️ El reintento falló (${error.message}). Se reprograma.`);
     } finally {
       this._operationPromise = null;
     }

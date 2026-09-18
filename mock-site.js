@@ -43,6 +43,16 @@ app.get('/users/ban_message', (request, response) => {
 });
 
 app.get('/users/posts/list', (request, response) => {
+  if (scenario === 'http-403') {
+    return response.status(403).send('<h1>403 Forbidden</h1>');
+  }
+  if (scenario === 'http-429') {
+    return response.status(429).send('<h1>429 Too Many Requests</h1>');
+  }
+  if (scenario === 'ban-url') {
+    return response.redirect('/users/ban_message');
+  }
+
   if (scenario === 'scam-page') {
     return response.send(layout('MegaPersonals: Classified hookups', `
       <div class="container scam-page">
