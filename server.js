@@ -327,11 +327,9 @@ function saveConfig(config) {
 }
 
 function loadConfig() {
-  if (!fs.existsSync(CONFIG_PATH)) {
-    throw new Error('Falta config.json. Crea el archivo con tus perfiles antes de lanzar el servidor.');
-  }
+  if (!fs.existsSync(CONFIG_PATH)) return [];
   const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-  if (!Array.isArray(config) || config.length === 0) {
+  if (!Array.isArray(config)) {
     throw new Error('config.json debe contener un array de perfiles.');
   }
   return mapConfigSecrets(config, decryptSecret);
