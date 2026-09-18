@@ -458,7 +458,8 @@ function accountsKeyboard() {
   for (const c of controllers.values()) {
     const id = String(c.id).slice(0, 40);
     rows.push([
-      { text: `▶️ ${id}`, callback_data: `start:${id}` },
+      { text: `👁 ${id}`, callback_data: `view:${id}` },
+      { text: '▶️', callback_data: `start:${id}` },
       { text: '⏸', callback_data: `pause:${id}` },
       { text: '⏹', callback_data: `stop:${id}` },
       { text: '📢', callback_data: `publish:${id}` }
@@ -466,6 +467,83 @@ function accountsKeyboard() {
   }
   rows.push([{ text: '🔄 Actualizar', callback_data: 'menu' }]);
   return { inline_keyboard: rows };
+}
+
+function tgSend(token, chatId, text) {
+  return tgCall(token, 'sendMessage', { chat_id: chatId, text, parse_mode: 'Markdown', disable_web_page_preview: true });
+}
+
+const TG_FIELDS = {
+  nombre: 'adDetails.name', name: 'adDetails.name',
+  titulo: 'adDetails.headline', headline: 'adDetails.headline',
+  ciudad: 'adDetails.city', city: 'adDetails.city',
+  edad: 'adDetails.age', age: 'adDetails.age',
+  ubicacion: 'adDetails.location', location: 'adDetails.location',
+  telefono: 'adDetails.phone', phone: 'adDetails.phone',
+  texto: 'adDetails.text', text: 'adDetails.text',
+  fotos: 'adDetails.photosPath', photos: 'adDetails.photosPath',
+  email: 'email',
+  password: 'password',
+  apikey: 'apiKey2Captcha',
+  proxy: 'proxy'
+};
+
+function tgMask(value) {
+  const v = String(value || '');
+  if (v.length <= 6) return v ? '••••' : '(vacío)';
+  return `${v.slice(0, 4)}…${v.slice(-4)}`;
+}
+
+function tgView(id) {
+  const config = loadConfig();
+  const p = config.find((x) => x.id === id);
+  if (!p) return `No encontré la cuenta "${id}".`;
+  const d = p.adDetails || {};
+  const texto = String(d.text || '');
+  return [
+    `*Cuenta:* ${p.id}`,
+    `Nombre: ${d.name || '-'}`,
+    `Título: ${d.headline || '-'}`,
+    `Ciudad: ${d.city || '-'}`,
+    `Edad: ${d.age || '-'}`,
+    `Ubicación: ${d.location || '-'}`,
+    `Teléfono: ${d.phone || '-'}`,
+    `Texto: ${texto ? texto.slice(0, 300) + (texto.length > 300 ? '…' : '') : '-'}`,
+    `Fotos: ${d.photosPath || '-'}`,
+    `Proxy: ${p.proxy ? `${p.proxy.host}:${p.proxy.port}` : '-'}`,
+    `Email: ${p.email || '-'}`,
+    `API 2Captcha: ${tgMask(p.apiKey2Captcha)}`,
+    `Password: ${tgMask(p.password)}`,
+    '',
+    'Editar: `/set ' + p.id + ' campo valor`',
+    'Campos: nombre, titulo, ciudad, edad, ubicacion, telefono, texto, fotos, email, password, apikey, proxy'
+  ].join('\n');
+}
+
+function tgSetField(id, field, value) {
+  const key = String(field || '').toLowerCase();
+  const pathKey = TG_FIELDS[key];
+  if (!pathKey) return `Campo desconocido: "${field}". Usa /ver ${id} para ver los campos.`;
+  const config = loadConfig();
+  const p = config.find((x) => x.id === id);
+  if (!p) return `No encontré la cuenta "${id}".`;
+
+  if (pathKey === 'proxy') {
+    const parsed = parseProxy(value);
+    if (!parsed) return 'Proxy inválido. Formato: host:puerto:usuario:contraseña';
+    p.proxy = parsed;
+  } else if (pathKey.startsWith('adDetails.')) {
+    const fieldName = pathKey.split('.')[1];
+    if (!p.adDetails) p.adDetails = {};
+    p.adDetails[fieldName] = String(value);
+  } else {
+    p[pathKey] = String(value);
+  }
+
+  saveConfig(config);
+  const controller = controllers.get(id);
+  if (controller) controller.cfg = p;
+  return `✅ ${id}: ${key} actualizado.`;
 }
 
 async function showAccountsMenu(token, chatId, messageId) {
@@ -490,6 +568,11 @@ async function handleTgCallback(token, query) {
   const controller = id ? controllers.get(id) : null;
   let aviso = '';
   try {
+    if (action === 'view') {
+      await tgCall(token, 'answerCallbackQuery', { callback_query_id: query.id });
+      await tgSend(token, query.message.chat.id, tgView(id));
+      return;
+    }
     if (action === 'all' && id === 'start') { for (const c of controllers.values()) c.start(); aviso = 'Iniciando todas...'; }
     else if (action === 'all' && id === 'pause') { for (const c of controllers.values()) c.pause(); aviso = 'Pausando todas...'; }
     else if (action === 'all' && id === 'stop') { for (const c of controllers.values()) c.stop(); aviso = 'Deteniendo todas...'; }
@@ -521,10 +604,22 @@ async function startTelegramBot() {
           const fromChat = String((u.message && u.message.chat.id) || (u.callback_query && u.callback_query.message.chat.id) || '');
           if (chatId && fromChat !== chatId) continue; // solo el dueño
           if (u.message) {
-            const text = String(u.message.text || '').trim().toLowerCase();
+            const raw = String(u.message.text || '').trim();
+            const text = raw.toLowerCase();
+            const chat = u.message.chat.id;
+            const ver = raw.match(/^\/ver\s+(\S+)/i);
+            const set = raw.match(/^\/set\s+(\S+)\s+(\S+)\s+([\s\S]*)$/i);
             if (text === '/start' || text === '/menu' || text === '/cuentas' || text === '/estado') {
               console.log('[telegram] menú enviado a', fromChat);
-              await showAccountsMenu(token, u.message.chat.id);
+              await showAccountsMenu(token, chat);
+            } else if (ver) {
+              console.log('[telegram] /ver', ver[1]);
+              await tgSend(token, chat, tgView(ver[1]));
+            } else if (set) {
+              console.log('[telegram] /set', set[1], set[2]);
+              await tgSend(token, chat, tgSetField(set[1], set[2], set[3].trim()));
+            } else if (text === '/ayuda' || text === '/help') {
+              await tgSend(token, chat, '*Comandos*\n/menu — cuentas y botones\n/ver <id> — ver una cuenta completa\n/set <id> <campo> <valor> — editar un campo\n\nCampos: nombre, titulo, ciudad, edad, ubicacion, telefono, texto, fotos, email, password, apikey, proxy');
             }
           } else if (u.callback_query) {
             console.log('[telegram] botón:', u.callback_query.data);

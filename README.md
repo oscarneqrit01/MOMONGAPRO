@@ -25,6 +25,7 @@ Panel multi-perfil para automatizar **bumps** y **reposts** en sitios tipo MegaP
 - **Estadísticas**: bumps de hoy, total y último bump.
 - **Logs a archivo** diarios con rotación (no se pierden al cerrar la terminal).
 - **Notificaciones** por Telegram y/o Discord ante fallos, pausas y paradas de emergencia. Se configuran desde el panel (botón **Notificaciones**) o en `.env`, con botón de **Probar**.
+- **Control por Telegram**: con `/menu` el bot muestra todas las cuentas con botones (iniciar, pausar, detener, publicar). Con `/ver <id>` ves la cuenta completa y con `/set <id> <campo> <valor>` la editas (ciudad, texto, teléfono, proxy, etc.).
 - **Detección automática de Chrome** (Windows/macOS/Linux) o navegador propio de Puppeteer.
 - **Salud del sistema**: panel con última operación, última OK, errores, avisos y bumps de hoy por perfil; además del saldo y consumo de 2Captcha.
 - **Auto-recuperación**: si Chrome se cae o se cierra a mitad de ciclo, el perfil lo reabre solo y continúa.
