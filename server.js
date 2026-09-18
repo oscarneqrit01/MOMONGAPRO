@@ -3146,7 +3146,10 @@ emitActive() {
       `--user-data-dir=${profileDir}`,
       '--disable-blink-features=AutomationControlled',
       '--window-size=390,844',
-      '--lang=en-US'
+      '--lang=en-US',
+      '--hide-crash-restore-bubble',
+      '--no-first-run',
+      '--no-default-browser-check'
     ];
 
     const proxy = this.cfg.proxy;
@@ -3305,6 +3308,13 @@ emitActive() {
         timeout: 90000
       });
       this.log('¡Página cargada con éxito!');
+
+      // Fuerza el zoom de la página a 100% (por si quedó con zoom de una sesión anterior)
+      try {
+        await page.keyboard.down('Control');
+        await page.keyboard.press('Digit0');
+        await page.keyboard.up('Control');
+      } catch (_) {}
 
       if (await checkForBlock(page, this)) return false;
 
