@@ -450,6 +450,10 @@ function accountsText() {
 function accountsKeyboard() {
   const rows = [
     [
+      { text: '🖼 Ver panel completo', callback_data: 'panel' },
+      { text: '🔄 Actualizar', callback_data: 'menu' }
+    ],
+    [
       { text: '▶️ Iniciar todos', callback_data: 'all:start' },
       { text: '⏸ Pausar todos', callback_data: 'all:pause' },
       { text: '⏹ Detener todos', callback_data: 'all:stop' }
@@ -465,7 +469,6 @@ function accountsKeyboard() {
       { text: '📢', callback_data: `publish:${id}` }
     ]);
   }
-  rows.push([{ text: '🔄 Actualizar', callback_data: 'menu' }]);
   return { inline_keyboard: rows };
 }
 
@@ -487,6 +490,32 @@ const TG_FIELDS = {
   apikey: 'apiKey2Captcha',
   proxy: 'proxy'
 };
+
+// Manda una captura del panel web completo a Telegram (como ver la misma página).
+async function tgSendPanelScreenshot(token, chatId) {
+  let browser;
+  try {
+    browser = await puppeteer.launch({ headless: 'new' });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 900 });
+    await page.setCookie({ name: AUTH_COOKIE, value: AUTH_TOKEN, url: `http://localhost:${PORT}/` });
+    await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle2', timeout: 30000 });
+    await sleep(2500);
+    const pngBase64 = await page.screenshot({ fullPage: true, encoding: 'base64' });
+    const buffer = Buffer.from(pngBase64, 'base64');
+    const form = new FormData();
+    form.append('chat_id', String(chatId));
+    form.append('caption', 'MOMONGA PRO — Panel completo');
+    form.append('photo', new Blob([buffer], { type: 'image/png' }), 'panel.png');
+    const r = await undiciFetch(`https://api.telegram.org/bot${token}/sendPhoto`, { method: 'POST', body: form });
+    const data = await r.json().catch(() => ({}));
+    if (!data.ok) await tgSend(token, chatId, `No se pudo enviar la captura: ${data.description || r.status}`);
+  } catch (error) {
+    await tgSend(token, chatId, `No se pudo generar la captura: ${error.message}`);
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+}
 
 // Los nombres de cuenta pueden tener espacios ("Mega Oreja"): los detectamos por la lista real.
 function tgKnownIds() {
@@ -604,6 +633,11 @@ async function handleTgCallback(token, query) {
       await tgSend(token, query.message.chat.id, tgView(id));
       return;
     }
+    if (action === 'panel') {
+      await tgCall(token, 'answerCallbackQuery', { callback_query_id: query.id, text: 'Generando captura...' });
+      await tgSendPanelScreenshot(token, query.message.chat.id);
+      return;
+    }
     if (action === 'all' && id === 'start') { for (const c of controllers.values()) c.start(); aviso = 'Iniciando todas...'; }
     else if (action === 'all' && id === 'pause') { for (const c of controllers.values()) c.pause(); aviso = 'Pausando todas...'; }
     else if (action === 'all' && id === 'stop') { for (const c of controllers.values()) c.stop(); aviso = 'Deteniendo todas...'; }
@@ -643,6 +677,10 @@ async function startTelegramBot() {
             if (text === '/start' || text === '/menu' || text === '/cuentas' || text === '/estado') {
               console.log('[telegram] menú enviado a', fromChat);
               await showAccountsMenu(token, chat);
+            } else if (text === '/panel' || text === '/captura' || text === '/pantalla') {
+              console.log('[telegram] captura del panel');
+              await tgSend(token, chat, '🖼 Generando captura del panel...');
+              await tgSendPanelScreenshot(token, chat);
             } else if (verId) {
               console.log('[telegram] /ver', verId);
               await tgSend(token, chat, tgView(verId));
