@@ -466,7 +466,8 @@ function accountsKeyboard() {
       { text: '▶️', callback_data: `start:${id}` },
       { text: '⏸', callback_data: `pause:${id}` },
       { text: '⏹', callback_data: `stop:${id}` },
-      { text: '📢', callback_data: `publish:${id}` }
+      { text: '📢', callback_data: `publish:${id}` },
+      { text: '📺', callback_data: `live:${id}` }
     ]);
   }
   return { inline_keyboard: rows };
@@ -531,19 +532,72 @@ async function tgSendPanelScreenshot(token, chatId) {
   }
 }
 
+// Vista "en vivo" en Telegram: refresca una foto del navegador de la cuenta cada pocos segundos.
+const tgLiveViews = new Map();
+
+function stopTgLive(chatId, id) {
+  const key = `${chatId}:${id}`;
+  const view = tgLiveViews.get(key);
+  if (view) {
+    clearInterval(view.timer);
+    tgLiveViews.delete(key);
+    return true;
+  }
+  return false;
+}
+
+async function startTgLive(token, chatId, id) {
+  const controller = controllers.get(id);
+  if (!controller || !controller.page) {
+    await tgSend(token, chatId, `La cuenta *${id}* no tiene el navegador abierto. Pulsa ▶️ primero.`);
+    return;
+  }
+  stopTgLive(chatId, id);
+  const key = `${chatId}:${id}`;
+  let messageId = null;
+
+  const tick = async () => {
+    try {
+      const c = controllers.get(id);
+      if (!c || !c.page) { stopTgLive(chatId, id); return; }
+      const buf = Buffer.from(await c.page.screenshot({ encoding: 'base64' }), 'base64');
+      if (!messageId) {
+        const { boundary, body } = buildMultipart({ chat_id: String(chatId), caption: `📺 Vista en vivo: ${id}` }, 'photo', 'v.png', buf, 'image/png');
+        const r = await undiciFetch(`https://api.telegram.org/bot${token}/sendPhoto`, { method: 'POST', headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` }, body });
+        const d = await r.json().catch(() => ({}));
+        if (d.ok && d.result) messageId = d.result.message_id;
+      } else {
+        const media = JSON.stringify({ type: 'photo', media: 'attach://photo' });
+        const { boundary, body } = buildMultipart({ chat_id: String(chatId), message_id: String(messageId), media }, 'photo', 'v.png', buf, 'image/png');
+        await undiciFetch(`https://api.telegram.org/bot${token}/editMessageMedia`, { method: 'POST', headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` }, body });
+      }
+    } catch (_) {}
+  };
+
+  await tick();
+  const timer = setInterval(tick, 5000);
+  tgLiveViews.set(key, { timer });
+  // Se detiene solo a los 5 minutos (para no dejarlo infinito)
+  setTimeout(() => stopTgLive(chatId, id), 5 * 60 * 1000);
+}
+
 // Los nombres de cuenta pueden tener espacios ("Mega Oreja"): los detectamos por la lista real.
 function tgKnownIds() {
   return [...controllers.keys()].sort((a, b) => b.length - a.length);
 }
 
-function tgParseVer(raw) {
-  const m = raw.match(/^\/ver\s+([\s\S]+)$/i);
+function tgParseIdAfter(raw, cmd) {
+  const m = raw.match(new RegExp(`^/${cmd}\\s+([\\s\\S]+)$`, 'i'));
   if (!m) return null;
   const rest = m[1].trim();
   for (const id of tgKnownIds()) {
     if (rest.toLowerCase() === id.toLowerCase() || rest.toLowerCase().startsWith(`${id.toLowerCase()} `)) return id;
   }
   return rest.split(/\s+/)[0];
+}
+
+function tgParseVer(raw) {
+  return tgParseIdAfter(raw, 'ver');
 }
 
 function tgParseSet(raw) {
@@ -652,6 +706,16 @@ async function handleTgCallback(token, query) {
       await tgSendPanelScreenshot(token, query.message.chat.id);
       return;
     }
+    if (action === 'live') {
+      await tgCall(token, 'answerCallbackQuery', { callback_query_id: query.id, text: 'Abriendo vista en vivo...' });
+      await startTgLive(token, query.message.chat.id, id);
+      return;
+    }
+    if (action === 'stoplive') {
+      await tgCall(token, 'answerCallbackQuery', { callback_query_id: query.id, text: 'Deteniendo vista...' });
+      stopTgLive(query.message.chat.id, id);
+      return;
+    }
     if (action === 'all' && id === 'start') { for (const c of controllers.values()) c.start(); aviso = 'Iniciando todas...'; }
     else if (action === 'all' && id === 'pause') { for (const c of controllers.values()) c.pause(); aviso = 'Pausando todas...'; }
     else if (action === 'all' && id === 'stop') { for (const c of controllers.values()) c.stop(); aviso = 'Deteniendo todas...'; }
@@ -695,6 +759,17 @@ async function startTelegramBot() {
               console.log('[telegram] captura del panel');
               await tgSend(token, chat, '🖼 Generando captura del panel...');
               await tgSendPanelScreenshot(token, chat);
+            } else if (/^\/vivo\s+/i.test(raw)) {
+              const liveId = tgParseIdAfter(raw, 'vivo');
+              console.log('[telegram] /vivo', liveId);
+              await startTgLive(token, chat, liveId);
+            } else if (text === '/parar') {
+              let stopped = 0;
+              for (const k of [...tgLiveViews.keys()]) {
+                const [c, i] = k.split(':');
+                if (c === String(chat)) { stopTgLive(c, i); stopped += 1; }
+              }
+              await tgSend(token, chat, stopped ? '⏹ Vista en vivo detenida.' : 'No había vista en vivo activa.');
             } else if (verId) {
               console.log('[telegram] /ver', verId);
               await tgSend(token, chat, tgView(verId));
@@ -702,7 +777,7 @@ async function startTelegramBot() {
               console.log('[telegram] /set', setCmd.id, setCmd.field);
               await tgSend(token, chat, tgSetField(setCmd.id, setCmd.field, setCmd.value));
             } else if (text === '/ayuda' || text === '/help') {
-              await tgSend(token, chat, '*Comandos*\n/menu — cuentas y botones\n/ver <id> — ver una cuenta completa\n/set <id> <campo> <valor> — editar un campo\n\nCampos: nombre, titulo, ciudad, edad, ubicacion, telefono, texto, fotos, email, password, apikey, proxy');
+              await tgSend(token, chat, '*Comandos*\n/menu — cuentas y botones\n/ver <id> — ver una cuenta completa\n/set <id> <campo> <valor> — editar un campo\n/vivo <id> — vista en vivo (foto que se refresca)\n/parar — detener la vista en vivo\n/panel — captura del panel completo\n\nCampos: nombre, titulo, ciudad, edad, ubicacion, telefono, texto, fotos, email, password, apikey, proxy');
             }
           } else if (u.callback_query) {
             console.log('[telegram] botón:', u.callback_query.data);
@@ -3350,7 +3425,6 @@ emitActive() {
     this.started = false;
     this.paused = false;
     this._stopping = true;
-    await stopLiveView(this);
     if (this._cycleTimer) clearTimeout(this._cycleTimer);
     if (this._countdownTimer) clearInterval(this._countdownTimer);
     if (this._repostTimer) clearTimeout(this._repostTimer);
@@ -4090,46 +4164,6 @@ app.patch('/api/profiles/:id/autorepost', (req, res) => {
   }
 });
 
-// --- Vista en vivo (screencast del navegador del perfil) ---
-async function startLiveView(controller) {
-  if (!controller || !controller.page) return { ok: false, error: 'El navegador de esa cuenta no está abierto.' };
-  if (controller._liveSession) return { ok: true };
-  try {
-    const session = await controller.page.createCDPSession();
-    controller._liveSession = session;
-    session.on('Page.screencastFrame', async (frame) => {
-      io.emit('live-frame', { id: controller.id, data: frame.data, width: frame.metadata.deviceWidth, height: frame.metadata.deviceHeight });
-      try { await session.send('Page.screencastFrameAck', { sessionId: frame.sessionId }); } catch (_) {}
-    });
-    await session.send('Page.startScreencast', { format: 'jpeg', quality: 55, maxWidth: 760, maxHeight: 1500, everyNthFrame: 1 });
-    controller.log('👁 Vista en vivo iniciada.');
-    return { ok: true };
-  } catch (error) {
-    controller._liveSession = null;
-    return { ok: false, error: error.message };
-  }
-}
-
-async function stopLiveView(controller) {
-  if (!controller || !controller._liveSession) return;
-  const session = controller._liveSession;
-  controller._liveSession = null;
-  try { await session.send('Page.stopScreencast'); } catch (_) {}
-  try { await session.detach(); } catch (_) {}
-}
-
-async function handleLiveInput(controller, payload) {
-  if (!controller || !controller.page) return;
-  try {
-    const { type, x, y, key, text, deltaY } = payload || {};
-    if (type === 'click') await controller.page.mouse.click(x, y);
-    else if (type === 'move') await controller.page.mouse.move(x, y);
-    else if (type === 'scroll') await controller.page.mouse.wheel({ deltaY: deltaY || 0 });
-    else if (type === 'key') await controller.page.keyboard.press(key);
-    else if (type === 'text') await controller.page.keyboard.type(String(text || ''));
-  } catch (_) {}
-}
-
 io.on('connection', (socket) => {
   console.log('🔌 Interfaz conectada.');
 
@@ -4232,21 +4266,7 @@ io.on('connection', (socket) => {
     if (controller) createManualAppeal(controller);
   });
 
-  socket.on('live-start', async (id) => {
-    const controller = controllers.get(id);
-    const result = await startLiveView(controller);
-    socket.emit('live-status', { id, ...result });
-  });
 
-  socket.on('live-stop', async (id) => {
-    const controller = controllers.get(id);
-    await stopLiveView(controller);
-  });
-
-  socket.on('live-input', async (payload) => {
-    const controller = controllers.get(payload && payload.id);
-    await handleLiveInput(controller, payload);
-  });
 
   socket.on('update-interval', ({ id, min, max }) => {
     const controller = controllers.get(id);

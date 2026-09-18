@@ -1303,22 +1303,6 @@
     </form>
   </div>
 
-  <div class="modal-backdrop" id="liveModal" role="dialog" aria-modal="true" aria-labelledby="liveModalTitle">
-    <div class="modal" style="width: auto; max-width: 92vw;">
-      <div class="modal-header">
-        <h2 id="liveModalTitle">Vista en vivo</h2>
-        <button class="modal-close" id="closeLiveModalBtn" type="button" aria-label="Cerrar">&times;</button>
-      </div>
-      <div style="text-align:center;">
-        <canvas id="liveCanvas" width="390" height="844" tabindex="0" style="max-height: 72vh; max-width: 100%; border:1px solid #333; background:#000; cursor:crosshair; touch-action:none;"></canvas>
-        <p style="color:#888;font-size:11px;margin-top:6px;">Haz clic y escribe directamente aquí (es el navegador de la cuenta).</p>
-      </div>
-      <div class="modal-actions">
-        <button class="cancel-btn" id="cancelLiveModalBtn" type="button">Cerrar</button>
-      </div>
-    </div>
-  </div>
-
   <div class="modal-backdrop" id="notifyModal" role="dialog" aria-modal="true" aria-labelledby="notifyModalTitle">
     <form class="modal" id="notifyForm">
       <div class="modal-header">
@@ -1399,13 +1383,7 @@
     const notifyModal = document.getElementById('notifyModal');
     const notifyForm = document.getElementById('notifyForm');
     const notifyFormError = document.getElementById('notifyFormError');
-    const liveModal = document.getElementById('liveModal');
-    const liveCanvas = document.getElementById('liveCanvas');
-    const liveCtx = liveCanvas.getContext('2d');
     const pendingSettingsSaves = {};
-    let liveId = null;
-    let liveFrameW = 390;
-    let liveFrameH = 844;
 
     function openAddModal() {
       formError.textContent = '';
@@ -1657,69 +1635,6 @@
       };
     }
 
-    function openLiveModal(id) {
-      liveId = id;
-      document.getElementById('liveModalTitle').textContent = `Vista en vivo — ${id}`;
-      liveModal.classList.add('open');
-      socket.emit('live-start', id);
-      setTimeout(() => liveCanvas.focus(), 300);
-    }
-
-    function closeLiveModal() {
-      if (liveId) socket.emit('live-stop', liveId);
-      liveId = null;
-      liveModal.classList.remove('open');
-    }
-
-    function liveMap(e) {
-      const rect = liveCanvas.getBoundingClientRect();
-      return {
-        x: (e.clientX - rect.left) * (liveFrameW / rect.width),
-        y: (e.clientY - rect.top) * (liveFrameH / rect.height)
-      };
-    }
-
-    socket.on('live-status', (data) => {
-      if (!data || data.id !== liveId) return;
-      if (data.ok === false) {
-        liveCtx.fillStyle = '#000';
-        liveCtx.fillRect(0, 0, liveCanvas.width, liveCanvas.height);
-        liveCtx.fillStyle = '#fff';
-        liveCtx.font = '16px Arial';
-        liveCtx.fillText(data.error || 'Vista no disponible', 20, 40);
-      }
-    });
-
-    socket.on('live-frame', (data) => {
-      if (!data || data.id !== liveId) return;
-      liveFrameW = data.width || liveFrameW;
-      liveFrameH = data.height || liveFrameH;
-      const img = new Image();
-      img.onload = () => { liveCtx.drawImage(img, 0, 0, liveCanvas.width, liveCanvas.height); };
-      img.src = `data:image/jpeg;base64,${data.data}`;
-    });
-
-    liveCanvas.addEventListener('mousedown', (e) => {
-      liveCanvas.focus();
-      const p = liveMap(e);
-      socket.emit('live-input', { id: liveId, type: 'click', x: p.x, y: p.y });
-    });
-    liveCanvas.addEventListener('mousemove', (e) => {
-      if (!e.buttons) return;
-      const p = liveMap(e);
-      socket.emit('live-input', { id: liveId, type: 'move', x: p.x, y: p.y });
-    });
-    liveCanvas.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      socket.emit('live-input', { id: liveId, type: 'scroll', deltaY: e.deltaY });
-    }, { passive: false });
-    liveCanvas.addEventListener('keydown', (e) => {
-      if (!liveId) return;
-      if (e.key.length === 1) socket.emit('live-input', { id: liveId, type: 'text', text: e.key });
-      else socket.emit('live-input', { id: liveId, type: 'key', key: e.key });
-      e.preventDefault();
-    });
-
     async function loadProfiles() {
       try {
         const response = await fetch('/api/profiles');
@@ -1783,7 +1698,6 @@
             <button class="small-btn blue" data-action="publish" data-id="${profile.id}">Publicar Ya</button>
             <button class="small-btn dark" data-action="retry" data-id="${profile.id}">Reintentar Paso</button>
             <button class="small-btn amber" data-action="appeal" data-id="${profile.id}">Apelar</button>
-            <button class="small-btn blue" data-action="live" data-id="${profile.id}">Vista en vivo</button>
           </div>
 
           <div class="subpanel">
@@ -1993,7 +1907,6 @@
           if (action === 'publish') socket.emit('publish-profile', id);
           if (action === 'retry') socket.emit('retry-profile', id);
           if (action === 'appeal') socket.emit('appeal-profile', id);
-          if (action === 'live') openLiveModal(id);
           if (action === 'save-interval') {
             const minInput = document.querySelector(`[data-bump-min="${id}"]`);
             const maxInput = document.querySelector(`[data-bump-max="${id}"]`);
@@ -2440,12 +2353,6 @@
     });
     socket.on('health', () => {
       if (healthModal.classList.contains('open')) openHealthModal();
-    });
-
-    document.getElementById('closeLiveModalBtn').addEventListener('click', closeLiveModal);
-    document.getElementById('cancelLiveModalBtn').addEventListener('click', closeLiveModal);
-    liveModal.addEventListener('click', (event) => {
-      if (event.target === liveModal) closeLiveModal();
     });
 
     document.getElementById('notifyBtn').addEventListener('click', openNotifyModal);
