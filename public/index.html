@@ -1231,6 +1231,13 @@
           <input id="profileIntervalMax" name="bumpMaxMinutes" type="number" min="1" max="10080" value="16" required />
         </div>
         <div class="form-field">
+          <label for="profileDevice">Dispositivo</label>
+          <select id="profileDevice" name="device">
+            <option value="iphone">iPhone (Safari)</option>
+            <option value="android">Android (Chrome)</option>
+          </select>
+        </div>
+        <div class="form-field">
           <label for="profileUrl">URL</label>
           <input id="profileUrl" name="url" value="https://megapersonals.eu/" required />
         </div>
@@ -1689,6 +1696,13 @@
           <div class="profile-meta">
             <span>${profile.url}</span>
           </div>
+          <div class="profile-meta">
+            <span>Dispositivo:</span>
+            <select data-device-id="${profile.id}" style="background:#1a1a2e;border:1px solid #333;color:#fff;padding:4px;border-radius:4px;font-size:11px;">
+              <option value="iphone" ${(profile.device || 'iphone') === 'iphone' ? 'selected' : ''}>iPhone (Safari)</option>
+              <option value="android" ${profile.device === 'android' ? 'selected' : ''}>Android (Chrome)</option>
+            </select>
+          </div>
 
           <div class="profile-row">
             <button class="small-btn" data-action="open" data-id="${profile.id}" style="background:#6c5ce7;color:#fff;">Abrir Página</button>
@@ -1987,6 +2001,25 @@
             console.error(error.message);
           } finally {
             if (pendingSettingsSaves[profileId] === save) delete pendingSettingsSaves[profileId];
+          }
+        });
+      });
+
+      profilesEl.querySelectorAll('[data-device-id]').forEach(select => {
+        select.addEventListener('change', async () => {
+          const profileId = select.dataset.deviceId;
+          try {
+            const response = await fetch(`/api/profiles/${encodeURIComponent(profileId)}/settings`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ device: select.value })
+            });
+            if (!response.ok) {
+              const result = await response.json();
+              throw new Error(result.error || 'No se pudo guardar el dispositivo.');
+            }
+          } catch (error) {
+            alert('❌ ' + error.message);
           }
         });
       });
@@ -2443,6 +2476,7 @@
         bumpMinMinutes: Number(form.get('bumpMinMinutes')),
         bumpMaxMinutes: Number(form.get('bumpMaxMinutes')),
         url: form.get('url'),
+        device: form.get('device'),
         adDetails: {
           city: form.get('adCity'),
           age: form.get('adAge'),

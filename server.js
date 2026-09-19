@@ -25,6 +25,21 @@ const CONFIG_PATH = process.env.CONFIG_PATH || path.join(__dirname, 'config.json
 const STATE_PATH = process.env.STATE_PATH || path.join(__dirname, 'state.json');
 const PORT = process.env.PORT || 3000;
 const DEFAULT_URL = 'https://megapersonals.eu/';
+
+// Dispositivos disponibles por perfil (User-Agent + pantalla, coherentes entre si).
+const DEVICE_PRESETS = {
+  iphone: {
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
+    viewport: { width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true }
+  },
+  android: {
+    userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+    viewport: { width: 412, height: 915, deviceScaleFactor: 2.625, isMobile: true, hasTouch: true }
+  }
+};
+function devicePreset(name) {
+  return DEVICE_PRESETS[name] || DEVICE_PRESETS.iphone;
+}
 const DEFAULT_SUPPORT_EMAIL = 'support@megapersonals.eu';
 const TWOCAPTCHA_BASE = (process.env.TWOCAPTCHA_BASE || 'https://2captcha.com').replace(/\/+$/, '');
 const twoCaptchaStats = { solves: 0, fails: 0, balance: null, lastBalanceAt: 0 };
@@ -3273,15 +3288,11 @@ emitActive() {
       } catch (_) {}
     });
 
+    const device = devicePreset(this.cfg.device);
+    this.log(`Dispositivo: ${this.cfg.device === 'android' ? 'Android (Chrome)' : 'iPhone (Safari)'}`);
     await page.emulate({
-      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-      viewport: {
-        width: 390,
-        height: 844,
-        deviceScaleFactor: 3,
-        isMobile: true,
-        hasTouch: true,
-      }
+      userAgent: device.userAgent,
+      viewport: device.viewport
     });
 
     const fp = await page.evaluate(() => ({
@@ -3978,7 +3989,7 @@ app.post('/api/profiles/import', (req, res) => {
 
 app.post('/api/profiles', (req, res) => {
   try {
-    const { id, port, intervalMinutes, bumpMinMinutes, bumpMaxMinutes, url, email, password, supportEmail, supportUrl, proxy, adDetails, limits } = req.body || {};
+    const { id, port, intervalMinutes, bumpMinMinutes, bumpMaxMinutes, url, email, password, supportEmail, supportUrl, proxy, adDetails, limits, device } = req.body || {};
     const cleanId = String(id || '').trim();
     const numericPort = Number(port);
     let minVal = Number(bumpMinMinutes);
@@ -4014,6 +4025,7 @@ app.post('/api/profiles', (req, res) => {
       bumpMinMinutes: minVal,
       bumpMaxMinutes: maxVal,
       url: String(url || DEFAULT_URL).trim() || DEFAULT_URL,
+      device: device === 'android' ? 'android' : 'iphone',
       adDetails: {
         name: String(adDetails?.name || '').trim(),
         headline: String(adDetails?.headline || '').trim(),
@@ -4069,6 +4081,12 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
 
     if ('apiKey2Captcha' in body) {
       profile.apiKey2Captcha = String(body.apiKey2Captcha || '').trim();
+    }
+
+    if ('device' in body) {
+      profile.device = body.device === 'android' ? 'android' : 'iphone';
+      const ctrl = controllers.get(profile.id);
+      if (ctrl) ctrl.cfg.device = profile.device;
     }
 
     if ('email' in body) {
