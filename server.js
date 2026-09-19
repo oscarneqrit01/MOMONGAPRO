@@ -3204,6 +3204,7 @@ emitActive() {
     const launch = () => puppeteer.launch({
       headless: false,
       ...(executablePath ? { executablePath } : {}),
+      ignoreDefaultArgs: ['--enable-automation'],
       args
     });
 
@@ -3260,6 +3261,17 @@ emitActive() {
 
     await page.setGeolocation({ latitude: 45.5052, longitude: -73.5557, accuracy: 100 });
     await page.setBypassCSP(true);
+
+    // Anti-detección: oculta las marcas típicas de navegador automatizado.
+    await page.evaluateOnNewDocument(() => {
+      try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch (_) {}
+      try { Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] }); } catch (_) {}
+      try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] }); } catch (_) {}
+      try {
+        if (!window.chrome) window.chrome = {};
+        if (!window.chrome.runtime) window.chrome.runtime = {};
+      } catch (_) {}
+    });
 
     await page.emulate({
       userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
