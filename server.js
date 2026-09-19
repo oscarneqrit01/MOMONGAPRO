@@ -1181,6 +1181,7 @@ async function preprocessCaptchaImage(page, pngBase64, binarize = false) {
     });
     const scale = 3;
     const canvas = document.createElement('canvas');
+    canvas.setAttribute('data-momonga-skip', '1');
     canvas.width = Math.max(1, Math.round(img.width * scale));
     canvas.height = Math.max(1, Math.round(img.height * scale));
     const ctx = canvas.getContext('2d');
@@ -2035,7 +2036,8 @@ async function fillFirst(page, selectors, value) {
         continue;
       }
       await field.click({ clickCount: 3 });
-      await field.type(String(value));
+      await sleep(120 + Math.floor(Math.random() * 250));
+      await field.type(String(value), { delay: 40 + Math.floor(Math.random() * 90) });
       return true;
     }
   }
@@ -2770,13 +2772,16 @@ function detectChromeExecutable() {
 function parseProxy(value) {
   if (!value) return null;
 
+  const normType = (t) => (String(t || '').toLowerCase() === 'socks5' ? 'socks5' : 'http');
+
   if (typeof value === 'object') {
     if (!value.host) return null;
     return {
       host: String(value.host).trim(),
       port: Number(value.port) || 0,
       username: String(value.username || ''),
-      password: String(value.password || '')
+      password: String(value.password || ''),
+      type: normType(value.type)
     };
   }
 
@@ -2790,7 +2795,8 @@ function parseProxy(value) {
     host: parts[0].trim(),
     port: Number(parts[1]) || 0,
     username: (parts[2] || '').trim(),
-    password: (parts[3] || '').trim()
+    password: (parts[3] || '').trim(),
+    type: normType(parts[4])
   };
 }
 
@@ -2979,6 +2985,8 @@ async function scrapeActiveAdPhotos(page) {
 
 function buildProxyDispatcher(proxy) {
   if (!proxy || !proxy.host) return null;
+  // undici no soporta SOCKS5: en ese caso no usamos dispatcher (el navegador si lo usa).
+  if (proxy.type === 'socks5') return null;
 
   const auth = proxy.username
     ? `${encodeURIComponent(proxy.username)}:${encodeURIComponent(proxy.password || '')}@`
@@ -2986,6 +2994,34 @@ function buildProxyDispatcher(proxy) {
   const proxyUrl = `http://${auth}${proxy.host}:${proxy.port}`;
 
   return new ProxyAgent(proxyUrl);
+}
+
+const proxyGeoCache = new Map();
+async function resolveProxyGeo(browser, proxy) {
+  if (!proxy || !proxy.host) return null;
+  const key = `${proxy.type || 'http'}://${proxy.host}:${proxy.port}`;
+  const cached = proxyGeoCache.get(key);
+  if (cached && Date.now() - cached.at < 30 * 60 * 1000) return cached.data;
+
+  let tmp;
+  try {
+    tmp = await browser.newPage();
+    await tmp.goto('http://ip-api.com/json/?fields=status,country,city,timezone,lat,lon', {
+      waitUntil: 'domcontentloaded',
+      timeout: 15000
+    });
+    const txt = await tmp.evaluate(() => (document.body ? document.body.innerText : ''));
+    const data = JSON.parse(txt);
+    if (data && data.status === 'success') {
+      proxyGeoCache.set(key, { at: Date.now(), data });
+      return data;
+    }
+  } catch (_) {
+  } finally {
+    if (tmp) await tmp.close().catch(() => {});
+  }
+  proxyGeoCache.set(key, { at: Date.now(), data: null });
+  return null;
 }
 
 async function downloadAndSanitizePhoto(imageUrl, outputFolder, profileId, dispatcher) {
@@ -3200,13 +3236,20 @@ emitActive() {
       '--lang=en-US',
       '--hide-crash-restore-bubble',
       '--no-first-run',
-      '--no-default-browser-check'
+      '--no-default-browser-check',
+      // Anti-fuga de IP real por WebRTC
+      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+      '--enforce-webrtc-ip-permission-check'
     ];
 
     const proxy = this.cfg.proxy;
     if (proxy && proxy.host) {
-      args.push(`--proxy-server=http://${proxy.host}:${proxy.port}`);
-      this.log(`Usando proxy: ${proxy.host}:${proxy.port}`);
+      const scheme = proxy.type === 'socks5' ? 'socks5' : 'http';
+      args.push(`--proxy-server=${scheme}://${proxy.host}:${proxy.port}`);
+      this.log(`Usando proxy ${scheme.toUpperCase()}: ${proxy.host}:${proxy.port}`);
+      if (scheme === 'socks5' && proxy.username) {
+        this.warn('Chrome no soporta SOCKS5 con usuario/contraseña. Si falla, usa un proxy HTTP o SOCKS5 sin auth (por IP).');
+      }
     }
 
     const executablePath = detectChromeExecutable();
@@ -3261,7 +3304,7 @@ emitActive() {
       } catch (_) {}
     });
 
-    if (proxy && proxy.host && proxy.username !== undefined && proxy.password !== undefined) {
+    if (proxy && proxy.host && proxy.type !== 'socks5' && proxy.username !== undefined && proxy.password !== undefined) {
       await page.authenticate({ username: proxy.username, password: proxy.password });
       this.log('Auth del proxy configurada.');
     }
@@ -3271,22 +3314,20 @@ emitActive() {
     });
 
     const client = await page.target().createCDPSession();
-    await client.send('Emulation.setTimezoneOverride', { timezoneId: 'America/Toronto' });
     await client.send('Emulation.setLocaleOverride', { locale: 'en-US' });
 
-    await page.setGeolocation({ latitude: 45.5052, longitude: -73.5557, accuracy: 100 });
+    // Ubicacion coherente con el proxy (timezone + geolocalizacion)
+    let geo = null;
+    if (proxy && proxy.host) {
+      geo = await resolveProxyGeo(browser, proxy).catch(() => null);
+    }
+    const timezone = (geo && geo.timezone) || 'America/Toronto';
+    const latitude = geo && Number.isFinite(geo.lat) ? geo.lat : 45.5052;
+    const longitude = geo && Number.isFinite(geo.lon) ? geo.lon : -73.5557;
+    if (geo) this.log(`🌍 Ubicacion del proxy: ${geo.city || '?'}, ${geo.country || '?'} (${timezone})`);
+    await client.send('Emulation.setTimezoneOverride', { timezoneId: timezone });
+    await page.setGeolocation({ latitude, longitude, accuracy: 100 });
     await page.setBypassCSP(true);
-
-    // Anti-detección: oculta las marcas típicas de navegador automatizado.
-    await page.evaluateOnNewDocument(() => {
-      try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch (_) {}
-      try { Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] }); } catch (_) {}
-      try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] }); } catch (_) {}
-      try {
-        if (!window.chrome) window.chrome = {};
-        if (!window.chrome.runtime) window.chrome.runtime = {};
-      } catch (_) {}
-    });
 
     const device = devicePreset(this.cfg.device);
     this.log(`Dispositivo: ${this.cfg.device === 'android' ? 'Android (Chrome)' : 'iPhone (Safari)'}`);
@@ -3294,6 +3335,77 @@ emitActive() {
       userAgent: device.userAgent,
       viewport: device.viewport
     });
+
+    // Anti-deteccion: oculta automatizacion y enmascara la huella por perfil.
+    const seed = String(this.id);
+    await page.evaluateOnNewDocument((seedStr) => {
+      let s = 0;
+      for (let i = 0; i < seedStr.length; i++) s = (s * 31 + seedStr.charCodeAt(i)) >>> 0;
+      const rand = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+
+      try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch (_) {}
+      try { Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] }); } catch (_) {}
+      try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] }); } catch (_) {}
+      try {
+        if (!window.chrome) window.chrome = {};
+        if (!window.chrome.runtime) window.chrome.runtime = {};
+      } catch (_) {}
+
+      try { Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => [4, 6, 8][Math.floor(rand() * 3)] }); } catch (_) {}
+      try { Object.defineProperty(navigator, 'deviceMemory', { get: () => [4, 8][Math.floor(rand() * 2)] }); } catch (_) {}
+
+      try {
+        const OrigRTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+        if (OrigRTC) {
+          const Patched = function (config) {
+            try { if (config && config.iceServers) config.iceServers = []; } catch (_) {}
+            return new OrigRTC(config);
+          };
+          Patched.prototype = OrigRTC.prototype;
+          window.RTCPeerConnection = Patched;
+          if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = Patched;
+        }
+      } catch (_) {}
+
+      try {
+        const patchGL = (proto) => {
+          if (!proto || !proto.getParameter) return;
+          const orig = proto.getParameter;
+          proto.getParameter = function (p) {
+            if (p === 37445) return 'Google Inc. (Intel)';
+            if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics Direct3D11, D3D11)';
+            return orig.apply(this, arguments);
+          };
+        };
+        patchGL(window.WebGLRenderingContext && window.WebGLRenderingContext.prototype);
+        patchGL(window.WebGL2RenderingContext && window.WebGL2RenderingContext.prototype);
+      } catch (_) {}
+
+      try {
+        const origGet = CanvasRenderingContext2D.prototype.getImageData;
+        CanvasRenderingContext2D.prototype.getImageData = function () {
+          const data = origGet.apply(this, arguments);
+          try {
+            const cv = this.canvas;
+            if (cv && cv.getAttribute && cv.getAttribute('data-momonga-skip') === '1') return data;
+            const d = data.data;
+            if (d.length >= 4) {
+              const idx = Math.floor(rand() * (d.length / 4)) * 4;
+              d[idx] = (d[idx] + Math.floor(rand() * 3) - 1 + 256) % 256;
+            }
+          } catch (_) {}
+          return data;
+        };
+      } catch (_) {}
+
+      try {
+        const origGetFloat = AnalyserNode.prototype.getFloatFrequencyData;
+        AnalyserNode.prototype.getFloatFrequencyData = function (array) {
+          origGetFloat.apply(this, arguments);
+          try { if (array && array.length) array[0] = array[0] + rand() * 0.0000001; } catch (_) {}
+        };
+      } catch (_) {}
+    }, seed);
 
     const fp = await page.evaluate(() => ({
       ua: navigator.userAgent,
@@ -4049,7 +4161,8 @@ app.post('/api/profiles', (req, res) => {
         host: String(proxy.host).trim(),
         port: Number(proxy.port),
         username: String(proxy.username || ''),
-        password: String(proxy.password || '')
+        password: String(proxy.password || ''),
+        type: proxy.type === 'socks5' ? 'socks5' : 'http'
       };
     }
 

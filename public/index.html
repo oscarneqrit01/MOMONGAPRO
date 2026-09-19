@@ -1241,6 +1241,13 @@
           <label for="profileUrl">URL</label>
           <input id="profileUrl" name="url" value="https://megapersonals.eu/" required />
         </div>
+        <div class="form-field">
+          <label for="profileProxyType">Tipo de proxy</label>
+          <select id="profileProxyType" name="proxyType">
+            <option value="http">HTTP (recomendado)</option>
+            <option value="socks5">SOCKS5</option>
+          </select>
+        </div>
         <div class="form-field full">
           <label for="profileProxyHost">Proxy host (opcional)</label>
           <input id="profileProxyHost" name="proxyHost" placeholder="92.113.183.190" />
@@ -2487,7 +2494,8 @@
           host: proxyHost,
           port: Number(form.get('proxyPort')),
           username: form.get('proxyUsername'),
-          password: form.get('proxyPassword')
+          password: form.get('proxyPassword'),
+          type: form.get('proxyType')
         } : null
       };
 
