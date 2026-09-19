@@ -47,9 +47,9 @@ function devicePreset(name, chromeMajor) {
       kind: 'android', platform: 'Android', model: 'Pixel 9 Pro'
     },
     samsung: {
-      userAgent: `Mozilla/5.0 (Linux; Android 15; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
+      userAgent: `Mozilla/5.0 (Linux; Android 15; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
       viewport: { width: 412, height: 915, deviceScaleFactor: 2.625, isMobile: true, hasTouch: true },
-      kind: 'android', platform: 'Android', model: 'SM-S928B'
+      kind: 'android', platform: 'Android', model: 'SM-S921B'
     },
     samsung_ultra: {
       userAgent: `Mozilla/5.0 (Linux; Android 15; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
