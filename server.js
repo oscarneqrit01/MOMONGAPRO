@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const net = require('net');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const express = require('express');
@@ -2996,6 +2997,105 @@ function buildProxyDispatcher(proxy) {
   return new ProxyAgent(proxyUrl);
 }
 
+// Chrome no soporta SOCKS5 con usuario/clave. Hacemos un puente local:
+// Chrome -> HTTP proxy local (sin auth) -> SOCKS5 con auth -> destino
+function socks5Connect(proxy, targetHost, targetPort) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(proxy.port, proxy.host);
+    let stage = 'greet';
+    let buf = Buffer.alloc(0);
+    let settled = false;
+    const finish = (err) => {
+      if (settled) return;
+      settled = true;
+      socket.removeListener('data', onData);
+      if (err) { try { socket.destroy(); } catch (_) {} return reject(err); }
+      socket.setTimeout(0);
+      resolve(socket);
+    };
+    socket.setTimeout(20000, () => finish(new Error('timeout conectando al proxy SOCKS5')));
+    socket.on('error', (e) => finish(e));
+    socket.on('close', () => { if (!settled) finish(new Error('el proxy SOCKS5 cerró la conexión')); });
+    socket.on('connect', () => {
+      socket.write(proxy.username ? Buffer.from([5, 2, 0, 2]) : Buffer.from([5, 1, 0]));
+    });
+    const onData = (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      if (stage === 'greet') {
+        if (buf.length < 2) return;
+        const method = buf[1]; buf = buf.slice(2);
+        if (method === 2) {
+          const u = Buffer.from(String(proxy.username || ''));
+          const p = Buffer.from(String(proxy.password || ''));
+          socket.write(Buffer.concat([Buffer.from([1, u.length]), u, Buffer.from([p.length]), p]));
+          stage = 'auth';
+          return;
+        }
+        if (method === 0) { stage = 'connect'; } else return finish(new Error('el proxy SOCKS5 no aceptó el método de auth'));
+      }
+      if (stage === 'auth') {
+        if (buf.length < 2) return;
+        const status = buf[1]; buf = buf.slice(2);
+        if (status !== 0) return finish(new Error('credenciales SOCKS5 rechazadas'));
+        stage = 'connect';
+      }
+      if (stage === 'connect') {
+        const hostBuf = Buffer.from(targetHost);
+        socket.write(Buffer.concat([
+          Buffer.from([5, 1, 0, 3, hostBuf.length]), hostBuf,
+          Buffer.from([(targetPort >> 8) & 255, targetPort & 255])
+        ]));
+        stage = 'reply';
+        buf = Buffer.alloc(0);
+        return;
+      }
+      if (stage === 'reply') {
+        if (buf.length < 5) return;
+        if (buf[1] !== 0) return finish(new Error(`el proxy SOCKS5 no pudo conectar al destino (${buf[1]})`));
+        const atyp = buf[3];
+        let len = 4;
+        if (atyp === 1) len += 4;
+        else if (atyp === 3) len += 1 + buf[4];
+        else if (atyp === 4) len += 16;
+        len += 2;
+        if (buf.length < len) return;
+        finish(null);
+      }
+    };
+    socket.on('data', onData);
+  });
+}
+
+function startSocksBridge(proxy) {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      res.writeHead(502, { 'Content-Type': 'text/plain' });
+      res.end('Puente SOCKS5: solo HTTPS (CONNECT).');
+    });
+    server.on('connect', async (req, clientSocket, head) => {
+      try {
+        const parts = String(req.url).split(':');
+        const host = parts[0];
+        const port = Number(parts[1]) || 443;
+        const upstream = await socks5Connect(proxy, host, port);
+        clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        if (head && head.length) upstream.write(head);
+        upstream.pipe(clientSocket);
+        clientSocket.pipe(upstream);
+        const closeBoth = () => { try { upstream.destroy(); } catch (_) {} try { clientSocket.destroy(); } catch (_) {} };
+        upstream.on('error', closeBoth);
+        upstream.on('close', closeBoth);
+        clientSocket.on('error', closeBoth);
+        clientSocket.on('close', closeBoth);
+      } catch (error) {
+        try { clientSocket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); } catch (_) {}
+      }
+    });
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve(server));
+  });
+}
+
 const proxyGeoCache = new Map();
 async function resolveProxyGeo(browser, proxy) {
   if (!proxy || !proxy.host) return null;
@@ -3083,6 +3183,7 @@ class ProfileController {
     this.variantIndex = {};
     this._stopping = false;
     this._recovering = false;
+    this._socksBridge = null;
     this.stats = { totalBumps: 0, bumpsToday: 0, lastBumpAt: 0, date: todayKey() };
     this.health = {
       lastOperation: '',
@@ -3224,6 +3325,13 @@ emitActive() {
     this.emitStats();
   }
 
+  closeSocksBridge() {
+    if (this._socksBridge) {
+      try { this._socksBridge.close(); } catch (_) {}
+      this._socksBridge = null;
+    }
+  }
+
   async launchProfile() {
     const profileDir = path.join(__dirname, 'profiles', `perfil_${this.id}`);
     fs.mkdirSync(profileDir, { recursive: true });
@@ -3244,11 +3352,22 @@ emitActive() {
 
     const proxy = this.cfg.proxy;
     if (proxy && proxy.host) {
-      const scheme = proxy.type === 'socks5' ? 'socks5' : 'http';
-      args.push(`--proxy-server=${scheme}://${proxy.host}:${proxy.port}`);
-      this.log(`Usando proxy ${scheme.toUpperCase()}: ${proxy.host}:${proxy.port}`);
-      if (scheme === 'socks5' && proxy.username) {
-        this.warn('Chrome no soporta SOCKS5 con usuario/contraseña. Si falla, usa un proxy HTTP o SOCKS5 sin auth (por IP).');
+      if (proxy.type === 'socks5' && proxy.username) {
+        // Chrome no soporta SOCKS5 con auth: levantamos un puente local.
+        this.closeSocksBridge();
+        try {
+          this._socksBridge = await startSocksBridge(proxy);
+          const bridgePort = this._socksBridge.address().port;
+          args.push(`--proxy-server=http://127.0.0.1:${bridgePort}`);
+          this.log(`Proxy SOCKS5 con auth: puente local 127.0.0.1:${bridgePort} -> ${proxy.host}:${proxy.port}`);
+        } catch (error) {
+          this.warn(`No se pudo iniciar el puente SOCKS5 (${error.message}). Se intentará SOCKS5 directo.`);
+          args.push(`--proxy-server=socks5://${proxy.host}:${proxy.port}`);
+        }
+      } else {
+        const scheme = proxy.type === 'socks5' ? 'socks5' : 'http';
+        args.push(`--proxy-server=${scheme}://${proxy.host}:${proxy.port}`);
+        this.log(`Usando proxy ${scheme.toUpperCase()}: ${proxy.host}:${proxy.port}`);
       }
     }
 
@@ -3283,6 +3402,7 @@ emitActive() {
     browser.on('disconnected', () => {
       if (this._stopping) return;
       this.warn('Chrome se cerró/desconectó inesperadamente.');
+      this.closeSocksBridge();
       this.browser = null;
       this.page = null;
       if (this.started && !this.paused) this.recoverBrowser();
@@ -3636,6 +3756,7 @@ emitActive() {
     if (this.browser) {
       await this.browser.close().catch(() => {});
     }
+    this.closeSocksBridge();
     this.browser = null;
     this.page = null;
     this._stopping = false;
