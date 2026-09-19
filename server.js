@@ -3106,9 +3106,12 @@ async function resolveProxyGeo(browser, proxy) {
   let tmp;
   try {
     tmp = await browser.newPage();
+    if (proxy.type !== 'socks5' && proxy.username) {
+      await tmp.authenticate({ username: proxy.username, password: proxy.password || '' }).catch(() => {});
+    }
     await tmp.goto('http://ip-api.com/json/?fields=status,country,city,timezone,lat,lon', {
       waitUntil: 'domcontentloaded',
-      timeout: 15000
+      timeout: 8000
     });
     const txt = await tmp.evaluate(() => (document.body ? document.body.innerText : ''));
     const data = JSON.parse(txt);
