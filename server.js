@@ -3353,6 +3353,7 @@ emitActive() {
       try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] }); } catch (_) {}
       try { Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5 }); } catch (_) {}
       try { Object.defineProperty(navigator, 'platform', { get: () => (kind === 'android' ? 'Linux armv8l' : 'iPhone') }); } catch (_) {}
+      try { Object.defineProperty(navigator, 'vendor', { get: () => (kind === 'android' ? 'Google Inc.' : 'Apple Computer, Inc.') }); } catch (_) {}
 
       if (kind === 'android') {
         try {
@@ -3360,7 +3361,7 @@ emitActive() {
           if (!window.chrome.runtime) window.chrome.runtime = {};
         } catch (_) {}
       } else {
-        try { window.chrome = undefined; } catch (_) {}
+        try { delete window.chrome; } catch (_) {}
       }
 
       try { Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => pick([4, 6, 8]) }); } catch (_) {}
