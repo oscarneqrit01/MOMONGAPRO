@@ -3338,42 +3338,50 @@ emitActive() {
 
     // Anti-deteccion: oculta automatizacion y enmascara la huella por perfil.
     const seed = String(this.id);
-    await page.evaluateOnNewDocument((seedStr) => {
-      let s = 0;
-      for (let i = 0; i < seedStr.length; i++) s = (s * 31 + seedStr.charCodeAt(i)) >>> 0;
-      const rand = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+    const deviceKind = this.cfg.device === 'android' ? 'android' : 'iphone';
+    await page.evaluateOnNewDocument((seedStr, kind) => {
+      let s = 2166136261 >>> 0;
+      for (let i = 0; i < seedStr.length; i++) { s ^= seedStr.charCodeAt(i); s = Math.imul(s, 16777619) >>> 0; }
+      for (let i = 0; i < 5; i++) s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+      const rand = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+      const pick = (arr) => arr[Math.floor(rand() * arr.length)];
 
       try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch (_) {}
-      try { Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] }); } catch (_) {}
+
+      // Coherencia con el dispositivo: los moviles no tienen plugins y Safari no tiene window.chrome.
+      try { Object.defineProperty(navigator, 'plugins', { get: () => [] }); } catch (_) {}
       try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] }); } catch (_) {}
-      try {
-        if (!window.chrome) window.chrome = {};
-        if (!window.chrome.runtime) window.chrome.runtime = {};
-      } catch (_) {}
+      try { Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5 }); } catch (_) {}
+      try { Object.defineProperty(navigator, 'platform', { get: () => (kind === 'android' ? 'Linux armv8l' : 'iPhone') }); } catch (_) {}
 
-      try { Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => [4, 6, 8][Math.floor(rand() * 3)] }); } catch (_) {}
-      try { Object.defineProperty(navigator, 'deviceMemory', { get: () => [4, 8][Math.floor(rand() * 2)] }); } catch (_) {}
+      if (kind === 'android') {
+        try {
+          if (!window.chrome) window.chrome = {};
+          if (!window.chrome.runtime) window.chrome.runtime = {};
+        } catch (_) {}
+      } else {
+        try { window.chrome = undefined; } catch (_) {}
+      }
 
-      try {
-        const OrigRTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
-        if (OrigRTC) {
-          const Patched = function (config) {
-            try { if (config && config.iceServers) config.iceServers = []; } catch (_) {}
-            return new OrigRTC(config);
-          };
-          Patched.prototype = OrigRTC.prototype;
-          window.RTCPeerConnection = Patched;
-          if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = Patched;
-        }
-      } catch (_) {}
+      try { Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => pick([4, 6, 8]) }); } catch (_) {}
+      try { Object.defineProperty(navigator, 'deviceMemory', { get: () => pick([4, 8]) }); } catch (_) {}
 
+      // WebGL coherente con el dispositivo (y variado por perfil en Android).
       try {
+        const gpu = kind === 'android'
+          ? pick([
+            { vendor: 'Google Inc. (Qualcomm)', renderer: 'ANGLE (Qualcomm, Adreno (TM) 640, OpenGL ES 3.2)' },
+            { vendor: 'Google Inc. (Qualcomm)', renderer: 'ANGLE (Qualcomm, Adreno (TM) 650, OpenGL ES 3.2)' },
+            { vendor: 'Google Inc. (ARM)', renderer: 'ANGLE (ARM, Mali-G78 MP20, OpenGL ES 3.2)' },
+            { vendor: 'Google Inc. (ARM)', renderer: 'ANGLE (ARM, Mali-G77 MP11, OpenGL ES 3.2)' }
+          ])
+          : { vendor: 'Apple Inc.', renderer: 'Apple GPU' };
         const patchGL = (proto) => {
           if (!proto || !proto.getParameter) return;
           const orig = proto.getParameter;
           proto.getParameter = function (p) {
-            if (p === 37445) return 'Google Inc. (Intel)';
-            if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics Direct3D11, D3D11)';
+            if (p === 37445) return gpu.vendor;
+            if (p === 37446) return gpu.renderer;
             return orig.apply(this, arguments);
           };
         };
@@ -3381,6 +3389,7 @@ emitActive() {
         patchGL(window.WebGL2RenderingContext && window.WebGL2RenderingContext.prototype);
       } catch (_) {}
 
+      // Canvas: ruido determinista (salvo el canvas del captcha)
       try {
         const origGet = CanvasRenderingContext2D.prototype.getImageData;
         CanvasRenderingContext2D.prototype.getImageData = function () {
@@ -3405,7 +3414,7 @@ emitActive() {
           try { if (array && array.length) array[0] = array[0] + rand() * 0.0000001; } catch (_) {}
         };
       } catch (_) {}
-    }, seed);
+    }, seed, deviceKind);
 
     const fp = await page.evaluate(() => ({
       ua: navigator.userAgent,
