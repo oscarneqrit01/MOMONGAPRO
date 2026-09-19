@@ -30,16 +30,34 @@ const DEFAULT_URL = 'https://megapersonals.eu/';
 // Dispositivos disponibles por perfil (User-Agent + pantalla, coherentes entre si).
 function devicePreset(name, chromeMajor) {
   const major = String(chromeMajor || '140');
-  if (name === 'android') {
-    return {
-      userAgent: `Mozilla/5.0 (Linux; Android 15; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
-      viewport: { width: 412, height: 915, deviceScaleFactor: 2.625, isMobile: true, hasTouch: true }
-    };
-  }
-  return {
-    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
-    viewport: { width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true }
+  const presets = {
+    iphone: {
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+      viewport: { width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
+      kind: 'iphone', platform: 'iOS', model: 'iPhone'
+    },
+    android: {
+      userAgent: `Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
+      viewport: { width: 412, height: 915, deviceScaleFactor: 2.625, isMobile: true, hasTouch: true },
+      kind: 'android', platform: 'Android', model: 'Pixel 9'
+    },
+    pixel: {
+      userAgent: `Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
+      viewport: { width: 412, height: 915, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
+      kind: 'android', platform: 'Android', model: 'Pixel 9 Pro'
+    },
+    samsung: {
+      userAgent: `Mozilla/5.0 (Linux; Android 15; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
+      viewport: { width: 412, height: 915, deviceScaleFactor: 2.625, isMobile: true, hasTouch: true },
+      kind: 'android', platform: 'Android', model: 'SM-S928B'
+    },
+    samsung_ultra: {
+      userAgent: `Mozilla/5.0 (Linux; Android 15; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
+      viewport: { width: 412, height: 915, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
+      kind: 'android', platform: 'Android', model: 'SM-S928B'
+    }
   };
+  return presets[name] || presets.iphone;
 }
 const DEFAULT_SUPPORT_EMAIL = 'support@megapersonals.eu';
 const TWOCAPTCHA_BASE = (process.env.TWOCAPTCHA_BASE || 'https://2captcha.com').replace(/\/+$/, '');
@@ -3455,7 +3473,7 @@ emitActive() {
     const chromeVersion = await browser.version().catch(() => '');
     const chromeMajor = (String(chromeVersion).match(/(\d+)/) || [])[1] || '140';
     const device = devicePreset(this.cfg.device, chromeMajor);
-    this.log(`Dispositivo: ${this.cfg.device === 'android' ? `Android 15 (Chrome ${chromeMajor})` : 'iPhone (Safari)'}`);
+    this.log(`Dispositivo: ${device.kind === 'android' ? `${device.model} (Chrome ${chromeMajor})` : 'iPhone (Safari)'}`);
     await page.emulate({
       userAgent: device.userAgent,
       viewport: device.viewport
@@ -3463,8 +3481,8 @@ emitActive() {
 
     // Anti-deteccion: oculta automatizacion y enmascara la huella por perfil.
     const seed = String(this.id);
-    const deviceKind = this.cfg.device === 'android' ? 'android' : 'iphone';
-    await page.evaluateOnNewDocument((seedStr, kind, major) => {
+    const deviceKind = device.kind;
+    await page.evaluateOnNewDocument((seedStr, kind, major, model, platformName) => {
       let s = 2166136261 >>> 0;
       for (let i = 0; i < seedStr.length; i++) { s ^= seedStr.charCodeAt(i); s = Math.imul(s, 16777619) >>> 0; }
       for (let i = 0; i < 5; i++) s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
@@ -3497,14 +3515,16 @@ emitActive() {
             { brand: 'Chromium', version: String(major) },
             { brand: 'Google Chrome', version: String(major) }
           ];
+          const plat = String(platformName || 'Android');
+          const mdl = String(model || 'Pixel 9');
           const data = {
             brands,
             mobile: true,
-            platform: 'Android',
+            platform: plat,
             getHighEntropyValues: () => Promise.resolve({
               architecture: '', bitness: '', brands,
               fullVersionList: brands.map((b) => ({ brand: b.brand, version: `${b.version}.0.0.0` })),
-              mobile: true, model: 'Pixel 8', platform: 'Android', platformVersion: '15.0.0',
+              mobile: true, model: mdl, platform: plat, platformVersion: '15.0.0',
               uaFullVersion: `${major}.0.0.0`
             })
           };
@@ -3565,7 +3585,7 @@ emitActive() {
           try { if (array && array.length) array[0] = array[0] + rand() * 0.0000001; } catch (_) {}
         };
       } catch (_) {}
-    }, seed, deviceKind, chromeMajor);
+    }, seed, deviceKind, chromeMajor, device.model, device.platform);
 
     const fp = await page.evaluate(() => ({
       ua: navigator.userAgent,
@@ -4298,7 +4318,7 @@ app.post('/api/profiles', (req, res) => {
       bumpMinMinutes: minVal,
       bumpMaxMinutes: maxVal,
       url: String(url || DEFAULT_URL).trim() || DEFAULT_URL,
-      device: device === 'android' ? 'android' : 'iphone',
+      device: ['iphone', 'android', 'pixel', 'samsung', 'samsung_ultra'].includes(device) ? device : 'iphone',
       adDetails: {
         name: String(adDetails?.name || '').trim(),
         headline: String(adDetails?.headline || '').trim(),
@@ -4358,7 +4378,7 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
     }
 
     if ('device' in body) {
-      profile.device = body.device === 'android' ? 'android' : 'iphone';
+      profile.device = ['iphone', 'android', 'pixel', 'samsung', 'samsung_ultra'].includes(body.device) ? body.device : 'iphone';
       const ctrl = controllers.get(profile.id);
       if (ctrl) ctrl.cfg.device = profile.device;
     }
