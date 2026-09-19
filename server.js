@@ -28,18 +28,18 @@ const PORT = process.env.PORT || 3000;
 const DEFAULT_URL = 'https://megapersonals.eu/';
 
 // Dispositivos disponibles por perfil (User-Agent + pantalla, coherentes entre si).
-const DEVICE_PRESETS = {
-  iphone: {
-    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-    viewport: { width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true }
-  },
-  android: {
-    userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-    viewport: { width: 412, height: 915, deviceScaleFactor: 2.625, isMobile: true, hasTouch: true }
+function devicePreset(name, chromeMajor) {
+  const major = String(chromeMajor || '140');
+  if (name === 'android') {
+    return {
+      userAgent: `Mozilla/5.0 (Linux; Android 15; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
+      viewport: { width: 412, height: 915, deviceScaleFactor: 2.625, isMobile: true, hasTouch: true }
+    };
   }
-};
-function devicePreset(name) {
-  return DEVICE_PRESETS[name] || DEVICE_PRESETS.iphone;
+  return {
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+    viewport: { width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true }
+  };
 }
 const DEFAULT_SUPPORT_EMAIL = 'support@megapersonals.eu';
 const TWOCAPTCHA_BASE = (process.env.TWOCAPTCHA_BASE || 'https://2captcha.com').replace(/\/+$/, '');
@@ -3452,8 +3452,10 @@ emitActive() {
     await page.setGeolocation({ latitude, longitude, accuracy: 100 });
     await page.setBypassCSP(true);
 
-    const device = devicePreset(this.cfg.device);
-    this.log(`Dispositivo: ${this.cfg.device === 'android' ? 'Android (Chrome)' : 'iPhone (Safari)'}`);
+    const chromeVersion = await browser.version().catch(() => '');
+    const chromeMajor = (String(chromeVersion).match(/(\d+)/) || [])[1] || '140';
+    const device = devicePreset(this.cfg.device, chromeMajor);
+    this.log(`Dispositivo: ${this.cfg.device === 'android' ? `Android 15 (Chrome ${chromeMajor})` : 'iPhone (Safari)'}`);
     await page.emulate({
       userAgent: device.userAgent,
       viewport: device.viewport
@@ -3462,7 +3464,7 @@ emitActive() {
     // Anti-deteccion: oculta automatizacion y enmascara la huella por perfil.
     const seed = String(this.id);
     const deviceKind = this.cfg.device === 'android' ? 'android' : 'iphone';
-    await page.evaluateOnNewDocument((seedStr, kind) => {
+    await page.evaluateOnNewDocument((seedStr, kind, major) => {
       let s = 2166136261 >>> 0;
       for (let i = 0; i < seedStr.length; i++) { s ^= seedStr.charCodeAt(i); s = Math.imul(s, 16777619) >>> 0; }
       for (let i = 0; i < 5; i++) s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
@@ -3486,6 +3488,31 @@ emitActive() {
       } else {
         try { delete window.chrome; } catch (_) {}
       }
+
+      // userAgentData coherente (Chrome Android lo tiene; Safari no)
+      try {
+        if (kind === 'android') {
+          const brands = [
+            { brand: 'Not?A_Brand', version: '24' },
+            { brand: 'Chromium', version: String(major) },
+            { brand: 'Google Chrome', version: String(major) }
+          ];
+          const data = {
+            brands,
+            mobile: true,
+            platform: 'Android',
+            getHighEntropyValues: () => Promise.resolve({
+              architecture: '', bitness: '', brands,
+              fullVersionList: brands.map((b) => ({ brand: b.brand, version: `${b.version}.0.0.0` })),
+              mobile: true, model: 'Pixel 8', platform: 'Android', platformVersion: '15.0.0',
+              uaFullVersion: `${major}.0.0.0`
+            })
+          };
+          Object.defineProperty(navigator, 'userAgentData', { get: () => data });
+        } else {
+          try { delete navigator.userAgentData; } catch (_) {}
+        }
+      } catch (_) {}
 
       try { Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => pick([4, 6, 8]) }); } catch (_) {}
       try { Object.defineProperty(navigator, 'deviceMemory', { get: () => pick([4, 8]) }); } catch (_) {}
@@ -3538,7 +3565,7 @@ emitActive() {
           try { if (array && array.length) array[0] = array[0] + rand() * 0.0000001; } catch (_) {}
         };
       } catch (_) {}
-    }, seed, deviceKind);
+    }, seed, deviceKind, chromeMajor);
 
     const fp = await page.evaluate(() => ({
       ua: navigator.userAgent,
