@@ -34,27 +34,32 @@ function devicePreset(name, chromeMajor) {
     iphone: {
       userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
       viewport: { width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
-      kind: 'iphone', platform: 'iOS', model: 'iPhone'
+      kind: 'iphone', platform: 'iOS', model: 'iPhone', androidVersion: ''
     },
     android: {
-      userAgent: `Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
+      userAgent: `Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
       viewport: { width: 412, height: 915, deviceScaleFactor: 2.625, isMobile: true, hasTouch: true },
-      kind: 'android', platform: 'Android', model: 'Pixel 9'
+      kind: 'android', platform: 'Android', model: 'Pixel 9', androidVersion: '16.0.0'
     },
     pixel: {
-      userAgent: `Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
+      userAgent: `Mozilla/5.0 (Linux; Android 16; Pixel 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
+      viewport: { width: 412, height: 915, deviceScaleFactor: 2.625, isMobile: true, hasTouch: true },
+      kind: 'android', platform: 'Android', model: 'Pixel 10', androidVersion: '16.0.0'
+    },
+    pixel_pro: {
+      userAgent: `Mozilla/5.0 (Linux; Android 16; Pixel 10 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
       viewport: { width: 412, height: 915, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
-      kind: 'android', platform: 'Android', model: 'Pixel 9 Pro'
+      kind: 'android', platform: 'Android', model: 'Pixel 10 Pro', androidVersion: '16.0.0'
     },
     samsung: {
-      userAgent: `Mozilla/5.0 (Linux; Android 15; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
+      userAgent: `Mozilla/5.0 (Linux; Android 16; SM-S931B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
       viewport: { width: 412, height: 915, deviceScaleFactor: 2.625, isMobile: true, hasTouch: true },
-      kind: 'android', platform: 'Android', model: 'SM-S921B'
+      kind: 'android', platform: 'Android', model: 'SM-S931B', androidVersion: '16.0.0'
     },
     samsung_ultra: {
-      userAgent: `Mozilla/5.0 (Linux; Android 15; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
+      userAgent: `Mozilla/5.0 (Linux; Android 16; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
       viewport: { width: 412, height: 915, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
-      kind: 'android', platform: 'Android', model: 'SM-S928B'
+      kind: 'android', platform: 'Android', model: 'SM-S938B', androidVersion: '16.0.0'
     }
   };
   return presets[name] || presets.iphone;
@@ -3482,7 +3487,7 @@ emitActive() {
     // Anti-deteccion: oculta automatizacion y enmascara la huella por perfil.
     const seed = String(this.id);
     const deviceKind = device.kind;
-    await page.evaluateOnNewDocument((seedStr, kind, major, model, platformName) => {
+    await page.evaluateOnNewDocument((seedStr, kind, major, model, platformName, androidVersion) => {
       let s = 2166136261 >>> 0;
       for (let i = 0; i < seedStr.length; i++) { s ^= seedStr.charCodeAt(i); s = Math.imul(s, 16777619) >>> 0; }
       for (let i = 0; i < 5; i++) s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
@@ -3516,7 +3521,8 @@ emitActive() {
             { brand: 'Google Chrome', version: String(major) }
           ];
           const plat = String(platformName || 'Android');
-          const mdl = String(model || 'Pixel 9');
+          const mdl = String(model || 'Pixel 10');
+          const pver = String(androidVersion || '16.0.0');
           const data = {
             brands,
             mobile: true,
@@ -3524,7 +3530,7 @@ emitActive() {
             getHighEntropyValues: () => Promise.resolve({
               architecture: '', bitness: '', brands,
               fullVersionList: brands.map((b) => ({ brand: b.brand, version: `${b.version}.0.0.0` })),
-              mobile: true, model: mdl, platform: plat, platformVersion: '15.0.0',
+              mobile: true, model: mdl, platform: plat, platformVersion: pver,
               uaFullVersion: `${major}.0.0.0`
             })
           };
@@ -3585,7 +3591,7 @@ emitActive() {
           try { if (array && array.length) array[0] = array[0] + rand() * 0.0000001; } catch (_) {}
         };
       } catch (_) {}
-    }, seed, deviceKind, chromeMajor, device.model, device.platform);
+    }, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion);
 
     const fp = await page.evaluate(() => ({
       ua: navigator.userAgent,
@@ -4318,7 +4324,7 @@ app.post('/api/profiles', (req, res) => {
       bumpMinMinutes: minVal,
       bumpMaxMinutes: maxVal,
       url: String(url || DEFAULT_URL).trim() || DEFAULT_URL,
-      device: ['iphone', 'android', 'pixel', 'samsung', 'samsung_ultra'].includes(device) ? device : 'iphone',
+      device: ['iphone', 'android', 'pixel', 'pixel_pro', 'samsung', 'samsung_ultra'].includes(device) ? device : 'iphone',
       adDetails: {
         name: String(adDetails?.name || '').trim(),
         headline: String(adDetails?.headline || '').trim(),
@@ -4378,7 +4384,7 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
     }
 
     if ('device' in body) {
-      profile.device = ['iphone', 'android', 'pixel', 'samsung', 'samsung_ultra'].includes(body.device) ? body.device : 'iphone';
+      profile.device = ['iphone', 'android', 'pixel', 'pixel_pro', 'samsung', 'samsung_ultra'].includes(body.device) ? body.device : 'iphone';
       const ctrl = controllers.get(profile.id);
       if (ctrl) ctrl.cfg.device = profile.device;
     }

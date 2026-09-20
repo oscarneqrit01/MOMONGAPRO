@@ -1235,9 +1235,10 @@
           <select id="profileDevice" name="device">
             <option value="iphone">iPhone (Safari)</option>
             <option value="android">Android - Pixel 9 (Chrome)</option>
-            <option value="pixel">Android - Pixel 9 Pro (Chrome)</option>
-            <option value="samsung">Android - Samsung S24 (Chrome)</option>
-            <option value="samsung_ultra">Android - Samsung S24 Ultra (Chrome)</option>
+            <option value="pixel">Android - Pixel 10 (Chrome)</option>
+            <option value="pixel_pro">Android - Pixel 10 Pro (Chrome)</option>
+            <option value="samsung">Android - Samsung S25 (Chrome)</option>
+            <option value="samsung_ultra">Android - Samsung S25 Ultra (Chrome)</option>
           </select>
         </div>
         <div class="form-field">
@@ -1711,9 +1712,10 @@
             <select data-device-id="${profile.id}" style="background:#1a1a2e;border:1px solid #333;color:#fff;padding:4px;border-radius:4px;font-size:11px;">
               <option value="iphone" ${(profile.device || 'iphone') === 'iphone' ? 'selected' : ''}>iPhone (Safari)</option>
               <option value="android" ${profile.device === 'android' ? 'selected' : ''}>Android - Pixel 9 (Chrome)</option>
-              <option value="pixel" ${profile.device === 'pixel' ? 'selected' : ''}>Android - Pixel 9 Pro (Chrome)</option>
-              <option value="samsung" ${profile.device === 'samsung' ? 'selected' : ''}>Android - Samsung S24 (Chrome)</option>
-              <option value="samsung_ultra" ${profile.device === 'samsung_ultra' ? 'selected' : ''}>Android - Samsung S24 Ultra (Chrome)</option>
+              <option value="pixel" ${profile.device === 'pixel' ? 'selected' : ''}>Android - Pixel 10 (Chrome)</option>
+              <option value="pixel_pro" ${profile.device === 'pixel_pro' ? 'selected' : ''}>Android - Pixel 10 Pro (Chrome)</option>
+              <option value="samsung" ${profile.device === 'samsung' ? 'selected' : ''}>Android - Samsung S25 (Chrome)</option>
+              <option value="samsung_ultra" ${profile.device === 'samsung_ultra' ? 'selected' : ''}>Android - Samsung S25 Ultra (Chrome)</option>
             </select>
           </div>
 
