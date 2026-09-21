@@ -1605,7 +1605,33 @@ async function createManualAppeal(controller, reason = 'Apelación manual desde 
   }
 }
 
-async function checkForBlock(page, controller) {
+async function isLoginPage(page) {
+  try {
+    return await page.evaluate(() => {
+      const hasLoginFields = Boolean(document.querySelector('input[type="password"], input[type="email"]'));
+      if (!hasLoginFields) return false;
+      const url = window.location.href;
+      const text = document.body ? document.body.innerText : '';
+      return /login|sign in|session expired|sesi[oó]n|inicia(r)? sesi[oó]n/i.test(text)
+        || /\/login|reset_user_password|\/users\/login|\/users\/sign/i.test(url);
+    });
+  } catch (_) {
+    return false;
+  }
+}
+
+async function checkForBlock(page, controller, opts = {}) {
+  // Sesión caducada (página de login) NO es un bloqueo: nunca parar las demás cuentas.
+  if (!opts.skipLoginCheck && controller && await isLoginPage(page)) {
+    if (await ensureSession(page, controller)) {
+      controller.log('♻️ Sesión renovada tras el login (no era bloqueo).');
+    } else {
+      controller.warn('⚠️ Sesión caducada sin credenciales: se detiene solo este perfil (no es bloqueo).');
+      await controller.stop();
+    }
+    return true;
+  }
+
   // HTTP 403/429/5xx en el documento principal, aunque el texto no lo diga
   if (controller && controller._httpBlock && Date.now() - controller._httpBlock.at < 60000) {
     const { status, url } = controller._httpBlock;
@@ -3674,7 +3700,7 @@ emitActive() {
         await page.keyboard.up('Control');
       } catch (_) {}
 
-      if (await checkForBlock(page, this)) return false;
+      if (await checkForBlock(page, this, { skipLoginCheck: true })) return false;
 
       await ensureSession(page, this);
       const stillClosed = await page.evaluate(() => {
@@ -3689,7 +3715,7 @@ emitActive() {
       }
 
       await loginIfNeeded(page, this);
-      if (await checkForBlock(page, this)) return false;
+      if (await checkForBlock(page, this, { skipLoginCheck: true })) return false;
       this.log('Página lista. Pulsa Iniciar para comenzar el conteo.');
       this.setCycleStage('ready', 'Página lista.');
       this.emitState('ready');
