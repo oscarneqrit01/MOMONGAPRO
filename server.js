@@ -3223,7 +3223,7 @@ class ProfileController {
     };
     this.settings = {
       rotateAds: Boolean(cfg.settings?.rotateAds),
-      randomizedDelay: Boolean(cfg.settings?.randomizedDelay),
+      randomizedDelay: cfg.settings?.randomizedDelay !== false,
       publishOnStart: Boolean(cfg.settings?.publishOnStart)
     };
     this.limits = {
@@ -3847,7 +3847,11 @@ emitActive() {
     // Exacto igual que la extensión: obtenerIntervaloAleatorio() — siempre dentro del rango configurado
     const minMs = min * 60 * 1000;
     const maxMs = max * 60 * 1000;
-    const waitMs = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+    // Con "Intervalo variable entre ciclos" activado: varia dentro del rango.
+    // Desactivado: usa EXACTO el minimo. En ningun caso pasa del maximo.
+    const waitMs = this.settings.randomizedDelay
+      ? Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs
+      : minMs;
 
     this._nextBumpAt = Date.now() + waitMs;
     const minutes = Math.round(waitMs / 60000);
@@ -4533,6 +4537,20 @@ app.post('/api/profiles/:id/scrape', async (req, res) => {
   }
 });
 
+// Borra las carpetas de un perfil (Chrome + fotos), con proteccion anti path-traversal.
+function removeProfileFolders(id) {
+  const base = path.resolve(path.join(__dirname, 'profiles'));
+  for (const name of [`perfil_${id}`, String(id)]) {
+    const dir = path.resolve(base, name);
+    if (dir === base || !dir.startsWith(base + path.sep)) continue;
+    try {
+      if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+    } catch (error) {
+      console.error(`No se pudo borrar la carpeta "${name}": ${error.message}`);
+    }
+  }
+}
+
 app.delete('/api/profiles/:id', async (req, res) => {
   try {
     const config = loadConfig();
@@ -4547,6 +4565,7 @@ app.delete('/api/profiles/:id', async (req, res) => {
 
     config.splice(index, 1);
     saveConfig(config);
+    removeProfileFolders(req.params.id);
     io.emit('profiles-updated', config);
     saveState();
     res.json({ success: true });

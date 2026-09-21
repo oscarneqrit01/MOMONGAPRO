@@ -1751,7 +1751,7 @@
                 <span>Rotar todos los anuncios uno por uno (bump, sin borrar)</span>
               </label>
               <label class="check-item">
-                <input type="checkbox" data-setting="randomizedDelay" data-id="${profile.id}" ${profile.settings?.randomizedDelay ? 'checked' : ''} />
+                <input type="checkbox" data-setting="randomizedDelay" data-id="${profile.id}" ${profile.settings?.randomizedDelay !== false ? 'checked' : ''} />
                 <span>Intervalo variable entre ciclos</span>
               </label>
               <label class="check-item">
