@@ -1519,7 +1519,7 @@
           try {
             const res = await fetch(`/api/appeals/${encodeURIComponent(record.id)}/draft`);
             const data = await res.json();
-            if (data.supportUrl) window.open(data.supportUrl, '_blank');
+            if (data.supportUrl) socket.emit('open-in-profile', { id: record.profile, url: data.supportUrl });
             else alert('No se pudo determinar la URL de soporte del sitio.');
           } catch (error) {
             alert('❌ ' + error.message);
@@ -1534,7 +1534,7 @@
           try {
             const res = await fetch(`/api/appeals/${encodeURIComponent(record.id)}/draft`);
             const data = await res.json();
-            if (data.outlookUrl) window.open(data.outlookUrl, '_blank');
+            if (data.outlookUrl) socket.emit('open-in-profile', { id: record.profile, url: data.outlookUrl });
             else alert('Configura el "Correo de soporte" de este navegador en su Configuración.');
           } catch (error) {
             alert('❌ ' + error.message);

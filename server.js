@@ -1492,7 +1492,9 @@ async function captureBlockEvidence(page, controller, reason) {
       const { outlookUrl } = buildAppealDraft(record);
       if (outlookUrl) {
         controller.log(`📧 Abriendo el correo para apelar a ${record.supportEmail}...`);
-        openExternalUrl(outlookUrl);
+        const ok = await openUrlInProfileBrowser(controller, outlookUrl);
+        if (ok) controller.log('📧 Correo abierto en el navegador del perfil.');
+        else openExternalUrl(outlookUrl);
       }
     }
 
@@ -1517,6 +1519,21 @@ function openExternalUrl(url) {
     }
   } catch (_) {
     // si no se puede abrir, se ignora
+  }
+}
+
+// Abre una URL en el navegador YA ABIERTO de un perfil (misma ventana, proxy y sesion).
+// Devuelve false si ese navegador no esta abierto (para que el caller use el navegador por defecto).
+async function openUrlInProfileBrowser(controller, url) {
+  if (!url || !/^https?:\/\//i.test(url)) return false;
+  if (!controller || !controller.browser) return false;
+  try {
+    const page = await controller.browser.newPage();
+    await page.bringToFront().catch(() => {});
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+    return true;
+  } catch (_) {
+    return false;
   }
 }
 
@@ -1594,7 +1611,9 @@ async function createManualAppeal(controller, reason = 'Apelación manual desde 
     const { outlookUrl } = buildAppealDraft(record);
     if (outlookUrl && controller.cfg.autoAppeal !== false) {
       controller.log(`📧 Abriendo el correo para apelar a ${record.supportEmail}...`);
-      openExternalUrl(outlookUrl);
+      const ok = await openUrlInProfileBrowser(controller, outlookUrl);
+      if (ok) controller.log('📧 Correo abierto en el navegador del perfil.');
+      else openExternalUrl(outlookUrl);
     }
     controller.log('📨 Apelación manual creada (revisa "Bloqueos detectados").');
     io.emit('block-evidence', record);
@@ -1626,8 +1645,8 @@ async function checkForBlock(page, controller, opts = {}) {
     if (await ensureSession(page, controller)) {
       controller.log('♻️ Sesión renovada tras el login (no era bloqueo).');
     } else {
-      controller.warn('⚠️ Sesión caducada sin credenciales: se detiene solo este perfil (no es bloqueo).');
-      await controller.stop();
+      controller.warn('⚠️ Sesión caducada sin credenciales: se PAUSA solo este perfil (no es bloqueo).');
+      controller.pause();
     }
     return true;
   }
@@ -4786,6 +4805,17 @@ io.on('connection', (socket) => {
   socket.on('appeal-profile', (id) => {
     const controller = controllers.get(id);
     if (controller) createManualAppeal(controller);
+  });
+
+  // Abre una URL (soporte/Outlook) en el navegador del perfil bloqueado.
+  socket.on('open-in-profile', async (payload) => {
+    try {
+      const id = String((payload && payload.id) || '');
+      const url = String((payload && payload.url) || '');
+      const controller = controllers.get(id);
+      const ok = await openUrlInProfileBrowser(controller, url);
+      if (!ok) openExternalUrl(url);
+    } catch (_) {}
   });
 
 
