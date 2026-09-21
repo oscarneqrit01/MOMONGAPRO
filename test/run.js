@@ -171,7 +171,7 @@ async function runTests() {
     profiles: [{ id: 'perfil-ban', email: 'cuenta@ejemplo.com', settings: { rotateAds: true, randomizedDelay: false, publishOnStart: false } }]
   }, async ({ page, out }) => {
     await startFirst(page);
-    const ok = await waitForLog(out, /PARADA DE EMERGENCIA/i, 60000);
+    const ok = await waitForLog(out, /PAUSA DE SEGURIDAD|PARADA DE EMERGENCIA/i, 60000);
     record('bloqueo: detecta ban_message y para todo', ok, ok ? 'ok' : 'no');
   });
 
@@ -181,8 +181,40 @@ async function runTests() {
     profiles: [{ id: 'perfil-scam', email: 'cuenta@ejemplo.com', settings: { rotateAds: true, randomizedDelay: false, publishOnStart: false } }]
   }, async ({ page, out }) => {
     await startFirst(page);
-    const ok = await waitForLog(out, /PARADA DE EMERGENCIA/i, 60000);
+    const ok = await waitForLog(out, /PAUSA DE SEGURIDAD|PARADA DE EMERGENCIA/i, 60000);
     record('bloqueo: detecta la scam-page (fraud bots) y para todo', ok, ok ? 'ok' : 'no');
+  });
+
+  // 4c) Verificacion de dispositivo: NO debe parar todo; pausa solo el perfil
+  await withStack({
+    scenario: 'device-verification',
+    profiles: [{ id: 'perfil-verify', settings: { rotateAds: false, randomizedDelay: false, publishOnStart: false } }]
+  }, async ({ page, out }) => {
+    await startFirst(page);
+    await sleep(3000);
+    await clickRetry(page, '[data-action="publish"]');
+    const ok = await waitForLog(out, /Verificaci[oó]n de dispositivo requerida/i, 60000);
+    const global = /PAUSA DE SEGURIDAD|PARADA DE EMERGENCIA/i.test(out());
+    record('verificacion: device-verification pausa solo el perfil (no para todo)', ok && !global, ok ? (global ? 'paró todo' : 'ok') : 'no');
+  });
+
+  // 4d) Publicar al presionar Iniciar (publishOnStart)
+  await withStack({
+    scenario: 'normal',
+    profiles: [{ id: 'perfil-pos', settings: { rotateAds: false, randomizedDelay: false, publishOnStart: true } }]
+  }, async ({ page, mockPort }) => {
+    await startFirst(page);
+    let bumps = 0;
+    for (let i = 0; i < 40; i++) {
+      try {
+        const html = await (await fetch(`http://127.0.0.1:${mockPort}/users/posts/list`)).text();
+        const m = html.match(/Bumps confirmed:\s*<strong>(\d+)<\/strong>/);
+        if (m) bumps = Number(m[1]);
+      } catch (_) {}
+      if (bumps >= 1) break;
+      await sleep(1500);
+    }
+    record('publishOnStart: publica al presionar Iniciar', bumps >= 1, `bumps=${bumps}`);
   });
 
   // 5) Publicar con el botón div#input_send
@@ -233,7 +265,7 @@ async function runTests() {
     profiles: [{ id: 'perfil-403', email: 'cuenta@ejemplo.com', settings: { rotateAds: true, randomizedDelay: false, publishOnStart: false } }]
   }, async ({ page, out }) => {
     await startFirst(page);
-    const ok = await waitForLog(out, /PARADA DE EMERGENCIA/i, 60000);
+    const ok = await waitForLog(out, /PAUSA DE SEGURIDAD|PARADA DE EMERGENCIA/i, 60000);
     record('bloqueo: detecta HTTP 403 y para todo', ok && /HTTP 403/i.test(out()), ok ? 'ok' : 'no');
   });
 
@@ -268,7 +300,7 @@ async function runTests() {
     profiles: [{ id: 'perfil-del', email: 'cuenta@ejemplo.com', settings: { rotateAds: true, randomizedDelay: false, publishOnStart: false } }]
   }, async ({ page, out }) => {
     await startFirst(page);
-    await waitForLog(out, /PARADA DE EMERGENCIA/i, 60000);
+    await waitForLog(out, /PAUSA DE SEGURIDAD|PARADA DE EMERGENCIA/i, 60000);
     const r = await page.evaluate(async () => {
       const before = await (await fetch('/api/appeals')).json();
       if (!before.length) return { ok: false, reason: 'sin registros' };
@@ -302,7 +334,7 @@ async function runTests() {
   }, async ({ page, out }) => {
     await startFirst(page);
     const ok = await waitForLog(out, /rate-limit.*espero y reintento/i, 60000);
-    record('429: backoff sin detener todo', ok && !/PARADA DE EMERGENCIA/i.test(out()), ok ? 'ok' : 'no');
+    record('429: backoff sin detener todo', ok && !/PAUSA DE SEGURIDAD|PARADA DE EMERGENCIA/i.test(out()), ok ? 'ok' : 'no');
   });
 
   // 15) Rotación de texto (variantes)

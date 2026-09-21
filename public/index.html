@@ -2281,7 +2281,7 @@
         banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#e74c3c;color:#fff;padding:14px 16px;text-align:center;font-weight:bold;font-size:15px;box-shadow:0 4px 14px rgba(0,0,0,.5);';
         document.body.appendChild(banner);
       }
-      banner.textContent = `🚨 PARADA DE EMERGENCIA — ${reason} — Todos los perfiles detenidos.`;
+      banner.textContent = `⏸ PAUSA DE SEGURIDAD — ${reason} — Perfiles en pausa (los navegadores quedan abiertos).`;
       clearTimeout(banner._hideTimer);
       banner._hideTimer = setTimeout(() => banner.remove(), 30000);
     }

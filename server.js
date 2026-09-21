@@ -1364,10 +1364,7 @@ const BLOCK_PATTERNS = [
   /you may have been\s*phished/i,
   /phished by a\s*scammer/i,
   /i (don'?t|do not) know why i am blocked/i,
-  /\bscam-page\b/i,
-  /\bsuspended\b/i,
-  /\bbanned\b/i,
-  /\bblocked\b/i
+  /\bscam-page\b/i
 ];
 
 let emergencyActive = false;
@@ -1375,6 +1372,8 @@ let emergencyActive = false;
 async function detectBlock(page) {
   try {
     const url = page.url();
+    // Verificacion de dispositivo / login / captcha: NO es bloqueo de cuenta
+    if (/device-verification|\/users\/verify\b|\/verify\/\d+|\/captcha\b|challenge|\/login\b|sign.?in/i.test(url)) return false;
     if (/\/users\/ban_message|\bban_message\b|\/banned\b|\/suspended\b/i.test(url)) return true;
 
     return await page.evaluate((patternsSource) => {
@@ -1410,23 +1409,23 @@ async function emergencyStop(reason, sourceId) {
   if (emergencyActive) return;
   emergencyActive = true;
 
-  const active = [...controllers.values()].filter((c) => c.started || c.browser);
+  const active = [...controllers.values()].filter((c) => c.started);
 
   console.error('');
-  console.error('\x1b[41m\x1b[1m\x1b[37m' + ' 🚨  PARADA DE EMERGENCIA  🚨 ' + '\x1b[0m');
-  console.error(`🚨 Bloqueo detectado${sourceId ? ` en "${sourceId}"` : ''}: ${reason}`);
-  console.error(`🚨 Deteniendo ${active.length} perfil(es) activo(s) para evitar riesgos.`);
+  console.error('\x1b[43m\x1b[1m\x1b[37m' + ' ⏸  PAUSA DE SEGURIDAD  ⏸ ' + '\x1b[0m');
+  console.error(`⏸ Bloqueo/verificación detectado${sourceId ? ` en "${sourceId}"` : ''}: ${reason}`);
+  console.error(`⏸ Pausando ${active.length} perfil(es). Los navegadores siguen ABIERTOS (no se cierran) para verificación/apelación.`);
   console.error('');
 
   io.emit('emergency-stop', { reason, sourceId, at: Date.now() });
-  notify(`🚨 PARADA DE EMERGENCIA${sourceId ? ` en "${sourceId}"` : ''}: ${reason}. ${active.length} perfil(es) detenido(s).`);
+  notify(`⏸ PAUSA DE SEGURIDAD${sourceId ? ` en "${sourceId}"` : ''}: ${reason}. ${active.length} perfil(es) pausados (navegadores abiertos).`);
 
   for (const controller of active) {
-    controller.log(`🚨 PARADA DE EMERGENCIA: ${reason} Deteniendo todos los perfiles.`);
+    controller.log(`⏸ PAUSA DE SEGURIDAD: ${reason} Se pausan los perfiles (el navegador queda abierto).`);
   }
 
   for (const controller of active) {
-    await controller.stop().catch(() => {});
+    try { controller.pause(); } catch (_) {}
   }
 
   emergencyActive = false;
@@ -1639,6 +1638,14 @@ async function isLoginPage(page) {
   }
 }
 
+async function isVerificationPage(page) {
+  try {
+    return await page.evaluate(() => /device-verification|\/users\/verify\b|\/verify\/\d+/i.test(window.location.href));
+  } catch (_) {
+    return false;
+  }
+}
+
 async function checkForBlock(page, controller, opts = {}) {
   // Sesión caducada (página de login) NO es un bloqueo: nunca parar las demás cuentas.
   if (!opts.skipLoginCheck && controller && await isLoginPage(page)) {
@@ -1648,6 +1655,13 @@ async function checkForBlock(page, controller, opts = {}) {
       controller.warn('⚠️ Sesión caducada sin credenciales: se PAUSA solo este perfil (no es bloqueo).');
       controller.pause();
     }
+    return true;
+  }
+
+  // Verificación de dispositivo (device-verification): NO es bloqueo → pausar solo este perfil.
+  if (!opts.skipLoginCheck && controller && await isVerificationPage(page)) {
+    controller.warn('🔐 Verificación de dispositivo requerida: se PAUSA solo este perfil (no es bloqueo). Revísalo en este navegador y vuelve a Iniciar.');
+    controller.pause();
     return true;
   }
 
@@ -1668,7 +1682,13 @@ async function checkForBlock(page, controller, opts = {}) {
       return true;
     }
 
-    // 403 u otros: bloqueo de la cuenta
+    // 403 u otros: si la URL es de verificacion/login/captcha, NO es bloqueo -> pausar solo este perfil
+    if (/device-verification|\/users\/verify\b|\/verify\/\d+|\/captcha\b|challenge|\/login\b|sign.?in/i.test(url)) {
+      controller.warn(`🔐 HTTP ${status} en página de verificación: se PAUSA solo este perfil (no es bloqueo).`);
+      controller.pause();
+      return true;
+    }
+    // bloqueo de la cuenta
     await captureBlockEvidence(page, controller, `HTTP ${status} (bloqueo) en ${url}`);
     await emergencyStop(`HTTP ${status} (posible bloqueo).`, controller.id);
     return true;

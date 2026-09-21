@@ -42,6 +42,10 @@ app.get('/users/ban_message', (request, response) => {
   response.send(layout('Notice', '<h2>Notice</h2><p>Please contact support for more information.</p>'));
 });
 
+app.get('/users/device-verification/verify/:id', (request, response) => {
+  response.send(layout('Device verification', '<h2>Verify your device</h2><p>Please confirm this is you to continue.</p>'));
+});
+
 app.get('/users/posts/list', (request, response) => {
   if (scenario === 'http-403') {
     return response.status(403).send('<h1>403 Forbidden</h1>');
@@ -51,6 +55,9 @@ app.get('/users/posts/list', (request, response) => {
   }
   if (scenario === 'ban-url') {
     return response.redirect('/users/ban_message');
+  }
+  if (scenario === 'device-verification') {
+    return response.redirect('/users/device-verification/verify/999');
   }
 
   if (scenario === 'scam-page') {
