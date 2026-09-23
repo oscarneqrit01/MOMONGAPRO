@@ -28,6 +28,86 @@ const PORT = process.env.PORT || 3000;
 const DEFAULT_URL = 'https://megapersonals.eu/';
 
 // Dispositivos disponibles por perfil (User-Agent + pantalla, coherentes entre si).
+const MODERN_ANDROID = [
+  { key: 'pixel_9', label: 'Google Pixel 9', model: 'Pixel 9', androidVersion: '16.0.0', dsf: 2.625 },
+  { key: 'pixel_9_pro', label: 'Google Pixel 9 Pro', model: 'Pixel 9 Pro', androidVersion: '16.0.0', dsf: 3 },
+  { key: 'pixel_9_pro_xl', label: 'Google Pixel 9 Pro XL', model: 'Pixel 9 Pro XL', androidVersion: '16.0.0', dsf: 3 },
+  { key: 'pixel_9_pro_fold', label: 'Google Pixel 9 Pro Fold', model: 'Pixel 9 Pro Fold', androidVersion: '16.0.0', dsf: 2.625 },
+  { key: 'pixel_10', label: 'Google Pixel 10', model: 'Pixel 10', androidVersion: '16.0.0', dsf: 2.625 },
+  { key: 'pixel_10_pro', label: 'Google Pixel 10 Pro', model: 'Pixel 10 Pro', androidVersion: '16.0.0', dsf: 3 },
+  { key: 's25', label: 'Samsung Galaxy S25', model: 'SM-S931B', androidVersion: '16.0.0', dsf: 2.625 },
+  { key: 's25_plus', label: 'Samsung Galaxy S25+', model: 'SM-S936B', androidVersion: '16.0.0', dsf: 2.625 },
+  { key: 's25_ultra', label: 'Samsung Galaxy S25 Ultra', model: 'SM-S938B', androidVersion: '16.0.0', dsf: 3 },
+  { key: 's24', label: 'Samsung Galaxy S24', model: 'SM-S921B', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 's24_ultra', label: 'Samsung Galaxy S24 Ultra', model: 'SM-S928B', androidVersion: '15.0.0', dsf: 3 },
+  { key: 's23_fe', label: 'Samsung Galaxy S23 FE', model: 'SM-S711B', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'zf6', label: 'Samsung Galaxy Z Fold6', model: 'SM-F956B', androidVersion: '15.0.0', dsf: 3 },
+  { key: 'zf7', label: 'Samsung Galaxy Z Fold7', model: 'SM-F966B', androidVersion: '16.0.0', dsf: 3 },
+  { key: 'zf6_flip', label: 'Samsung Galaxy Z Flip6', model: 'SM-F741B', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'zf7_flip', label: 'Samsung Galaxy Z Flip7', model: 'SM-F761B', androidVersion: '16.0.0', dsf: 2.625 },
+  { key: 'a56', label: 'Samsung Galaxy A56', model: 'SM-A566B', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'a36', label: 'Samsung Galaxy A36', model: 'SM-A366B', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'oneplus_13', label: 'OnePlus 13', model: 'CPH2665', androidVersion: '16.0.0', dsf: 2.625 },
+  { key: 'oneplus_13r', label: 'OnePlus 13R', model: 'CPH2663', androidVersion: '16.0.0', dsf: 2.625 },
+  { key: 'oneplus_12', label: 'OnePlus 12', model: 'CPH2583', androidVersion: '15.0.0', dsf: 3 },
+  { key: 'oneplus_nord4', label: 'OnePlus Nord 4', model: 'CPH2653', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'oneplus_open', label: 'OnePlus Open', model: 'CPH2551', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'xiaomi_15', label: 'Xiaomi 15', model: '24129PN7DC', androidVersion: '16.0.0', dsf: 2.625 },
+  { key: 'xiaomi_15_pro', label: 'Xiaomi 15 Pro', model: '2410DPN6CC', androidVersion: '16.0.0', dsf: 2.625 },
+  { key: 'xiaomi_14', label: 'Xiaomi 14', model: '23127PN0CC', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'xiaomi_14_ultra', label: 'Xiaomi 14 Ultra', model: '24031PN7DC', androidVersion: '15.0.0', dsf: 3 },
+  { key: 'redmi_note14_pro', label: 'Xiaomi Redmi Note 14 Pro', model: '24094RAD4G', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'redmi_note14', label: 'Xiaomi Redmi Note 14', model: '24094RAD4C', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'poco_f7', label: 'POCO F7', model: '2412DPC0AG', androidVersion: '16.0.0', dsf: 2.625 },
+  { key: 'poco_x7_pro', label: 'POCO X7 Pro', model: '24117PNCCG', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'moto_g85', label: 'Motorola Moto G85', model: 'XT2425-3', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'edge_50', label: 'Motorola Edge 50', model: 'XT2407-4', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'edge_50_pro', label: 'Motorola Edge 50 Pro', model: 'XT2403-2', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'edge_60_ultra', label: 'Motorola Edge 60 Ultra', model: 'XT2603-1', androidVersion: '16.0.0', dsf: 3 },
+  { key: 'razr_50_ultra', label: 'Motorola Razr 50 Ultra', model: 'XT2453-4', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'moto_g_2026', label: 'Motorola Moto G (2026)', model: 'XT2625-1', androidVersion: '16.0.0', dsf: 2.625 },
+  { key: 'honor_magic7_pro', label: 'Honor Magic 7 Pro', model: 'HOS100', androidVersion: '16.0.0', dsf: 2.625 },
+  { key: 'honor_magic6_pro', label: 'Honor Magic 6 Pro', model: 'BVL-AN00', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'honor_200_pro', label: 'Honor 200 Pro', model: 'ELP-AN00', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'honor_90_gt', label: 'Honor 90 GT', model: 'ALP-AN00', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'magic_v3', label: 'Honor Magic V3', model: 'PTP-AN00', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'oppo_find_x8', label: 'OPPO Find X8', model: 'CPH2651', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'oppo_find_x8_pro', label: 'OPPO Find X8 Pro', model: 'CPH2655', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'oppo_find_n5', label: 'OPPO Find N5', model: 'CPH2691', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'oppo_reno13', label: 'OPPO Reno 13', model: 'CPH2685', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'vivo_x200', label: 'vivo X200', model: 'V2415', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'vivo_x200_pro', label: 'vivo X200 Pro', model: 'V2416', androidVersion: '15.0.0', dsf: 3 },
+  { key: 'vivo_v30_pro', label: 'vivo V30 Pro', model: 'V2314', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'nothing_3a', label: 'Nothing Phone (3a)', model: 'A063', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'nothing_3a_pro', label: 'Nothing Phone (3a) Pro', model: 'A065', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'nothing_2', label: 'Nothing Phone (2)', model: 'A065', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'xperia_1_vi', label: 'Sony Xperia 1 VI', model: 'XQ-EC72', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'xperia_5_vi', label: 'Sony Xperia 5 VI', model: 'XQ-ES72', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'rog_phone_9', label: 'Asus ROG Phone 9', model: 'ASUS_AI2401', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'rog_phone_9_pro', label: 'Asus ROG Phone 9 Pro', model: 'ASUS_AI2401', androidVersion: '15.0.0', dsf: 3 },
+  { key: 'rog_phone_8', label: 'Asus ROG Phone 8', model: 'ASUS_AI2401_C', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'zenfone_12', label: 'Asus Zenfone 12 Ultra', model: 'ASUS_AI2501', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'realme_gt7_pro', label: 'Realme GT7 Pro', model: 'RMX5010', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'realme_gt6', label: 'Realme GT6', model: 'RMX3800', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'realme_14_pro', label: 'Realme 14 Pro+', model: 'RMX5100', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'huawei_pura70_pro', label: 'Huawei Pura 70 Pro', model: 'HBN-AL00', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'huawei_mate80', label: 'Huawei Mate 80 Pro', model: 'MUL-AL00', androidVersion: '16.0.0', dsf: 2.625 },
+  { key: 'huawei_nova13', label: 'Huawei nova 13 Pro', model: 'BRC-AN00', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'tecno_phantom_vfold2', label: 'Tecno Phantom V Fold 2', model: 'Phantom V Fold 2', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'tecno_phantom_x2', label: 'Tecno Phantom X2 Pro', model: 'Phantom X2 Pro', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'infini_gt20', label: 'Infinix GT 20 Pro', model: 'X6871', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'infini_zero_ultra', label: 'Infinix Zero Ultra', model: 'X6820', androidVersion: '12.0.0', dsf: 2.625 },
+  { key: 'zte_axon60_ultra', label: 'ZTE Axon 60 Ultra', model: 'A3050', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'nubia_z70', label: 'Nubia Z70 Ultra', model: 'NX733J', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'iqoo_13', label: 'iQOO 13', model: 'V2453', androidVersion: '15.0.0', dsf: 2.625 },
+  { key: 'nokia_x30', label: 'Nokia X30', model: 'Nokia X30 5G', androidVersion: '14.0.0', dsf: 2.625 },
+  { key: 'sharp_aquos_r9', label: 'Sharp Aquos R9', model: 'SH-51E', androidVersion: '14.0.0', dsf: 2.625 }
+];
+
+function androidUserAgent(model, major, androidVersion) {
+  return `Mozilla/5.0 (Linux; Android ${androidVersion.split('.')[0]}; ${model}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`;
+}
+
 function devicePreset(name, chromeMajor) {
   const major = String(chromeMajor || '140');
   const presets = {
@@ -62,7 +142,26 @@ function devicePreset(name, chromeMajor) {
       kind: 'android', platform: 'Android', model: 'SM-S938B', androidVersion: '16.0.0'
     }
   };
-  return presets[name] || presets.iphone;
+
+  // Dispositivos modernos elegibles individualmente por perfil (User-Agent + pantalla coherentes).
+  const fromList = MODERN_ANDROID.find((d) => d.key === name);
+  if (fromList) {
+    return {
+      userAgent: androidUserAgent(fromList.model, major, fromList.androidVersion),
+      viewport: { width: 412, height: 915, deviceScaleFactor: fromList.dsf, isMobile: true, hasTouch: true },
+      kind: 'android', platform: 'Android', model: fromList.model,
+      androidVersion: fromList.androidVersion
+    };
+  }
+
+  const preset = presets[name] || presets.iphone;
+  return preset;
+}
+
+function isValidDevice(name) {
+  return ['iphone', 'android', 'pixel', 'pixel_pro', 'samsung', 'samsung_ultra']
+    .concat(MODERN_ANDROID.map((d) => d.key))
+    .includes(name);
 }
 const DEFAULT_SUPPORT_EMAIL = 'support@megapersonals.eu';
 const TWOCAPTCHA_BASE = (process.env.TWOCAPTCHA_BASE || 'https://2captcha.com').replace(/\/+$/, '');
@@ -4393,7 +4492,7 @@ app.post('/api/profiles', (req, res) => {
       bumpMinMinutes: minVal,
       bumpMaxMinutes: maxVal,
       url: String(url || DEFAULT_URL).trim() || DEFAULT_URL,
-      device: ['iphone', 'android', 'pixel', 'pixel_pro', 'samsung', 'samsung_ultra'].includes(device) ? device : 'iphone',
+      device: isValidDevice(device) ? device : 'iphone',
       adDetails: {
         name: String(adDetails?.name || '').trim(),
         headline: String(adDetails?.headline || '').trim(),
@@ -4453,7 +4552,7 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
     }
 
     if ('device' in body) {
-      profile.device = ['iphone', 'android', 'pixel', 'pixel_pro', 'samsung', 'samsung_ultra'].includes(body.device) ? body.device : 'iphone';
+      profile.device = isValidDevice(body.device) ? body.device : 'iphone';
       const ctrl = controllers.get(profile.id);
       if (ctrl) ctrl.cfg.device = profile.device;
     }
