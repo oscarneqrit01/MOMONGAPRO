@@ -3,6 +3,7 @@ const path = require('path');
 const http = require('http');
 const net = require('net');
 const crypto = require('crypto');
+const os = require('os');
 const { execFile } = require('child_process');
 const express = require('express');
 const { Server } = require('socket.io');
@@ -187,6 +188,19 @@ function chHeadersFor(device, chromeMajor) {
 }
 
 const DEFAULT_SUPPORT_EMAIL = 'support@megapersonals.eu';
+
+// Sal por MAQUINA: hace que cada PC genere huellas distintas aunque copien el config.
+// Combina el nombre de la maquina + un id aleatorio persistente (por instalacion).
+const MACHINE_ID_PATH = path.join(__dirname, '.machine-id');
+const MACHINE_SALT = (() => {
+  let id = '';
+  try { if (fs.existsSync(MACHINE_ID_PATH)) id = fs.readFileSync(MACHINE_ID_PATH, 'utf8').trim(); } catch (_) {}
+  if (!id) {
+    id = crypto.randomBytes(8).toString('hex');
+    try { fs.writeFileSync(MACHINE_ID_PATH, id, 'utf8'); } catch (_) {}
+  }
+  return `${os.hostname()}|${id}`;
+})();
 const TWOCAPTCHA_BASE = (process.env.TWOCAPTCHA_BASE || 'https://2captcha.com').replace(/\/+$/, '');
 const twoCaptchaStats = { solves: 0, fails: 0, balance: null, lastBalanceAt: 0 };
 
@@ -3809,7 +3823,7 @@ emitActive() {
     });
 
     // Anti-deteccion: oculta automatizacion y enmascara la huella por perfil.
-    const seed = String(this.id);
+    const seed = String(this.id) + '|' + MACHINE_SALT;
     const deviceKind = device.kind;
     const stealthFn = (seedStr, kind, major, model, platformName, androidVersion, proxyIp, screenW, screenH) => {
       let s = 2166136261 >>> 0;

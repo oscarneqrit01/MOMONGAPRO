@@ -10,6 +10,7 @@ state.json
 panel-auth.json
 notifications.json
 .secrets-key
+.machine-id
 backups/
 test/.tmp/
 .env
