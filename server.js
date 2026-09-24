@@ -1701,7 +1701,9 @@ async function openUrlInProfileBrowser(controller, url) {
   }
 }
 
-// Chequeo de seguridad: IP+datos (ipinfo), Fraud Score (scamalytics) y fuga WebRTC.
+const FRAUD_MAX_RISK = 33;
+
+// Chequeo de seguridad: IP+datos (ipinfo), riesgo de IP (proxycheck) y fuga WebRTC.
 async function runSafetyCheck(controller) {
   const result = { ok: true, reasons: [], at: Date.now() };
   if (!controller || !controller.cfg || !controller.cfg.proxy || !controller.cfg.proxy.host) { result.skipped = true; return result; }
@@ -1722,12 +1724,18 @@ async function runSafetyCheck(controller) {
     result.timezone = info.timezone || '';
 
     if (result.ip) {
+      // scamalytics suele estar bloqueado (Cloudflare): usamos proxycheck.io (score de riesgo).
       try {
-        await page.goto(`https://scamalytics.com/ip/${result.ip}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await sleep(3000);
-        const txt = await page.evaluate(() => (document.body ? document.body.innerText : ''));
-        const m = txt.match(/Fraud Score[^\d]*(\d+)/i);
-        if (m) result.fraudScore = Number(m[1]);
+        const key = process.env.PROXYCHECK_KEY ? `&key=${encodeURIComponent(process.env.PROXYCHECK_KEY)}` : '';
+        await page.goto(`https://proxycheck.io/v2/${result.ip}?risk=1&vpn=1${key}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await sleep(1200);
+        const data = JSON.parse(await page.evaluate(() => (document.body ? document.body.innerText : '{}')));
+        const rec = data && data[result.ip];
+        if (rec) {
+          result.risk = Number(rec.risk);
+          result.ipType = rec.type || '';
+          result.isProxy = String(rec.proxy || '').toLowerCase() === 'yes';
+        }
       } catch (_) {}
     }
 
@@ -1759,9 +1767,9 @@ async function runSafetyCheck(controller) {
     if (page) await page.close().catch(() => {});
   }
 
-  if (result.fraudScore != null && result.fraudScore > 6) {
+  if (result.risk != null && result.risk > FRAUD_MAX_RISK) {
     result.ok = false;
-    result.reasons.push(`fraud score ${result.fraudScore} (> 6)`);
+    result.reasons.push(`riesgo de IP ${result.risk} (> ${FRAUD_MAX_RISK}, ${result.ipType || '?'})`);
   }
   return result;
 }
@@ -1771,7 +1779,7 @@ function reportSafetyCheck(controller, result, { pauseOnFail = true } = {}) {
     if (!result || result.skipped) return;
     io.emit('safety-check', { id: controller.id, ok: result.ok, result, at: Date.now() });
     if (result.ok) {
-      controller.log(`🛡️ Chequeo OK · IP ${result.ip || '?'}${result.fraudScore != null ? ` · fraud ${result.fraudScore}` : ''}${result.org ? ` · ${result.org}` : ''}`);
+      controller.log(`🛡️ Chequeo OK · IP ${result.ip || '?'}${result.risk != null ? ` · riesgo ${result.risk}` : ''}${result.ipType ? ` · ${result.ipType}` : ''}${result.org ? ` · ${result.org}` : ''}`);
     } else {
       const msg = result.reasons.join(' / ') || 'fallo';
       controller.warn(`🛡️ Chequeo FALLÓ: ${msg}. Se pausa el perfil.`);
