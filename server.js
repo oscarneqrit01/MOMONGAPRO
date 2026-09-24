@@ -583,38 +583,66 @@ async function tgCall(token, method, payload) {
 
 function accountsText() {
   const list = [...controllers.values()];
-  if (list.length === 0) return 'MOMONGA PRO\n\nNo hay cuentas configuradas.';
+  if (list.length === 0) return '💀 *MOMONGA PRO*\n\nNo hay cuentas configuradas.';
+  const active = list.filter((c) => c.started && !c.paused).length;
+  const paused = list.filter((c) => c.started && c.paused).length;
+  const stopped = list.length - active - paused;
+  const bumps = list.reduce((s, c) => s + (c.stats.bumpsToday || 0), 0);
+  const now = new Date().toLocaleString('es-ES', { hour: '2-digit', minute: '2-digit' });
   const lines = list.map((c) => {
-    const estado = c.started ? (c.paused ? '⏸ pausado' : '🟢 activo') : '⚪ detenido';
-    return `• *${c.id}* — ${estado}\n   ${c.cycleStage || '-'} · bumps hoy: ${c.stats.bumpsToday || 0}`;
+    const dot = !c.started ? '⚪' : (c.paused ? '⏸️' : '🟢');
+    const extra = c.started && !c.paused ? `  ·  ${c.stats.bumpsToday || 0} bumps` : '';
+    return `${dot} *${c.id}*${extra}`;
   });
-  return `MOMONGA PRO — Cuentas (${list.length})\n\n${lines.join('\n')}`;
+  return [
+    '💀 *MOMONGA PRO*',
+    '━━━━━━━━━━━━━━━━━━',
+    `🟢 Activos *${active}*    ⏸️ Pausados *${paused}*    ⚪ Detenidos *${stopped}*`,
+    `📈 Bumps hoy *${bumps}*        🕐 ${now}`,
+    '',
+    '📋 *Cuentas* — toca una para abrirla',
+    ...lines
+  ].join('\n');
 }
 
 function accountsKeyboard() {
   const rows = [
     [
-      { text: '🖼 Ver panel completo', callback_data: 'panel' },
+      { text: '🖼️ Ver panel', callback_data: 'panel' },
       { text: '🔄 Actualizar', callback_data: 'menu' }
     ],
     [
       { text: '▶️ Iniciar todos', callback_data: 'all:start' },
-      { text: '⏸ Pausar todos', callback_data: 'all:pause' },
-      { text: '⏹ Detener todos', callback_data: 'all:stop' }
+      { text: '⏸️ Pausar todos', callback_data: 'all:pause' },
+      { text: '⏹️ Detener todos', callback_data: 'all:stop' }
     ]
   ];
   for (const c of controllers.values()) {
+    const dot = !c.started ? '⚪' : (c.paused ? '⏸️' : '🟢');
     const id = String(c.id).slice(0, 40);
-    rows.push([
-      { text: `👁 ${id}`, callback_data: `view:${id}` },
-      { text: '▶️', callback_data: `start:${id}` },
-      { text: '⏸', callback_data: `pause:${id}` },
-      { text: '⏹', callback_data: `stop:${id}` },
-      { text: '📢', callback_data: `publish:${id}` },
-      { text: '📺', callback_data: `live:${id}` }
-    ]);
+    rows.push([{ text: `${dot} ${id}`, callback_data: `view:${id}` }]);
   }
   return { inline_keyboard: rows };
+}
+
+function tgViewKeyboard(id) {
+  return {
+    inline_keyboard: [
+      [
+        { text: '▶️ Iniciar', callback_data: `start:${id}` },
+        { text: '⏸️ Pausar', callback_data: `pause:${id}` },
+        { text: '⏹️ Detener', callback_data: `stop:${id}` }
+      ],
+      [
+        { text: '📢 Publicar', callback_data: `publish:${id}` },
+        { text: '📺 Vista en vivo', callback_data: `live:${id}` }
+      ],
+      [
+        { text: '🔄 Refrescar', callback_data: `view:${id}` },
+        { text: '⬅️ Volver', callback_data: 'menu' }
+      ]
+    ]
+  };
 }
 
 function tgSend(token, chatId, text) {
@@ -772,8 +800,12 @@ function tgView(id) {
   if (!p) return `No encontré la cuenta "${id}".`;
   const d = p.adDetails || {};
   const texto = String(d.text || '');
+  const c = controllers.get(id);
+  const estado = c ? (!c.started ? '⚪ Detenido' : (c.paused ? '⏸️ Pausado' : '🟢 Activo')) : '—';
   return [
-    `*Cuenta:* ${p.id}`,
+    `👤 *${p.id}*`,
+    `Estado: *${estado}*${c && c.started ? `   ·   bumps hoy: *${c.stats.bumpsToday || 0}*` : ''}`,
+    '━━━━━━━━━━━━━━━━━━',
     `Nombre: ${d.name || '-'}`,
     `Título: ${d.headline || '-'}`,
     `Ciudad: ${d.city || '-'}`,
@@ -838,40 +870,50 @@ async function handleTgCallback(token, query) {
   const data = String(query.data || '');
   const [action, id] = data.split(':');
   const controller = id ? controllers.get(id) : null;
+  const chatId = query.message.chat.id;
+  const messageId = query.message.message_id;
   let aviso = '';
   try {
     if (action === 'view') {
       await tgCall(token, 'answerCallbackQuery', { callback_query_id: query.id });
-      await tgSend(token, query.message.chat.id, tgView(id));
+      await tgCall(token, 'sendMessage', { chat_id: chatId, text: tgView(id), parse_mode: 'Markdown', disable_web_page_preview: true, reply_markup: tgViewKeyboard(id) });
       return;
     }
     if (action === 'panel') {
       await tgCall(token, 'answerCallbackQuery', { callback_query_id: query.id, text: 'Generando captura...' });
-      await tgSendPanelScreenshot(token, query.message.chat.id);
+      await tgSendPanelScreenshot(token, chatId);
       return;
     }
     if (action === 'live') {
       await tgCall(token, 'answerCallbackQuery', { callback_query_id: query.id, text: 'Abriendo vista en vivo...' });
-      await startTgLive(token, query.message.chat.id, id);
+      await startTgLive(token, chatId, id);
       return;
     }
     if (action === 'stoplive') {
       await tgCall(token, 'answerCallbackQuery', { callback_query_id: query.id, text: 'Deteniendo vista...' });
-      stopTgLive(query.message.chat.id, id);
+      stopTgLive(chatId, id);
       return;
     }
-    if (action === 'all' && id === 'start') { for (const c of controllers.values()) c.start(); aviso = 'Iniciando todas...'; }
-    else if (action === 'all' && id === 'pause') { for (const c of controllers.values()) c.pause(); aviso = 'Pausando todas...'; }
-    else if (action === 'all' && id === 'stop') { for (const c of controllers.values()) c.stop(); aviso = 'Deteniendo todas...'; }
-    else if (controller && action === 'start') { controller.start(); aviso = `${id}: iniciando...`; }
-    else if (controller && action === 'pause') { if (controller.paused) controller.resume(); else controller.pause(); aviso = `${id}: ${controller.paused ? 'pausado' : 'reanudado'}`; }
-    else if (controller && action === 'stop') { controller.stop(); aviso = `${id}: detenido`; }
-    else if (controller && action === 'publish') { controller.publishNow(); aviso = `${id}: publicando...`; }
+    if (action === 'all' && id === 'start') { for (const c of controllers.values()) c.start(); aviso = '▶️ Iniciando todas...'; }
+    else if (action === 'all' && id === 'pause') { for (const c of controllers.values()) c.pause(); aviso = '⏸️ Pausando todas...'; }
+    else if (action === 'all' && id === 'stop') { for (const c of controllers.values()) c.stop(); aviso = '⏹️ Deteniendo todas...'; }
+    else if (controller && action === 'start') { controller.start(); aviso = `🟢 ${id}: iniciando...`; }
+    else if (controller && action === 'pause') { if (controller.paused) controller.resume(); else controller.pause(); aviso = `${controller.paused ? '⏸️' : '▶️'} ${id}: ${controller.paused ? 'pausado' : 'reanudado'}`; }
+    else if (controller && action === 'stop') { controller.stop(); aviso = `⚪ ${id}: detenido`; }
+    else if (controller && action === 'publish') { controller.publishNow(); aviso = `📢 ${id}: publicando...`; }
   } catch (error) {
     aviso = `Error: ${error.message}`;
   }
   await tgCall(token, 'answerCallbackQuery', { callback_query_id: query.id, text: aviso || 'ok' });
-  await showAccountsMenu(token, query.message.chat.id, query.message.message_id);
+
+  // Accion sobre una cuenta -> refresca su ficha; si no, el menu.
+  const perAccount = controller && ['start', 'pause', 'stop', 'publish'].includes(action);
+  if (perAccount) {
+    const r = await tgCall(token, 'editMessageText', { chat_id: chatId, message_id: messageId, text: tgView(id), parse_mode: 'Markdown', disable_web_page_preview: true, reply_markup: tgViewKeyboard(id) });
+    if (r && r.ok === false) await tgCall(token, 'sendMessage', { chat_id: chatId, text: tgView(id), parse_mode: 'Markdown', disable_web_page_preview: true, reply_markup: tgViewKeyboard(id) });
+  } else {
+    await showAccountsMenu(token, chatId, messageId);
+  }
 }
 
 let _tgPolling = false;
