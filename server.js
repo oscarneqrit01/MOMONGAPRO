@@ -3660,6 +3660,20 @@ emitActive() {
 
       try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch (_) {}
 
+      // WebRTC: evita filtrar la IP real (la app no usa WebRTC para nada).
+      try {
+        const OrigRTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+        if (OrigRTC) {
+          const strip = (cfg) => { try { if (cfg && cfg.iceServers) cfg.iceServers = []; } catch (_) {} return cfg; };
+          const Patched = function (config, ...rest) { return new OrigRTC(strip(config), ...rest); };
+          Patched.prototype = OrigRTC.prototype;
+          const origSet = OrigRTC.prototype.setConfiguration;
+          if (origSet) OrigRTC.prototype.setConfiguration = function (cfg) { return origSet.call(this, strip(cfg)); };
+          window.RTCPeerConnection = Patched;
+          if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = Patched;
+        }
+      } catch (_) {}
+
       // Coherencia con el dispositivo: los moviles no tienen plugins y Safari no tiene window.chrome.
       try { Object.defineProperty(navigator, 'plugins', { get: () => [] }); } catch (_) {}
       try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] }); } catch (_) {}
