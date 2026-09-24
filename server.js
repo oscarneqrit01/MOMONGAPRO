@@ -2089,26 +2089,49 @@ async function ensureSession(page, controller) {
   return false;
 }
 
+// Clic "trusted" (raton real -> isTrusted=true) con respaldo a clic de JS.
+async function trustedClick(page, target, ...args) {
+  let el = null;
+  try {
+    if (typeof target === 'function') {
+      const h = await page.evaluateHandle(target, ...args);
+      el = h.asElement();
+    } else if (typeof target === 'string') {
+      el = await page.$(target);
+    }
+  } catch (_) { el = null; }
+  if (!el) return false;
+  try {
+    await el.scrollIntoViewIfNeeded().catch(() => {});
+    const box = await el.boundingBox().catch(() => null);
+    if (box && box.width > 1 && box.height > 1) {
+      const x = box.x + box.width * (0.4 + Math.random() * 0.2);
+      const y = box.y + box.height * (0.4 + Math.random() * 0.2);
+      try { await page.mouse.move(x, y, { steps: 5 + Math.floor(Math.random() * 6) }); } catch (_) {}
+      await sleep(40 + Math.floor(Math.random() * 120));
+      try { await page.mouse.down(); await sleep(30 + Math.floor(Math.random() * 80)); await page.mouse.up(); } catch (_) {}
+      return true;
+    }
+    await el.click();
+    return true;
+  } catch (_) {
+    try { await el.click(); return true; } catch (_) { return false; }
+  } finally {
+    try { if (el.dispose) await el.dispose(); } catch (_) {}
+  }
+}
+
 async function clickBumpButton(page) {
-  const findAndClick = () => page.evaluate(() => {
+  const findBump = () => {
     const visible = (el) => el && el.offsetParent !== null;
     const byId = document.getElementById('managePublishAd');
-    if (visible(byId)) {
-      byId.click();
-      return true;
-    }
+    if (visible(byId)) return byId;
     const controls = Array.from(document.querySelectorAll('a, button'));
-    const el = controls.find((e) => visible(e) && /bump\s*to\s*top|bump|boost|subir/i.test(`${e.innerText || ''} ${e.value || ''} ${e.id || ''} ${e.getAttribute('href') || ''}`));
-    if (el) {
-      el.click();
-      return true;
-    }
-    return false;
-  }).catch(() => false);
-
+    return controls.find((e) => visible(e) && /bump\s*to\s*top|bump|boost|subir/i.test(`${e.innerText || ''} ${e.value || ''} ${e.id || ''} ${e.getAttribute('href') || ''}`)) || null;
+  };
   const deadline = Date.now() + 8000;
   while (Date.now() < deadline) {
-    if (await findAndClick()) return true;
+    if (await trustedClick(page, findBump)) return true;
     await sleep(500);
   }
   return false;
@@ -2155,15 +2178,10 @@ async function returnToPostsList(page, controller) {
 
   // 1) Pulsar el botón "My Posts" visible si existe (igual que el flujo de la extensión)
   try {
-    const myPostsClicked = await page.evaluate(() => {
-      const link = Array.from(document.querySelectorAll('a.manage-button, a[href*="users/posts/list"]'))
-        .find(a => a.offsetParent !== null && (a.innerText || '').trim().toLowerCase().includes('my posts'));
-      if (link) {
-        link.click();
-        return true;
-      }
-      return false;
-    }).catch(() => false);
+    const myPostsClicked = await trustedClick(page, () => {
+      return Array.from(document.querySelectorAll('a.manage-button, a[href*="users/posts/list"]'))
+        .find(a => a.offsetParent !== null && (a.innerText || '').trim().toLowerCase().includes('my posts')) || null;
+    });
 
     if (myPostsClicked) {
       controller.log('↩️ Volviendo a Mis Anuncios (My Posts)...');
@@ -2282,20 +2300,10 @@ async function bumpAllAdsOneByOne(page, controller) {
     }
     if (await checkForBlock(page, controller)) return false;
     await sleep(2500);
-    clicked = await page.evaluate(() => {
-      const btn = document.getElementById('managePublishAd');
-      if (!btn) return false;
-      btn.click();
-      return true;
-    }).catch(() => false);
+    clicked = await trustedClick(page, '#managePublishAd');
   } else {
     // Bump directo por enlace
-    clicked = await page.evaluate((postId) => {
-      const link = document.querySelector(`a[href*="/users/posts/bump/${postId}"]`);
-      if (!link) return false;
-      link.click();
-      return true;
-    }, targetId).catch(() => false);
+    clicked = await trustedClick(page, `a[href*="/users/posts/bump/${targetId}"]`);
   }
 
   if (!clicked) {
@@ -2338,16 +2346,14 @@ async function clickTextControl(page, patterns, timeout = 10000) {
   }
 
   if (!found) return false;
-  await page.evaluate((expectedPatterns) => {
+  return await trustedClick(page, (expectedPatterns) => {
     const controls = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
-    const target = controls.find(control => {
+    return controls.find(control => {
       if (control.offsetParent === null || control.id === 'delete-post-id') return false;
       const text = `${control.innerText || ''} ${control.value || ''}`.trim();
       return expectedPatterns.some(pattern => new RegExp(pattern, 'i').test(text));
-    });
-    if (target) target.click();
+    }) || null;
   }, patterns);
-  return true;
 }
 
 async function fillFirst(page, selectors, value) {
@@ -2664,12 +2670,11 @@ async function selectCity(page, value, controller) {
 }
 
 async function clickNextStep(page, controller) {
-  const directClicked = await page.evaluate(() => {
+  const directClicked = await trustedClick(page, () => {
     const button = document.querySelector('#next_button_from_first_form_page');
-    if (!button || button.offsetParent === null) return false;
-    button.click();
-    return true;
-  }).catch(() => false);
+    if (!button || button.offsetParent === null) return null;
+    return button;
+  });
   const clicked = directClicked || await clickTextControl(page, ['^next$', 'continue', 'siguiente'], 8000);
   if (!clicked) {
     controller.log('❌ No se encontró el botón Next del formulario.');
@@ -2754,48 +2759,41 @@ async function waitForManualCaptcha(page, controller) {
 
 // Popup de ciudad de pago: hay que confirmarlo para que se envíe el formulario
 async function confirmTokenPopup(page) {
-  return page.evaluate(() => {
+  const ready = await page.evaluate(() => {
     const popup = document.getElementById('confirmModal_enoughTokens');
-    if (!popup) return false;
-    const visible = popup.offsetParent !== null && getComputedStyle(popup).display !== 'none';
-    if (!visible) return false;
-    const confirm = document.getElementById('createBumpPostUrl')
-      || Array.from(popup.querySelectorAll('.flex-btn div, button, a'))
-        .find((el) => el.offsetParent !== null && /ok|accept|continue|confirm|publish|post/i.test(`${el.innerText || ''} ${el.id || ''}`));
-    if (confirm) {
-      confirm.click();
-      return true;
-    }
-    return false;
+    return Boolean(popup && popup.offsetParent !== null && getComputedStyle(popup).display !== 'none');
   }).catch(() => false);
+  if (!ready) return false;
+  return await trustedClick(page, () => {
+    const popup = document.getElementById('confirmModal_enoughTokens');
+    if (!popup) return null;
+    return document.getElementById('createBumpPostUrl')
+      || Array.from(popup.querySelectorAll('.flex-btn div, button, a'))
+        .find((el) => el.offsetParent !== null && /ok|accept|continue|confirm|publish|post/i.test(`${el.innerText || ''} ${el.id || ''}`)) || null;
+  });
 }
 
 // Modal "Success!" con botón OK (success_publish / imágenes revisadas): hay que cerrarlo para seguir
 async function dismissOkModal(page) {
-  return page.evaluate(() => {
+  return await trustedClick(page, () => {
     const byId = document.getElementById('success-ok');
-    if (byId && byId.offsetParent !== null) { byId.click(); return true; }
+    if (byId && byId.offsetParent !== null) return byId;
     const byImg = Array.from(document.querySelectorAll('img')).find((el) => el.offsetParent !== null && /buttonok/i.test(el.getAttribute('src') || ''));
-    if (byImg) { byImg.click(); return true; }
+    if (byImg) return byImg;
     const byText = Array.from(document.querySelectorAll('button, a, input[type="button"], div'))
       .find((el) => el.offsetParent !== null && /^ok$/i.test((el.innerText || el.value || '').trim()));
-    if (byText) { byText.click(); return true; }
-    return false;
-  }).catch(() => false);
+    return byText || null;
+  });
 }
 
 // Página de imágenes pendientes (/users/pendingImages/...): hay que pulsar el botón OK
 async function clickPendingImagesOk(page) {
-  return page.evaluate(() => {
+  return await trustedClick(page, () => {
     const ok = document.getElementById('success-ok')
       || Array.from(document.querySelectorAll('img, button, a, div'))
         .find((el) => el.offsetParent !== null && /buttonok|success-ok/i.test(`${el.id || ''} ${el.getAttribute('src') || ''}`));
-    if (ok) {
-      ok.click();
-      return true;
-    }
-    return false;
-  }).catch(() => false);
+    return ok || null;
+  });
 }
 
 // Detecta si el sitio rechazó el captcha (aunque el modal esté oculto)
@@ -2851,17 +2849,11 @@ async function deleteAndRepost(page, controller, options = {}) {
       }
       if (await checkForBlock(page, controller)) return false;
 
-      const deleteClicked = await page.evaluate(() => {
-      const knownButton = document.querySelector('#delete-post-id');
-      if (knownButton && knownButton.offsetParent !== null) {
-        knownButton.click();
-        return true;
-      }
-      const fallback = Array.from(document.querySelectorAll('button, a, input[type="submit"]'))
-        .find((el) => el.offsetParent !== null && /delete|remove|borrar|eliminar/i.test(`${el.innerText || ''} ${el.value || ''}`));
-      if (!fallback) return false;
-      fallback.click();
-      return true;
+      const deleteClicked = await trustedClick(page, () => {
+        const knownButton = document.querySelector('#delete-post-id');
+        if (knownButton && knownButton.offsetParent !== null) return knownButton;
+        return Array.from(document.querySelectorAll('button, a, input[type="submit"]'))
+          .find((el) => el.offsetParent !== null && /delete|remove|borrar|eliminar/i.test(`${el.innerText || ''} ${el.value || ''}`)) || null;
       });
       if (!deleteClicked) {
         controller.log('ℹ️ El post ya no aparece en Manage Posts; continúo directamente con Create Post.');
@@ -2963,28 +2955,17 @@ async function deleteAndRepost(page, controller, options = {}) {
     for (let attempt = 1; attempt <= 3 && !confirmed; attempt++) {
       let published = await clickTextControl(page, ['publish', 'post\\s+ad', 'publicar', 'crear anuncio'], 10000);
       if (!published) {
-        published = await page.evaluate(() => {
+        published = await trustedClick(page, () => {
           // Botón real de MegaPersonals: <div id="input_send" class="myButton previewbutton"> (sin texto)
           const direct = document.getElementById('input_send')
             || document.querySelector('.myButton.previewbutton');
-          if (direct && direct.offsetParent !== null) {
-            direct.click();
-            return true;
-          }
+          if (direct && direct.offsetParent !== null) return direct;
           const form = document.querySelector('form');
           const submit = form && form.querySelector('button[type="submit"], input[type="submit"]');
-          if (submit && submit.offsetParent !== null && !submit.disabled) {
-            submit.click();
-            return true;
-          }
-          const any = Array.from(document.querySelectorAll('button, input[type="submit"], a'))
-            .find((el) => el.offsetParent !== null && !el.disabled && /publish|post\s*ad|submit|publicar|send/i.test(`${el.innerText || ''} ${el.value || ''} ${el.id || ''}`));
-          if (any) {
-            any.click();
-            return true;
-          }
-          return false;
-        }).catch(() => false);
+          if (submit && submit.offsetParent !== null && !submit.disabled) return submit;
+          return Array.from(document.querySelectorAll('button, input[type="submit"], a'))
+            .find((el) => el.offsetParent !== null && !el.disabled && /publish|post\s*ad|submit|publicar|send/i.test(`${el.innerText || ''} ${el.value || ''} ${el.id || ''}`)) || null;
+        });
       }
       if (!published) {
         controller.log('No se encontró el botón final de publicación.');
