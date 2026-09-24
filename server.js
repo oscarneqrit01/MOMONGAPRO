@@ -1643,6 +1643,7 @@ async function runSafetyCheck(controller) {
   let page;
   try {
     page = await controller.browser.newPage();
+    if (typeof controller._applyPage === 'function') await controller._applyPage(page);
     let info = {};
     try {
       await page.goto('https://ipinfo.io/json', { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -3742,7 +3743,7 @@ emitActive() {
     // Anti-deteccion: oculta automatizacion y enmascara la huella por perfil.
     const seed = String(this.id);
     const deviceKind = device.kind;
-    await page.evaluateOnNewDocument((seedStr, kind, major, model, platformName, androidVersion, proxyIp) => {
+    const stealthFn = (seedStr, kind, major, model, platformName, androidVersion, proxyIp) => {
       let s = 2166136261 >>> 0;
       for (let i = 0; i < seedStr.length; i++) { s ^= seedStr.charCodeAt(i); s = Math.imul(s, 16777619) >>> 0; }
       for (let i = 0; i < 5; i++) s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
@@ -3873,7 +3874,37 @@ emitActive() {
           try { if (array && array.length) array[0] = array[0] + rand() * 0.0000001; } catch (_) {}
         };
       } catch (_) {}
-    }, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp);
+    };
+    await page.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp);
+
+    // Aplica el MISMO disfraz (emulacion + anti-deteccion) a CADA pestaña nueva
+    // (browserleaks, pixelscan, apelacion, chequeo, etc.).
+    const applyToNewPage = async (p) => {
+      if (!p || p.__momongaApplied) return;
+      p.__momongaApplied = true;
+      try { await p.emulate({ userAgent: device.userAgent, viewport: device.viewport }); } catch (_) {}
+      try { await p.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' }); } catch (_) {}
+      try { await p.setGeolocation({ latitude, longitude, accuracy: 100 }); } catch (_) {}
+      try { await p.setBypassCSP(true); } catch (_) {}
+      if (proxy && proxy.host && proxy.type !== 'socks5' && proxy.username !== undefined && proxy.password !== undefined) {
+        try { await p.authenticate({ username: proxy.username, password: proxy.password }); } catch (_) {}
+      }
+      try {
+        const cdp = await p.target().createCDPSession();
+        await cdp.send('Emulation.setTimezoneOverride', { timezoneId: timezone });
+        await cdp.send('Emulation.setLocaleOverride', { locale: 'en-US' });
+      } catch (_) {}
+      try { await p.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp); } catch (_) {}
+    };
+    browser.on('targetcreated', async (target) => {
+      try {
+        if (target.type() !== 'page') return;
+        const p = await target.page();
+        if (p) await applyToNewPage(p);
+      } catch (_) {}
+    });
+    // Para que otras funciones (chequeo, etc.) puedan preparar sus pestañas.
+    this._applyPage = applyToNewPage;
 
     const fp = await page.evaluate(() => ({
       ua: navigator.userAgent,
