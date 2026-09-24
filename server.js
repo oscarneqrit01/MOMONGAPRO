@@ -1627,6 +1627,7 @@ async function openUrlInProfileBrowser(controller, url) {
   if (!controller || !controller.browser) return false;
   try {
     const page = await controller.browser.newPage();
+    if (typeof controller._applyPage === 'function') await controller._applyPage(page);
     await page.bringToFront().catch(() => {});
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
     return true;
@@ -1683,7 +1684,9 @@ async function runSafetyCheck(controller) {
     } catch (_) {}
     const publicIps = cands.map((c) => (/typ (srflx|relay)/.test(c) ? (String(c).split(' ')[4] || null) : null)).filter(Boolean);
     result.webrtcIps = publicIps;
-    const leaked = publicIps.filter((ip) => ip !== result.ip);
+    // Tolerante a proxy rotativo: vale la IP guardada o la detectada ahora.
+    const allowed = [controller._proxyIp, result.ip].filter(Boolean);
+    const leaked = publicIps.filter((ip) => !allowed.includes(ip));
     if (leaked.length) { result.ok = false; result.reasons.push(`fuga WebRTC (${leaked.join(', ')})`); }
   } catch (error) {
     result.reasons.push(error.message);
@@ -3758,21 +3761,28 @@ emitActive() {
         const OrigRTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
         if (OrigRTC) {
           const strip = (cfg) => { try { if (cfg && cfg.iceServers) cfg.iceServers = []; } catch (_) {} return cfg; };
+          const fireFake = (pc) => {
+            if (!proxyIp || !pc) return;
+            try {
+              const cand = `candidate:1 1 udp 1677729535 ${proxyIp} ${40000 + Math.floor(rand() * 20000)} typ srflx raddr 0.0.0.0 rport 0 generation 0 ufrag ${Math.random().toString(36).slice(2, 6)} network-cost 999`;
+              const ice = new RTCIceCandidate({ candidate: cand, sdpMid: '0', sdpMLineIndex: 0 });
+              pc.dispatchEvent(new RTCPeerConnectionIceEvent('icecandidate', { candidate: ice }));
+            } catch (_) {}
+          };
           const fake = (pc) => {
-            if (!proxyIp || !pc || pc.__momongaFake) return;
-            pc.__momongaFake = true;
-            const cand = `candidate:1 1 udp 1677729535 ${proxyIp} ${40000 + Math.floor(rand() * 20000)} typ srflx raddr 0.0.0.0 rport 0 generation 0 ufrag ${Math.random().toString(36).slice(2, 6)} network-cost 999`;
-            setTimeout(() => {
-              try {
-                const ice = new RTCIceCandidate({ candidate: cand, sdpMid: '0', sdpMLineIndex: 0 });
-                try { pc.dispatchEvent(new RTCPeerConnectionIceEvent('icecandidate', { candidate: ice })); } catch (_) {}
-              } catch (_) {}
-            }, 100 + Math.floor(rand() * 150));
+            if (!proxyIp || !pc) return;
+            [60, 300, 900].forEach((d) => setTimeout(() => fireFake(pc), d));
           };
           const origSetConfig = OrigRTC.prototype.setConfiguration;
           if (origSetConfig) OrigRTC.prototype.setConfiguration = function (cfg) { return origSetConfig.call(this, strip(cfg)); };
-          const origSetLocal = OrigRTC.prototype.setLocalDescription;
-          if (origSetLocal) OrigRTC.prototype.setLocalDescription = function () { const r = origSetLocal.apply(this, arguments); fake(this); return r; };
+          const wrap = (name) => {
+            const orig = OrigRTC.prototype[name];
+            if (!orig) return;
+            OrigRTC.prototype[name] = function () { const r = orig.apply(this, arguments); fake(this); return r; };
+          };
+          wrap('setLocalDescription');
+          wrap('createOffer');
+          wrap('createAnswer');
           const Patched = function (config, ...rest) { return new OrigRTC(strip(config), ...rest); };
           Patched.prototype = OrigRTC.prototype;
           window.RTCPeerConnection = Patched;
