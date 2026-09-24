@@ -3777,6 +3777,7 @@ emitActive() {
       lang: navigator.language
     }));
     this.log(`Fingerprint: TZ=${fp.tz} | Lang=${fp.lang}`);
+    this.log('🛡️ Anti-detección + anti-fuga WebRTC activadas.');
 
     return { browser, page };
   }
