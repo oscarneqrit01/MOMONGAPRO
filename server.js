@@ -3974,23 +3974,28 @@ emitActive() {
     await page.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height);
 
     // Aplica el MISMO disfraz (emulacion + anti-deteccion) a CADA pestaña nueva
-    // (browserleaks, pixelscan, apelacion, chequeo, etc.).
-    const applyToNewPage = async (p) => {
-      if (!p || p.__momongaApplied) return;
-      p.__momongaApplied = true;
-      try { await p.emulate({ userAgent: device.userAgent, viewport: device.viewport }); } catch (_) {}
-      try { await p.setExtraHTTPHeaders(chHeadersFor(device, chromeMajor)); } catch (_) {}
-      try { await p.setGeolocation({ latitude, longitude, accuracy: 100 }); } catch (_) {}
-      try { await p.setBypassCSP(true); } catch (_) {}
-      if (proxy && proxy.host && proxy.type !== 'socks5' && proxy.username !== undefined && proxy.password !== undefined) {
-        try { await p.authenticate({ username: proxy.username, password: proxy.password }); } catch (_) {}
+    // (browserleaks, pixelscan, apelacion, chequeo, etc.). Devuelve una promesa
+    // compartida para que quien la llame ESPERE a que el sigilo quede inyectado.
+    const applyToNewPage = (p) => {
+      if (!p) return Promise.resolve();
+      if (!p.__momongaApplyPromise) {
+        p.__momongaApplyPromise = (async () => {
+          try { await p.emulate({ userAgent: device.userAgent, viewport: device.viewport }); } catch (_) {}
+          try { await p.setExtraHTTPHeaders(chHeadersFor(device, chromeMajor)); } catch (_) {}
+          try { await p.setGeolocation({ latitude, longitude, accuracy: 100 }); } catch (_) {}
+          try { await p.setBypassCSP(true); } catch (_) {}
+          if (proxy && proxy.host && proxy.type !== 'socks5' && proxy.username !== undefined && proxy.password !== undefined) {
+            try { await p.authenticate({ username: proxy.username, password: proxy.password }); } catch (_) {}
+          }
+          try {
+            const cdp = await p.target().createCDPSession();
+            await cdp.send('Emulation.setTimezoneOverride', { timezoneId: timezone });
+            await cdp.send('Emulation.setLocaleOverride', { locale: 'en-US' });
+          } catch (_) {}
+          try { await p.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height); } catch (_) {}
+        })().catch(() => {});
       }
-      try {
-        const cdp = await p.target().createCDPSession();
-        await cdp.send('Emulation.setTimezoneOverride', { timezoneId: timezone });
-        await cdp.send('Emulation.setLocaleOverride', { locale: 'en-US' });
-      } catch (_) {}
-      try { await p.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height); } catch (_) {}
+      return p.__momongaApplyPromise;
     };
     browser.on('targetcreated', async (target) => {
       try {

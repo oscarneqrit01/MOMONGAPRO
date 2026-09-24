@@ -2689,7 +2689,7 @@
       if (!el) return;
       const r = data.result || {};
       if (data.ok) {
-        el.textContent = `🛡️ OK · IP ${r.ip || '?'}${r.fraudScore != null ? ` · fraud ${r.fraudScore}` : ''}${r.org ? ` · ${r.org}` : ''}`;
+        el.textContent = `🛡️ OK · IP ${r.ip || '?'}${r.risk != null ? ` · riesgo ${r.risk}` : ''}${r.ipType ? ` · ${r.ipType}` : ''}${r.org ? ` · ${r.org}` : ''}`;
         el.style.color = '#2ecc71';
       } else {
         el.textContent = `🛡️ FALLÓ: ${(r.reasons || []).join(' / ')}`;
