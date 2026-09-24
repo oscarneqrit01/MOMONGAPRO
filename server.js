@@ -3373,13 +3373,24 @@ async function resolveProxyGeo(browser, proxy) {
     if (proxy.type !== 'socks5' && proxy.username) {
       await tmp.authenticate({ username: proxy.username, password: proxy.password || '' }).catch(() => {});
     }
-    await tmp.goto('http://ip-api.com/json/?fields=status,query,country,city,timezone,lat,lon', {
+    // HTTPS: ip-api (HTTP) no pasa por el puente SOCKS5; ipinfo si (CONNECT).
+    await tmp.goto('https://ipinfo.io/json', {
       waitUntil: 'domcontentloaded',
-      timeout: 8000
+      timeout: 12000
     });
     const txt = await tmp.evaluate(() => (document.body ? document.body.innerText : ''));
-    const data = JSON.parse(txt);
-    if (data && data.status === 'success') {
+    const info = JSON.parse(txt);
+    if (info && info.ip) {
+      const [lat, lon] = String(info.loc || '').split(',').map(Number);
+      const data = {
+        status: 'success',
+        query: info.ip,
+        country: info.country || '',
+        city: info.city || info.region || '',
+        timezone: info.timezone || '',
+        lat: Number.isFinite(lat) ? lat : undefined,
+        lon: Number.isFinite(lon) ? lon : undefined
+      };
       proxyGeoCache.set(key, { at: Date.now(), data });
       return data;
     }
