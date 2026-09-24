@@ -1649,7 +1649,7 @@ async function runSafetyCheck(controller) {
       await page.goto('https://ipinfo.io/json', { waitUntil: 'domcontentloaded', timeout: 30000 });
       info = JSON.parse(await page.evaluate(() => document.body.innerText)) || {};
     } catch (_) {}
-    result.ip = info.ip || null;
+    result.ip = info.ip || controller._proxyIp || null;
     result.org = info.org || '';
     result.city = info.city || '';
     result.country = info.country || '';
@@ -3726,6 +3726,7 @@ emitActive() {
     if (geo) this.log(`🌍 Ubicacion del proxy: ${geo.city || '?'}, ${geo.country || '?'} (${timezone})`);
     // IP publica del proxy (para que WebRTC la muestre y no la IP real)
     const proxyPublicIp = (geo && /^\d{1,3}(\.\d{1,3}){3}$/.test(String(geo.query || ''))) ? geo.query : null;
+    this._proxyIp = proxyPublicIp || this._proxyIp || null;
     if (proxyPublicIp) this.log(`🛡️ WebRTC mostrara la IP del proxy (${proxyPublicIp}).`);
     await client.send('Emulation.setTimezoneOverride', { timezoneId: timezone });
     await page.setGeolocation({ latitude, longitude, accuracy: 100 });
