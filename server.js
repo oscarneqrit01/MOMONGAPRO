@@ -3296,7 +3296,7 @@ async function resolveProxyGeo(browser, proxy) {
     if (proxy.type !== 'socks5' && proxy.username) {
       await tmp.authenticate({ username: proxy.username, password: proxy.password || '' }).catch(() => {});
     }
-    await tmp.goto('http://ip-api.com/json/?fields=status,country,city,timezone,lat,lon', {
+    await tmp.goto('http://ip-api.com/json/?fields=status,query,country,city,timezone,lat,lon', {
       waitUntil: 'domcontentloaded',
       timeout: 8000
     });
@@ -3635,6 +3635,9 @@ emitActive() {
     const latitude = geo && Number.isFinite(geo.lat) ? geo.lat : 45.5052;
     const longitude = geo && Number.isFinite(geo.lon) ? geo.lon : -73.5557;
     if (geo) this.log(`🌍 Ubicacion del proxy: ${geo.city || '?'}, ${geo.country || '?'} (${timezone})`);
+    // IP publica del proxy (para que WebRTC la muestre y no la IP real)
+    const proxyPublicIp = (geo && /^\d{1,3}(\.\d{1,3}){3}$/.test(String(geo.query || ''))) ? geo.query : null;
+    if (proxyPublicIp) this.log(`🛡️ WebRTC mostrara la IP del proxy (${proxyPublicIp}).`);
     await client.send('Emulation.setTimezoneOverride', { timezoneId: timezone });
     await page.setGeolocation({ latitude, longitude, accuracy: 100 });
     await page.setBypassCSP(true);
@@ -3651,7 +3654,7 @@ emitActive() {
     // Anti-deteccion: oculta automatizacion y enmascara la huella por perfil.
     const seed = String(this.id);
     const deviceKind = device.kind;
-    await page.evaluateOnNewDocument((seedStr, kind, major, model, platformName, androidVersion) => {
+    await page.evaluateOnNewDocument((seedStr, kind, major, model, platformName, androidVersion, proxyIp) => {
       let s = 2166136261 >>> 0;
       for (let i = 0; i < seedStr.length; i++) { s ^= seedStr.charCodeAt(i); s = Math.imul(s, 16777619) >>> 0; }
       for (let i = 0; i < 5; i++) s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
@@ -3660,15 +3663,28 @@ emitActive() {
 
       try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch (_) {}
 
-      // WebRTC: evita filtrar la IP real (la app no usa WebRTC para nada).
+      // WebRTC: NO filtra la IP real y muestra la del proxy (como AdsPower).
       try {
         const OrigRTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
         if (OrigRTC) {
           const strip = (cfg) => { try { if (cfg && cfg.iceServers) cfg.iceServers = []; } catch (_) {} return cfg; };
+          const fake = (pc) => {
+            if (!proxyIp || !pc || pc.__momongaFake) return;
+            pc.__momongaFake = true;
+            const cand = `candidate:1 1 udp 1677729535 ${proxyIp} ${40000 + Math.floor(rand() * 20000)} typ srflx raddr 0.0.0.0 rport 0 generation 0 ufrag ${Math.random().toString(36).slice(2, 6)} network-cost 999`;
+            setTimeout(() => {
+              try {
+                const ice = new RTCIceCandidate({ candidate: cand, sdpMid: '0', sdpMLineIndex: 0 });
+                try { pc.dispatchEvent(new RTCPeerConnectionIceEvent('icecandidate', { candidate: ice })); } catch (_) {}
+              } catch (_) {}
+            }, 100 + Math.floor(rand() * 150));
+          };
+          const origSetConfig = OrigRTC.prototype.setConfiguration;
+          if (origSetConfig) OrigRTC.prototype.setConfiguration = function (cfg) { return origSetConfig.call(this, strip(cfg)); };
+          const origSetLocal = OrigRTC.prototype.setLocalDescription;
+          if (origSetLocal) OrigRTC.prototype.setLocalDescription = function () { const r = origSetLocal.apply(this, arguments); fake(this); return r; };
           const Patched = function (config, ...rest) { return new OrigRTC(strip(config), ...rest); };
           Patched.prototype = OrigRTC.prototype;
-          const origSet = OrigRTC.prototype.setConfiguration;
-          if (origSet) OrigRTC.prototype.setConfiguration = function (cfg) { return origSet.call(this, strip(cfg)); };
           window.RTCPeerConnection = Patched;
           if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = Patched;
         }
@@ -3769,7 +3785,7 @@ emitActive() {
           try { if (array && array.length) array[0] = array[0] + rand() * 0.0000001; } catch (_) {}
         };
       } catch (_) {}
-    }, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion);
+    }, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp);
 
     const fp = await page.evaluate(() => ({
       ua: navigator.userAgent,
