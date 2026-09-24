@@ -499,7 +499,18 @@ function mapConfigSecrets(config, fn) {
   });
 }
 
-function saveConfig(config) {
+function saveConfig(config, opts = {}) {
+  // Candado anti-perdida: no sobrescribir con un array vacio si ya habia perfiles.
+  if (Array.isArray(config) && config.length === 0 && !opts.allowEmpty) {
+    let existing = [];
+    try { existing = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch (_) { existing = []; }
+    if (Array.isArray(existing) && existing.length > 0) {
+      console.error('⚠️ saveConfig: intento de guardar config VACIO con perfiles existentes; OMITIDO.');
+      logToFile('server', 'saveConfig vacio omitido (habia perfiles).');
+      notify('⚠️ Se evito guardar una config vacia (proteccion anti-perdida de perfiles).');
+      return;
+    }
+  }
   backupFile(CONFIG_PATH, 'config');
   const toWrite = mapConfigSecrets(config, encryptSecret);
   fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(toWrite, null, 2)}\n`, 'utf8');
@@ -2097,7 +2108,8 @@ async function ensureSession(page, controller) {
   return false;
 }
 
-// Clic "trusted" (raton real -> isTrusted=true) con respaldo a clic de JS.
+// Clic "trusted" (raton real -> isTrusted=true) y FIABLE: usa elementHandle.click de
+// Puppeteer (que hace scroll y clica el elemento via CDP) con un offset/retraso humano.
 async function trustedClick(page, target, ...args) {
   let el = null;
   try {
@@ -2110,17 +2122,14 @@ async function trustedClick(page, target, ...args) {
   } catch (_) { el = null; }
   if (!el) return false;
   try {
-    await el.scrollIntoViewIfNeeded().catch(() => {});
     const box = await el.boundingBox().catch(() => null);
-    if (box && box.width > 1 && box.height > 1) {
-      const x = box.x + box.width * (0.4 + Math.random() * 0.2);
-      const y = box.y + box.height * (0.4 + Math.random() * 0.2);
-      try { await page.mouse.move(x, y, { steps: 5 + Math.floor(Math.random() * 6) }); } catch (_) {}
-      await sleep(40 + Math.floor(Math.random() * 120));
-      try { await page.mouse.down(); await sleep(30 + Math.floor(Math.random() * 80)); await page.mouse.up(); } catch (_) {}
-      return true;
-    }
-    await el.click();
+    const opts = (box && box.width > 4 && box.height > 4)
+      ? {
+        offset: { x: box.width * (0.35 + Math.random() * 0.3), y: box.height * (0.35 + Math.random() * 0.3) },
+        delay: 30 + Math.floor(Math.random() * 80)
+      }
+      : undefined;
+    await el.click(opts);
     return true;
   } catch (_) {
     try { await el.click(); return true; } catch (_) { return false; }
@@ -5004,7 +5013,7 @@ app.delete('/api/profiles/:id', async (req, res) => {
     }
 
     config.splice(index, 1);
-    saveConfig(config);
+    saveConfig(config, { allowEmpty: true });
     removeProfileFolders(req.params.id);
     io.emit('profiles-updated', config);
     saveState();

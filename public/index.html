@@ -1973,9 +1973,18 @@
               <div id="config-body-${profile.id}" style="padding: 15px; display: none;">
 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
-                  <div>
-                    <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">PROXY ACTIVO</label>
-                    <input type="text" id="proxy-${profile.id}" placeholder="IP:Puerto:User:Pass" value="${proxyValue}" style="width: 100%; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                  <div style="grid-column: 1 / -1;">
+                    <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">PROXY (IP · puerto · usuario · contraseña · tipo) — vacío = sin proxy</label>
+                    <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                      <input type="text" id="proxyHost-${profile.id}" placeholder="IP" value="${profile.proxy?.host || ''}" style="flex:1; min-width:130px; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                      <input type="number" id="proxyPort-${profile.id}" placeholder="Puerto" value="${profile.proxy?.port || ''}" style="width: 90px; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                      <input type="text" id="proxyUser-${profile.id}" placeholder="Usuario" value="${profile.proxy?.username || ''}" style="flex:1; min-width:110px; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                      <input type="password" id="proxyPass-${profile.id}" placeholder="Contraseña" value="${profile.proxy?.password || ''}" style="flex:1; min-width:110px; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                      <select id="proxyType-${profile.id}" style="width: 110px; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                        <option value="http" ${(profile.proxy?.type || 'http') === 'http' ? 'selected' : ''}>HTTP</option>
+                        <option value="socks5" ${profile.proxy?.type === 'socks5' ? 'selected' : ''}>SOCKS5</option>
+                      </select>
+                    </div>
                   </div>
                   <div>
                     <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">API KEY 2CAPTCHA</label>
@@ -2324,8 +2333,15 @@
     }
 
     async function saveProfileConfig(profileId) {
+      const proxyHostVal = String(document.getElementById(`proxyHost-${profileId}`)?.value || '').trim();
       const data = {
-        proxy: document.getElementById(`proxy-${profileId}`).value,
+        proxy: proxyHostVal ? {
+          host: proxyHostVal,
+          port: Number(document.getElementById(`proxyPort-${profileId}`)?.value) || 0,
+          username: String(document.getElementById(`proxyUser-${profileId}`)?.value || '').trim(),
+          password: String(document.getElementById(`proxyPass-${profileId}`)?.value || ''),
+          type: document.getElementById(`proxyType-${profileId}`)?.value || 'http'
+        } : null,
         apiKey2Captcha: document.getElementById(`cap-${profileId}`).value,
         supportEmail: document.getElementById(`supportEmail-${profileId}`).value,
         limits: {
