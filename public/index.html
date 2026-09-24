@@ -1926,7 +1926,10 @@
             <button class="small-btn dark" data-action="retry" data-id="${profile.id}">Reintentar Paso</button>
             <button class="small-btn amber" data-action="appeal" data-id="${profile.id}">Apelar</button>
             <button class="small-btn" data-action="rename" data-id="${profile.id}">Renombrar</button>
+            <button class="small-btn blue" data-action="safety" data-id="${profile.id}">🛡️ Verificar</button>
+            <button class="small-btn dark" data-action="pixelscan" data-id="${profile.id}">pixelscan</button>
           </div>
+          <div class="note" data-safety-id="${profile.id}">🛡️ Sin verificar todavía</div>
 
           <div class="subpanel">
             <div class="subpanel-top">
@@ -2135,6 +2138,8 @@
           if (action === 'publish') socket.emit('publish-profile', id);
           if (action === 'retry') socket.emit('retry-profile', id);
           if (action === 'appeal') socket.emit('appeal-profile', id);
+          if (action === 'safety') socket.emit('safety-check-now', id);
+          if (action === 'pixelscan') socket.emit('open-in-profile', { id, url: 'https://pixelscan.net/' });
           if (action === 'rename') {
             const newName = prompt('Nuevo nombre para el perfil:', id);
             if (newName === null) return;
@@ -2676,6 +2681,20 @@
 
     socket.on('block-evidence', () => {
       if (appealsModal.classList.contains('open')) openAppealsModal();
+    });
+
+    socket.on('safety-check', (data) => {
+      if (!data || !data.id) return;
+      const el = document.querySelector(`[data-safety-id="${data.id}"]`);
+      if (!el) return;
+      const r = data.result || {};
+      if (data.ok) {
+        el.textContent = `🛡️ OK · IP ${r.ip || '?'}${r.fraudScore != null ? ` · fraud ${r.fraudScore}` : ''}${r.org ? ` · ${r.org}` : ''}`;
+        el.style.color = '#2ecc71';
+      } else {
+        el.textContent = `🛡️ FALLÓ: ${(r.reasons || []).join(' / ')}`;
+        el.style.color = '#e74c3c';
+      }
     });
 
     addProfileForm.addEventListener('submit', async (event) => {

@@ -1635,6 +1635,83 @@ async function openUrlInProfileBrowser(controller, url) {
   }
 }
 
+// Chequeo de seguridad: IP+datos (ipinfo), Fraud Score (scamalytics) y fuga WebRTC.
+async function runSafetyCheck(controller) {
+  const result = { ok: true, reasons: [], at: Date.now() };
+  if (!controller || !controller.cfg || !controller.cfg.proxy || !controller.cfg.proxy.host) { result.skipped = true; return result; }
+  if (!controller.browser) { result.ok = false; result.reasons.push('navegador no abierto'); return result; }
+  let page;
+  try {
+    page = await controller.browser.newPage();
+    let info = {};
+    try {
+      await page.goto('https://ipinfo.io/json', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      info = JSON.parse(await page.evaluate(() => document.body.innerText)) || {};
+    } catch (_) {}
+    result.ip = info.ip || null;
+    result.org = info.org || '';
+    result.city = info.city || '';
+    result.country = info.country || '';
+    result.timezone = info.timezone || '';
+
+    if (result.ip) {
+      try {
+        await page.goto(`https://scamalytics.com/ip/${result.ip}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await sleep(3000);
+        const txt = await page.evaluate(() => (document.body ? document.body.innerText : ''));
+        const m = txt.match(/Fraud Score[^\d]*(\d+)/i);
+        if (m) result.fraudScore = Number(m[1]);
+      } catch (_) {}
+    }
+
+    let cands = [];
+    try {
+      cands = await page.evaluate(async () => {
+        const out = [];
+        await new Promise((resolve) => {
+          try {
+            const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+            pc.onicecandidate = (e) => { if (e.candidate && e.candidate.candidate) out.push(e.candidate.candidate); };
+            pc.createDataChannel('x');
+            pc.createOffer().then((o) => pc.setLocalDescription(o)).catch(() => {});
+          } catch (_) {}
+          setTimeout(resolve, 6000);
+        });
+        return out;
+      });
+    } catch (_) {}
+    const publicIps = cands.map((c) => (/typ (srflx|relay)/.test(c) ? (String(c).split(' ')[4] || null) : null)).filter(Boolean);
+    result.webrtcIps = publicIps;
+    const leaked = publicIps.filter((ip) => ip !== result.ip);
+    if (leaked.length) { result.ok = false; result.reasons.push(`fuga WebRTC (${leaked.join(', ')})`); }
+  } catch (error) {
+    result.reasons.push(error.message);
+  } finally {
+    if (page) await page.close().catch(() => {});
+  }
+
+  if (result.fraudScore != null && result.fraudScore > 6) {
+    result.ok = false;
+    result.reasons.push(`fraud score ${result.fraudScore} (> 6)`);
+  }
+  return result;
+}
+
+function reportSafetyCheck(controller, result, { pauseOnFail = true } = {}) {
+  try {
+    if (!result || result.skipped) return;
+    io.emit('safety-check', { id: controller.id, ok: result.ok, result, at: Date.now() });
+    if (result.ok) {
+      controller.log(`🛡️ Chequeo OK · IP ${result.ip || '?'}${result.fraudScore != null ? ` · fraud ${result.fraudScore}` : ''}${result.org ? ` · ${result.org}` : ''}`);
+    } else {
+      const msg = result.reasons.join(' / ') || 'fallo';
+      controller.warn(`🛡️ Chequeo FALLÓ: ${msg}. Se pausa el perfil.`);
+      notify(`🛡️ Chequeo falló en "${controller.id}": ${msg}`);
+      if (pauseOnFail && controller.started) controller.pause();
+    }
+  } catch (_) {}
+}
+
 function buildAppealDraft(record) {
   const account = (record && record.account) || '(tu correo)';
   const supportEmail = (record && record.supportEmail) || DEFAULT_SUPPORT_EMAIL;
@@ -3924,6 +4001,13 @@ emitActive() {
     this.started = true;
     this.paused = false;
 
+    // Chequeo de seguridad antes de arrancar (IP/proxy, fraud score, fuga WebRTC).
+    const safety = await runSafetyCheck(this).catch(() => null);
+    if (safety) {
+      reportSafetyCheck(this, safety);
+      if (!safety.ok) { this.pause(); return; }
+    }
+
     if (this.settings.publishOnStart) {
       this.log('Publicación al iniciar activada.');
       let startOk = false;
@@ -3945,6 +4029,7 @@ emitActive() {
     this.scheduleNext();
     this.scheduleRepost();
     this.startBlockWatch();
+    this.startSafetyWatch();
     this.emitActive();
     this.emitState('running');
     saveState();
@@ -3964,6 +4049,18 @@ emitActive() {
     if (this._blockWatch.unref) this._blockWatch.unref();
   }
 
+  startSafetyWatch() {
+    if (this._safetyWatch) clearInterval(this._safetyWatch);
+    // Repite el chequeo de seguridad cada 1 hora mientras el perfil esta en marcha.
+    this._safetyWatch = setInterval(async () => {
+      if (this.started && !this.paused && this.browser) {
+        const check = await runSafetyCheck(this).catch(() => null);
+        if (check) reportSafetyCheck(this, check);
+      }
+    }, 60 * 60 * 1000);
+    if (this._safetyWatch.unref) this._safetyWatch.unref();
+  }
+
   pause() {
     if (!this.started) return;
     this.paused = true;
@@ -3971,10 +4068,12 @@ emitActive() {
     if (this._countdownTimer) clearInterval(this._countdownTimer);
     if (this._repostTimer) clearTimeout(this._repostTimer);
     if (this._blockWatch) clearInterval(this._blockWatch);
+    if (this._safetyWatch) clearInterval(this._safetyWatch);
     this._cycleTimer = null;
     this._countdownTimer = null;
     this._repostTimer = null;
     this._blockWatch = null;
+    this._safetyWatch = null;
     this.log('⏸ Pausado.');
     io.emit('timer', { id: this.id, time: null });
     io.emit('repost-timer', { id: this.id, time: null });
@@ -3989,6 +4088,7 @@ emitActive() {
     this.scheduleNext();
     this.scheduleRepost();
     this.startBlockWatch();
+    this.startSafetyWatch();
     this.emitState('running');
   }
 
@@ -4000,10 +4100,12 @@ emitActive() {
     if (this._countdownTimer) clearInterval(this._countdownTimer);
     if (this._repostTimer) clearTimeout(this._repostTimer);
     if (this._blockWatch) clearInterval(this._blockWatch);
+    if (this._safetyWatch) clearInterval(this._safetyWatch);
     this._cycleTimer = null;
     this._countdownTimer = null;
     this._repostTimer = null;
     this._blockWatch = null;
+    this._safetyWatch = null;
     if (this.browser) {
       await this.browser.close().catch(() => {});
     }
@@ -4966,6 +5068,15 @@ io.on('connection', (socket) => {
       const ok = await openUrlInProfileBrowser(controller, url);
       if (!ok) openExternalUrl(url);
     } catch (_) {}
+  });
+
+  // Chequeo de seguridad manual (boton "Verificar").
+  socket.on('safety-check-now', async (id) => {
+    const controller = controllers.get(id);
+    if (!controller) return;
+    if (!controller.browser) { controller.warn('🛡️ Abre el navegador (Abrir Página) para poder verificar.'); return; }
+    const check = await runSafetyCheck(controller).catch(() => null);
+    if (check) reportSafetyCheck(controller, check);
   });
 
 
