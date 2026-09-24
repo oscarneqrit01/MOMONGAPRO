@@ -4118,6 +4118,11 @@ emitActive() {
       this.setCycleStage('ready', 'Página lista.');
       this.emitState('ready');
       this.emitActive();
+      // Chequeo de seguridad AL ABRIR (para que verifique todo de una vez).
+      try {
+        const safety = await runSafetyCheck(this);
+        reportSafetyCheck(this, safety, { pauseOnFail: false });
+      } catch (_) {}
       return true;
     } catch (error) {
       this.log(`Error crítico: ${error.message}`);
