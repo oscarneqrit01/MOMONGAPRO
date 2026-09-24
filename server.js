@@ -163,6 +163,29 @@ function isValidDevice(name) {
     .concat(MODERN_ANDROID.map((d) => d.key))
     .includes(name);
 }
+
+// Cabeceras coherentes con el dispositivo (evita que el UA y los Client Hints se contradigan).
+function chHeadersFor(device, chromeMajor) {
+  const base = { 'Accept-Language': 'en-US,en;q=0.9' };
+  const major = String(chromeMajor || '140');
+  if (device && device.kind === 'android') {
+    return Object.assign(base, {
+      'Sec-CH-UA': `"Not?A_Brand";v="24", "Chromium";v="${major}", "Google Chrome";v="${major}"`,
+      'Sec-CH-UA-Mobile': '?1',
+      'Sec-CH-UA-Platform': '"Android"',
+      'Sec-CH-UA-Platform-Version': `"${device.androidVersion || '16.0.0'}"`,
+      'Sec-CH-UA-Model': `"${device.model}"`
+    });
+  }
+  // iPhone: Safari no manda Client Hints, pero Chrome si. Al menos que la plataforma concuerde.
+  return Object.assign(base, {
+    'Sec-CH-UA': `"Chromium";v="${major}", "Not?A_Brand";v="24"`,
+    'Sec-CH-UA-Mobile': '?1',
+    'Sec-CH-UA-Platform': '"iOS"',
+    'Sec-CH-UA-Platform-Version': '"18.0.0"'
+  });
+}
+
 const DEFAULT_SUPPORT_EMAIL = 'support@megapersonals.eu';
 const TWOCAPTCHA_BASE = (process.env.TWOCAPTCHA_BASE || 'https://2captcha.com').replace(/\/+$/, '');
 const twoCaptchaStats = { solves: 0, fails: 0, balance: null, lastBalanceAt: 0 };
@@ -3781,6 +3804,7 @@ emitActive() {
     const chromeMajor = (String(chromeVersion).match(/(\d+)/) || [])[1] || '140';
     const device = devicePreset(this.cfg.device, chromeMajor);
     this.log(`Dispositivo: ${device.kind === 'android' ? `${device.model} (Chrome ${chromeMajor})` : 'iPhone (Safari)'}`);
+    await page.setExtraHTTPHeaders(chHeadersFor(device, chromeMajor));
     await page.emulate({
       userAgent: device.userAgent,
       viewport: device.viewport
@@ -3789,7 +3813,7 @@ emitActive() {
     // Anti-deteccion: oculta automatizacion y enmascara la huella por perfil.
     const seed = String(this.id);
     const deviceKind = device.kind;
-    const stealthFn = (seedStr, kind, major, model, platformName, androidVersion, proxyIp) => {
+    const stealthFn = (seedStr, kind, major, model, platformName, androidVersion, proxyIp, screenW, screenH) => {
       let s = 2166136261 >>> 0;
       for (let i = 0; i < seedStr.length; i++) { s ^= seedStr.charCodeAt(i); s = Math.imul(s, 16777619) >>> 0; }
       for (let i = 0; i < 5; i++) s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
@@ -3797,6 +3821,33 @@ emitActive() {
       const pick = (arr) => arr[Math.floor(rand() * arr.length)];
 
       try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch (_) {}
+
+      // Pantalla coherente con el dispositivo
+      try {
+        const sc = window.screen;
+        const dims = { width: screenW, height: screenH, availWidth: screenW, availHeight: screenH, colorDepth: 24, pixelDepth: 24 };
+        for (const k of Object.keys(dims)) { try { Object.defineProperty(sc, k, { get: () => dims[k] }); } catch (_) {} }
+      } catch (_) {}
+
+      // Fuentes: limita la lista visible (canvas measureText)
+      try {
+        const ALLOWED = ['arial', 'helvetica', 'times new roman', 'courier new', 'georgia', 'verdana', 'tahoma', 'trebuchet ms', 'arial black', 'comic sans ms', 'impact', 'sans-serif', 'serif', 'monospace', 'system-ui', '-apple-system', 'roboto', 'noto sans', 'segoe ui', 'calibri'];
+        const origMeasure = CanvasRenderingContext2D.prototype.measureText;
+        CanvasRenderingContext2D.prototype.measureText = function (text) {
+          try {
+            const f = String(this.font || '');
+            if (f && !ALLOWED.some((a) => f.toLowerCase().includes(a))) {
+              const saved = this.font;
+              const mt = f.match(/^([\s\S]*?\d+(?:\.\d+)?(?:px|pt|em|rem|vw|vh|%))\b/);
+              this.font = mt ? `${mt[1]} sans-serif` : '16px sans-serif';
+              const r = origMeasure.call(this, text);
+              this.font = saved;
+              return r;
+            }
+          } catch (_) {}
+          return origMeasure.call(this, text);
+        };
+      } catch (_) {}
 
       // WebRTC: NO filtra la IP real y muestra la del proxy (como AdsPower).
       try {
@@ -3889,12 +3940,15 @@ emitActive() {
             { vendor: 'Google Inc. (ARM)', renderer: 'ANGLE (ARM, Mali-G77 MP11, OpenGL ES 3.2)' }
           ])
           : { vendor: 'Apple Inc.', renderer: 'Apple GPU' };
+        const GL_EXTRA = { 3379: 16384, 34024: 16384, 34930: 16, 35660: 16, 35661: 32, 36349: 1024, 36347: 1024 };
         const patchGL = (proto) => {
           if (!proto || !proto.getParameter) return;
           const orig = proto.getParameter;
           proto.getParameter = function (p) {
             if (p === 37445) return gpu.vendor;
             if (p === 37446) return gpu.renderer;
+            if (p === 3386) { try { return new Int32Array([16384, 16384]); } catch (_) { return orig.apply(this, arguments); } }
+            if (Object.prototype.hasOwnProperty.call(GL_EXTRA, p)) return GL_EXTRA[p];
             return orig.apply(this, arguments);
           };
         };
@@ -3928,7 +3982,7 @@ emitActive() {
         };
       } catch (_) {}
     };
-    await page.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp);
+    await page.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height);
 
     // Aplica el MISMO disfraz (emulacion + anti-deteccion) a CADA pestaña nueva
     // (browserleaks, pixelscan, apelacion, chequeo, etc.).
@@ -3936,7 +3990,7 @@ emitActive() {
       if (!p || p.__momongaApplied) return;
       p.__momongaApplied = true;
       try { await p.emulate({ userAgent: device.userAgent, viewport: device.viewport }); } catch (_) {}
-      try { await p.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' }); } catch (_) {}
+      try { await p.setExtraHTTPHeaders(chHeadersFor(device, chromeMajor)); } catch (_) {}
       try { await p.setGeolocation({ latitude, longitude, accuracy: 100 }); } catch (_) {}
       try { await p.setBypassCSP(true); } catch (_) {}
       if (proxy && proxy.host && proxy.type !== 'socks5' && proxy.username !== undefined && proxy.password !== undefined) {
@@ -3947,7 +4001,7 @@ emitActive() {
         await cdp.send('Emulation.setTimezoneOverride', { timezoneId: timezone });
         await cdp.send('Emulation.setLocaleOverride', { locale: 'en-US' });
       } catch (_) {}
-      try { await p.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp); } catch (_) {}
+      try { await p.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height); } catch (_) {}
     };
     browser.on('targetcreated', async (target) => {
       try {
