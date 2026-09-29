@@ -730,6 +730,19 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
     else if (action === 'resume' || action === 'reanudar') controller.resume();
     else if (action === 'stop' || action === 'detener') controller.stop();
     else if (action === 'publish' || action === 'publicar') {
+      const force = req.query.force === '1' || (req.body && req.body.force === true);
+      const minMin = Math.max(1, Number(controller.cfg.bumpMinMinutes || controller.cfg.intervalMinutes || 16));
+      const minMs = minMin * 60 * 1000;
+      const last = (controller.stats && controller.stats.lastBumpAt) || 0;
+      const resta = last ? (minMs - (Date.now() - last)) : 0;
+      if (!force && last && resta > 0) {
+        return res.status(429).json({
+          ok: false,
+          error: `Todavía no toca bump: faltan ${Math.ceil(resta / 60000)} min (intervalo ${minMin} min).`,
+          waitMin: Math.ceil(resta / 60000),
+          profile: controlProfileState(controller)
+        });
+      }
       if (!controller.started) { try { await controller.start(); } catch (_) {} }
       controller.publishNow();
     }
