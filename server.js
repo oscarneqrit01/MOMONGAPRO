@@ -3695,6 +3695,35 @@ async function editExistingPost(page, controller, options = {}) {
     } catch (e) { controller.log(`⚠️ Subida de fotos falló: ${e.message}`); }
   };
 
+  // En EDICION: quita las fotos previas del editor (mejor esfuerzo) y sube las nuevas.
+  const replacePhotosInEdit = async () => {
+    if (!details.photosPath) return;
+    const photosDir = path.resolve(__dirname, details.photosPath);
+    if (!fs.existsSync(photosDir)) return;
+    const photos = fs.readdirSync(photosDir).filter((n) => /\.(jpg|jpeg|png|webp)$/i.test(n)).map((n) => path.join(photosDir, n));
+    if (!photos.length) return;
+    try {
+      const removed = await page.evaluate(() => {
+        let n = 0;
+        const els = Array.from(document.querySelectorAll('a, button, span, i, div'));
+        for (const el of els) {
+          if (el.offsetParent === null) continue;
+          const txt = (el.innerText || el.getAttribute('title') || el.getAttribute('aria-label') || '').trim();
+          const cls = (el.className || '').toString();
+          const looksDelete = /^(x|×|✕|✖|delete|remove|borrar)$/i.test(txt)
+            || /(delete|remove|borrar)[-_]?(photo|foto|image)/i.test(cls)
+            || /(delete|remove)(photo|foto|image)/i.test(el.id || '');
+          if (!looksDelete) continue;
+          const wrap = el.closest('div, li, td');
+          if (wrap && wrap.querySelector('img')) { try { el.click(); n++; } catch (_) {} }
+        }
+        return n;
+      });
+      if (removed) { controller.log(`🧹 ${removed} foto(s) previas quitadas del editor.`); await humanPause(800, 1800); }
+    } catch (_) {}
+    await uploadPhotos();
+  };
+
   const saveAndConfirm = async () => {
     controller.setCycleStage('publishing', 'Guardando anuncio.');
     await humanPause(1500, 3200);
@@ -3766,8 +3795,12 @@ async function editExistingPost(page, controller, options = {}) {
 
     controller.setCycleStage('filling', modo === 'edit' ? 'Editando datos del anuncio.' : 'Creando anuncio (no había post).');
     const okCity = await fillForm();
-    if (modo === 'create') await uploadPhotos();
     if (!okCity) return false;
+    if (modo === 'create') {
+      await uploadPhotos();
+    } else {
+      await replacePhotosInEdit();
+    }
 
     if (!(await waitForManualCaptcha(page, controller))) return false;
 
@@ -5648,74 +5681,94 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
   }
 });
 
+// Lee el anuncio actual del perfil, limpia metadatos de las fotos y actualiza adDetails.
+async function scrapeAndSaveAd(controller) {
+  try { fs.writeFileSync(path.join(LOGS_DIR, `dump-${controller.id}.html`), await controller.page.content(), 'utf8'); } catch (_) {}
+
+  let data = await scrapeActiveAdData(controller.page);
+  if (!data.city && !data.text) {
+    const textData = await scrapeActiveAdFromText(controller.page);
+    data = {
+      ...data,
+      phone: data.phone || textData.phone,
+      age: data.age || textData.age,
+      city: data.city || textData.city,
+      location: data.location || textData.location,
+      headline: data.headline || textData.headline
+    };
+  }
+  controller.log(`📥 Leído de la página actual -> ciudad: "${data.city}", edad: "${data.age}", texto: ${data.text ? data.text.length + ' caracteres' : 'vacío'}`);
+
+  const photoUrls = (data.city || data.text) ? await scrapeActiveAdPhotos(controller.page) : [];
+  let photosPath = '';
+  let photosSaved = 0;
+  if (photoUrls.length > 0) {
+    const targetDir = path.join(__dirname, 'profiles', controller.id, 'photos');
+    const dispatcher = buildProxyDispatcher(controller.cfg.proxy);
+    controller.log(`🖼️ Descargando y limpiando ${photoUrls.length} foto(s)${dispatcher ? ' vía proxy' : ''}...`);
+    try {
+      if (fs.existsSync(targetDir)) {
+        for (const name of fs.readdirSync(targetDir)) {
+          try { fs.unlinkSync(path.join(targetDir, name)); } catch (_) {}
+        }
+      }
+      for (const url of photoUrls) {
+        const saved = await downloadAndSanitizePhoto(url, targetDir, controller.id, dispatcher);
+        if (saved) photosSaved++;
+      }
+    } finally {
+      if (dispatcher) await dispatcher.close().catch(() => {});
+    }
+    if (photosSaved > 0) {
+      photosPath = `profiles/${controller.id}/photos`;
+      controller.log(`🛡️ ${photosSaved} foto(s) blindada(s) en ${photosPath}.`);
+    }
+  }
+
+  const config = loadConfig();
+  const profile = config.find((x) => x.id === controller.id);
+  if (profile) {
+    const d = profile.adDetails || {};
+    profile.adDetails = {
+      name: data.name || d.name || '', headline: data.headline || d.headline || '', city: data.city || d.city || '',
+      age: data.age || d.age || '', location: data.location || d.location || '', phone: data.phone || d.phone || '',
+      text: data.text || d.text || '', textVariants: d.textVariants || [], headlineVariants: d.headlineVariants || [],
+      photosPath: photosPath || d.photosPath || ''
+    };
+    controller.cfg.adDetails = profile.adDetails;
+    saveConfig(config);
+  }
+  return { ...data, photosPath, photosSaved };
+}
+
 app.post('/api/profiles/:id/scrape', async (req, res) => {
   const controller = controllers.get(req.params.id);
   if (!controller || !controller.page) {
     return res.status(400).json({ success: false, error: 'Inicia el navegador de ese perfil para copiar sus datos.' });
   }
-
   try {
-    try {
-      fs.writeFileSync(path.join(LOGS_DIR, `dump-${controller.id}.html`), await controller.page.content(), 'utf8');
-    } catch (_) {}
-
-    let data = await scrapeActiveAdData(controller.page);
-
-    if (!data.city && !data.text) {
-      const textData = await scrapeActiveAdFromText(controller.page);
-      data = {
-        ...data,
-        phone: data.phone || textData.phone,
-        age: data.age || textData.age,
-        city: data.city || textData.city,
-        location: data.location || textData.location,
-        headline: data.headline || textData.headline
-      };
-    }
-
-    controller.log(`📥 Leído de la página actual -> ciudad: "${data.city}", edad: "${data.age}", texto: ${data.text ? data.text.length + ' caracteres' : 'vacío'}`);
-
-    if (!data.city && !data.text) {
-      const fields = await controller.page.evaluate(() => Array.from(document.querySelectorAll('input, select, textarea'))
-        .filter((el) => el.type !== 'password')
-        .map((el) => ({ tag: el.tagName.toLowerCase(), type: el.type, name: el.name, id: el.id })));
-      controller.log('🔎 Campos disponibles: ' + JSON.stringify(fields));
-      controller.log('⚠️ No se encontraron campos de ciudad/texto. Abre el formulario del anuncio (Editar) o la página del anuncio en la ventana del perfil y vuelve a intentar.');
-    }
-
-    const photoUrls = (data.city || data.text) ? await scrapeActiveAdPhotos(controller.page) : [];
-    let photosPath = '';
-    let photosSaved = 0;
-
-    if (photoUrls.length > 0) {
-      const targetDir = path.join(__dirname, 'profiles', controller.id, 'photos');
-      const dispatcher = buildProxyDispatcher(controller.cfg.proxy);
-      controller.log(`🖼️ Descargando y limpiando ${photoUrls.length} foto(s)${dispatcher ? ' vía proxy' : ''}...`);
-      try {
-        // Reemplazar: borrar las fotos anteriores para dejar SOLO las del anuncio actual
-        if (fs.existsSync(targetDir)) {
-          for (const name of fs.readdirSync(targetDir)) {
-            try { fs.unlinkSync(path.join(targetDir, name)); } catch (_) {}
-          }
-        }
-        for (const url of photoUrls) {
-          const saved = await downloadAndSanitizePhoto(url, targetDir, controller.id, dispatcher);
-          if (saved) photosSaved++;
-        }
-      } finally {
-        if (dispatcher) await dispatcher.close().catch(() => {});
-      }
-      if (photosSaved > 0) {
-        photosPath = `profiles/${controller.id}/photos`;
-        controller.log(`🛡️ ${photosSaved} foto(s) blindada(s) en ${photosPath}.`);
-      }
-    }
-
-    res.json({ success: true, data: { ...data, photosPath, photosSaved } });
+    res.json({ success: true, data: await scrapeAndSaveAd(controller) });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// Version para el SaaS: abre el perfil si hace falta, va a Manage Posts y copia datos + fotos (sin EXIF).
+app.post('/api/control/profiles/:id/import', requireControlKey, async (req, res) => {
+  try {
+    const controller = controllers.get(req.params.id);
+    if (!controller) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
+    if (!controller.page) { await controller.open().catch(() => {}); }
+    if (!controller.page) return res.status(400).json({ ok: false, error: 'No se pudo abrir el navegador del perfil (revisa el proxy).' });
+    await controller.page.goto(siteUrls(controller).manage, { waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {});
+    await sleep(1500);
+    const data = await scrapeAndSaveAd(controller);
+    res.json({ ok: true, data });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 
 // Borra las carpetas de un perfil (Chrome + fotos), con proteccion anti path-traversal.
 function removeProfileFolders(id) {
