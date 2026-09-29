@@ -747,6 +747,23 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
       controller.publishNow();
     }
     else if (action === 'repost' || action === 'republicar' || action === 'edit-existing' || action === 'editar-post') {
+      const force = req.query.force === '1' || (req.body && req.body.force === true);
+      const minMin = Math.max(1, Number(controller.cfg.bumpMinMinutes || controller.cfg.intervalMinutes || 16));
+      const minMs = minMin * 60 * 1000;
+      const last = (controller.stats && controller.stats.lastBumpAt) || 0;
+      const resta = last ? (minMs - (Date.now() - last)) : 0;
+      if (!force && last && resta > 0) {
+        // Editar tambien "sube" el anuncio: si aun no toca, se aplica en la proxima publicacion.
+        controller._pendingEdit = true;
+        return res.json({
+          ok: true,
+          deferred: true,
+          waitMin: Math.ceil(resta / 60000),
+          mensaje: `Los cambios se guardaron y se aplicaran en la proxima publicacion (en ~${Math.ceil(resta / 60000)} min).`,
+          profile: controlProfileState(controller)
+        });
+      }
+      controller._pendingEdit = false;
       (async () => {
         try {
           if (!controller.page) await controller.open();
@@ -5329,7 +5346,11 @@ emitActive() {
       return;
     }
 
-    if (this.settings.rotateAds) {
+    if (this._pendingEdit) {
+      this._pendingEdit = false;
+      this.log('✏️ Aplicando cambios pendientes del anuncio (edicion diferida)...');
+      await editExistingPost(this.page, this);
+    } else if (this.settings.rotateAds) {
       await bumpAllAdsOneByOne(this.page, this);
     } else {
       await performBump(this.page, this);
