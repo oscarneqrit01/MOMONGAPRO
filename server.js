@@ -3710,8 +3710,7 @@ async function editExistingPost(page, controller, options = {}) {
           if (el.offsetParent === null) continue;
           const txt = (el.innerText || el.getAttribute('title') || el.getAttribute('aria-label') || '').trim();
           const cls = (el.className || '').toString();
-          const looksDelete = /^(x|×|✕|✖|delete|remove|borrar)$/i.test(txt)
-            || /(delete|remove|borrar)[-_]?(photo|foto|image)/i.test(cls)
+          const looksDelete = /(delete|remove|borrar)[-_]?(photo|foto|image)/i.test(cls)
             || /(delete|remove)(photo|foto|image)/i.test(el.id || '');
           if (!looksDelete) continue;
           const wrap = el.closest('div, li, td');
@@ -3743,10 +3742,13 @@ async function editExistingPost(page, controller, options = {}) {
     const deadline = Date.now() + 60000;
     while (Date.now() < deadline) {
       const href = await page.evaluate(() => window.location.href).catch(() => '');
-      if (href.includes('success_publish') || /\/users\/posts\/list/.test(href)) return true;
+      if (href.includes('success_publish') || /\/users\/posts(\/list)?\/?$/.test(href)) return true;
       if (page.url().includes('pendingImages')) await clickPendingImagesOk(page).catch(() => {});
       await confirmTokenPopup(page).catch(() => {});
       if (await detectCaptchaRejected(page)) { await reloadImageCaptcha(page).catch(() => {}); await waitForManualCaptcha(page, controller).catch(() => {}); }
+      if (await detectFormValidationError(page)) { controller.log('⚠️ El sitio rechazo el guardado (validacion de categorias/telefono).'); return false; }
+      const formGone = await page.evaluate(() => !document.getElementById('headline') && !document.getElementById('body') && !document.querySelector('input[name="headline"], textarea[name="body"]')).catch(() => false);
+      if (formGone) return true;
       await sleep(1500);
     }
     return false;
