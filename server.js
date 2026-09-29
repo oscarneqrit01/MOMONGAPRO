@@ -3833,12 +3833,13 @@ async function editExistingPost(page, controller, options = {}) {
     controller.setCycleStage('filling', modo === 'edit' ? 'Editando datos del anuncio.' : 'Creando anuncio (no había post).');
     const okCity = await fillForm();
     if (!okCity) return false;
+    // Paso 1 -> Paso 2 (fotos + captcha). Igual que el flujo de crear/remover.
+    if (!(await clickNextStep(page, controller))) return false;
     if (modo === 'create') {
       await uploadPhotos();
     } else {
       await replacePhotosInEdit();
     }
-
     if (!(await waitForManualCaptcha(page, controller))) return false;
 
     const confirmed = await saveAndConfirm();
