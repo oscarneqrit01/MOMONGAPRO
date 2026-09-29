@@ -12,6 +12,9 @@ notifications.json
 .secrets-key
 .machine-id
 .control-key
+
+# SaaS de renta (proyecto aparte)
+renta/
 backups/
 test/.tmp/
 .env

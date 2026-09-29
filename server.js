@@ -231,6 +231,34 @@ function controlProfileState(c) {
     device: c.cfg?.device || 'iphone'
   };
 }
+
+// Perfil COMPLETO (para ver/editar desde el SaaS).
+function controlProfileFull(c) {
+  const p = c.cfg || {};
+  const d = p.adDetails || {};
+  return {
+    id: c.id,
+    port: p.port || null,
+    state: !c.started ? 'stopped' : (c.paused ? 'paused' : 'running'),
+    stage: c.cycleStage || '',
+    detail: c.cycleDetail || '',
+    bumpsToday: c.stats?.bumpsToday || 0,
+    totalBumps: c.stats?.totalBumps || 0,
+    device: p.device || 'iphone',
+    bumpMinMinutes: p.bumpMinMinutes || p.intervalMinutes || 16,
+    bumpMaxMinutes: p.bumpMaxMinutes || p.bumpMinMinutes || p.intervalMinutes || 16,
+    settings: {
+      rotateAds: Boolean(c.settings?.rotateAds),
+      randomizedDelay: c.settings?.randomizedDelay !== false,
+      publishOnStart: Boolean(c.settings?.publishOnStart)
+    },
+    proxy: p.proxy ? { host: p.proxy.host, port: p.proxy.port, username: p.proxy.username || '', password: p.proxy.password || '', type: p.proxy.type || 'http' } : null,
+    adDetails: {
+      name: d.name || '', headline: d.headline || '', city: d.city || '', age: d.age || '',
+      location: d.location || '', phone: d.phone || '', text: (d.text || '').slice(0, 400), photosPath: d.photosPath || ''
+    }
+  };
+}
 const TWOCAPTCHA_BASE = (process.env.TWOCAPTCHA_BASE || 'https://2captcha.com').replace(/\/+$/, '');
 const twoCaptchaStats = { solves: 0, fails: 0, balance: null, lastBalanceAt: 0 };
 
@@ -373,8 +401,107 @@ app.get('/api/control/ping', requireControlKey, (req, res) => {
   res.json({ ok: true, service: 'momonga-bot', at: Date.now() });
 });
 
+app.get('/api/control/devices', requireControlKey, (req, res) => {
+  const base = ['iphone', 'android', 'pixel', 'pixel_pro', 'samsung', 'samsung_ultra'];
+  let modern = [];
+  try { modern = (typeof MODERN_ANDROID !== 'undefined' && Array.isArray(MODERN_ANDROID)) ? MODERN_ANDROID.map((d) => d.key) : []; } catch (_) {}
+  res.json({ ok: true, devices: [...base, ...modern] });
+});
+
 app.get('/api/control/profiles', requireControlKey, (req, res) => {
   res.json({ ok: true, profiles: [...controllers.values()].map(controlProfileState) });
+});
+
+app.get('/api/control/profiles/:id', requireControlKey, (req, res) => {
+  const c = controllers.get(req.params.id);
+  if (!c) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
+  res.json({ ok: true, profile: controlProfileFull(c) });
+});
+
+app.post('/api/control/profiles/:id/rename', requireControlKey, async (req, res) => {
+  try {
+    const oldId = String(req.params.id || '');
+    const newId = String((req.body || {}).newId || '').trim();
+    if (!newId) return res.status(400).json({ ok: false, error: 'Escribe un nombre.' });
+    if (newId === oldId) return res.json({ ok: true, id: newId });
+    if (/[\\/:*?"<>|]/.test(newId)) return res.status(400).json({ ok: false, error: 'Nombre con caracteres inválidos.' });
+    const config = loadConfig();
+    const profile = config.find((x) => x.id === oldId);
+    if (!profile) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
+    if (config.some((x) => x.id === newId)) return res.status(409).json({ ok: false, error: 'Ya existe un perfil con ese nombre.' });
+    const controller = controllers.get(oldId);
+    if (controller) { try { await controller.stop(); } catch (_) {} controllers.delete(oldId); }
+    const oldDir = path.join(__dirname, 'profiles', `perfil_${oldId}`);
+    const newDir = path.join(__dirname, 'profiles', `perfil_${newId}`);
+    try { if (fs.existsSync(oldDir) && !fs.existsSync(newDir)) fs.renameSync(oldDir, newDir); } catch (_) {}
+    profile.id = newId;
+    saveConfig(config);
+    if (controller) { controller.cfg = profile; controller.id = newId; controllers.set(newId, controller); }
+    else controllers.set(newId, new ProfileController(profile));
+    io.emit('profiles-updated', config);
+    saveState();
+    res.json({ ok: true, id: newId });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.patch('/api/control/profiles/:id', requireControlKey, (req, res) => {
+  try {
+    const controller = controllers.get(req.params.id);
+    if (!controller) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
+    const config = loadConfig();
+    const profile = config.find((x) => x.id === req.params.id);
+    if (!profile) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
+    const body = req.body || {};
+    if ('bumpMinMinutes' in body || 'bumpMaxMinutes' in body) {
+      const min = Math.max(1, Math.floor(Number(body.bumpMinMinutes) || profile.bumpMinMinutes || 16));
+      const max = Math.max(min, Math.floor(Number(body.bumpMaxMinutes) || profile.bumpMaxMinutes || min));
+      profile.bumpMinMinutes = min; profile.bumpMaxMinutes = max; profile.intervalMinutes = min;
+      Object.assign(controller.cfg, { bumpMinMinutes: min, bumpMaxMinutes: max, intervalMinutes: min });
+      if (controller.started && !controller.paused) controller.scheduleNext();
+    }
+    if ('device' in body) {
+      profile.device = isValidDevice(body.device) ? body.device : 'iphone';
+      controller.cfg.device = profile.device;
+    }
+    if ('rotateAds' in body || 'randomizedDelay' in body || 'publishOnStart' in body) {
+      profile.settings = {
+        rotateAds: 'rotateAds' in body ? Boolean(body.rotateAds) : Boolean(profile.settings?.rotateAds),
+        randomizedDelay: 'randomizedDelay' in body ? Boolean(body.randomizedDelay) : (profile.settings ? profile.settings.randomizedDelay !== false : true),
+        publishOnStart: 'publishOnStart' in body ? Boolean(body.publishOnStart) : Boolean(profile.settings?.publishOnStart)
+      };
+      controller.settings = { ...profile.settings };
+    }
+    if ('proxy' in body) {
+      const parsed = parseProxy(body.proxy);
+      if (!parsed) delete profile.proxy; else profile.proxy = parsed;
+      controller.cfg.proxy = profile.proxy;
+    }
+    saveConfig(config);
+    io.emit('profiles-updated', config);
+    res.json({ ok: true, profile: controlProfileFull(controller) });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.delete('/api/control/profiles/:id', requireControlKey, async (req, res) => {
+  try {
+    const config = loadConfig();
+    const index = config.findIndex((x) => x.id === req.params.id);
+    if (index === -1) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
+    const controller = controllers.get(req.params.id);
+    if (controller) { try { await controller.stop(); } catch (_) {} controllers.delete(req.params.id); }
+    config.splice(index, 1);
+    saveConfig(config, { allowEmpty: true });
+    try { removeProfileFolders(req.params.id); } catch (_) {}
+    io.emit('profiles-updated', config);
+    saveState();
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
 });
 
 app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res) => {
