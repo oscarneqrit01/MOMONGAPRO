@@ -191,15 +191,19 @@ const DEFAULT_SUPPORT_EMAIL = 'support@megapersonals.eu';
 
 // Sal por MAQUINA: hace que cada PC genere huellas distintas aunque copien el config.
 // Combina el nombre de la maquina + un id aleatorio persistente (por instalacion).
+// Si el archivo .machine-id ya contiene un "salt completo" (con "|") o se define la
+// variable MACHINE_SALT, se usa tal cual -> la huella es PORTABLE entre PCs.
 const MACHINE_ID_PATH = path.join(__dirname, '.machine-id');
 const MACHINE_SALT = (() => {
-  let id = '';
-  try { if (fs.existsSync(MACHINE_ID_PATH)) id = fs.readFileSync(MACHINE_ID_PATH, 'utf8').trim(); } catch (_) {}
-  if (!id) {
-    id = crypto.randomBytes(8).toString('hex');
-    try { fs.writeFileSync(MACHINE_ID_PATH, id, 'utf8'); } catch (_) {}
-  }
-  return `${os.hostname()}|${id}`;
+  if (process.env.MACHINE_SALT && process.env.MACHINE_SALT.includes('|')) return process.env.MACHINE_SALT;
+  let raw = '';
+  try { if (fs.existsSync(MACHINE_ID_PATH)) raw = fs.readFileSync(MACHINE_ID_PATH, 'utf8').trim(); } catch (_) {}
+  if (raw && raw.includes('|')) return raw;
+  let id = raw;
+  if (!id) id = crypto.randomBytes(8).toString('hex');
+  const salt = `${os.hostname()}|${id}`;
+  try { fs.writeFileSync(MACHINE_ID_PATH, salt, 'utf8'); } catch (_) {}
+  return salt;
 })();
 
 // --- API de control (maquina-a-maquina para el SaaS de renta) ---
@@ -228,7 +232,10 @@ function controlProfileState(c) {
     bumpsToday: c.stats?.bumpsToday || 0,
     totalBumps: c.stats?.totalBumps || 0,
     proxy: c.cfg?.proxy ? `${c.cfg.proxy.host}:${c.cfg.proxy.port}` : '',
-    device: c.cfg?.device || 'iphone'
+    device: c.cfg?.device || 'iphone',
+    lastBumpAt: c.stats?.lastBumpAt || 0,
+    nextBumpAt: c._nextBumpAt || 0,
+    lastError: c.lastError || null
   };
 }
 
@@ -245,13 +252,18 @@ function controlProfileFull(c) {
     bumpsToday: c.stats?.bumpsToday || 0,
     totalBumps: c.stats?.totalBumps || 0,
     device: p.device || 'iphone',
+    nextBumpAt: c._nextBumpAt || 0,
+    lastBumpAt: c.stats?.lastBumpAt || 0,
+    lastError: c.lastError || null,
     bumpMinMinutes: p.bumpMinMinutes || p.intervalMinutes || 16,
     bumpMaxMinutes: p.bumpMaxMinutes || p.bumpMinMinutes || p.intervalMinutes || 16,
+    apiKey2Captcha: p.apiKey2Captcha || '',
     settings: {
       rotateAds: Boolean(c.settings?.rotateAds),
       randomizedDelay: c.settings?.randomizedDelay !== false,
       publishOnStart: Boolean(c.settings?.publishOnStart)
     },
+    schedule: p.schedule ? { enabled: Boolean(p.schedule.enabled), from: p.schedule.from || '08:00', to: p.schedule.to || '04:00', autoStart: p.schedule.autoStart !== false } : { enabled: false, from: '08:00', to: '04:00', autoStart: true },
     proxy: p.proxy ? { host: p.proxy.host, port: p.proxy.port, username: p.proxy.username || '', password: p.proxy.password || '', type: p.proxy.type || 'http' } : null,
     adDetails: {
       name: d.name || '', headline: d.headline || '', city: d.city || '', age: d.age || '',
@@ -373,8 +385,8 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: false, limit: '50mb' }));
 
 app.get('/login', (req, res) => {
   res.type('html').send(LOGIN_PAGE);
@@ -451,6 +463,7 @@ app.post('/api/control/profiles', requireControlKey, (req, res) => {
         publishOnStart: Boolean(body.publishOnStart)
       },
       adDetails: { name: '', headline: '', city: '', age: '', location: '', phone: '', text: '', textVariants: [], headlineVariants: [], photosPath: '' },
+      apiKey2Captcha: String(body.apiKey2Captcha || '').trim(),
       limits: { dailyLimit: 0, conservativeMode: false }
     };
     if (body.proxy && body.proxy.host) {
@@ -519,6 +532,10 @@ app.patch('/api/control/profiles/:id', requireControlKey, (req, res) => {
       profile.device = isValidDevice(body.device) ? body.device : 'iphone';
       controller.cfg.device = profile.device;
     }
+    if ('apiKey2Captcha' in body) {
+      profile.apiKey2Captcha = String(body.apiKey2Captcha || '').trim();
+      controller.cfg.apiKey2Captcha = profile.apiKey2Captcha;
+    }
     if ('rotateAds' in body || 'randomizedDelay' in body || 'publishOnStart' in body) {
       profile.settings = {
         rotateAds: 'rotateAds' in body ? Boolean(body.rotateAds) : Boolean(profile.settings?.rotateAds),
@@ -526,6 +543,15 @@ app.patch('/api/control/profiles/:id', requireControlKey, (req, res) => {
         publishOnStart: 'publishOnStart' in body ? Boolean(body.publishOnStart) : Boolean(profile.settings?.publishOnStart)
       };
       controller.settings = { ...profile.settings };
+    }
+    if (body.schedule && typeof body.schedule === 'object') {
+      profile.schedule = {
+        enabled: Boolean(body.schedule.enabled),
+        from: String(body.schedule.from || '08:00'),
+        to: String(body.schedule.to || '04:00'),
+        autoStart: body.schedule.autoStart !== false
+      };
+      controller.cfg.schedule = profile.schedule;
     }
     if ('proxy' in body) {
       const parsed = parseProxy(body.proxy);
@@ -558,6 +584,124 @@ app.patch('/api/control/profiles/:id', requireControlKey, (req, res) => {
   }
 });
 
+// Devuelve las fotos actuales del perfil (base64) para verlas/editar en el SaaS.
+app.get('/api/control/profiles/:id/photos', requireControlKey, (req, res) => {
+  try {
+    const dir = path.join(__dirname, 'profiles', req.params.id, 'photos');
+    let fotos = [];
+    if (fs.existsSync(dir)) {
+      const files = fs.readdirSync(dir).filter((n) => /\.(jpg|jpeg|png|webp)$/i.test(n)).sort();
+      fotos = files.map((n) => {
+        const buf = fs.readFileSync(path.join(dir, n));
+        const ext = n.split('.').pop().toLowerCase();
+        const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+        return `data:${mime};base64,${buf.toString('base64')}`;
+      });
+    }
+    res.json({ ok: true, fotos });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Recibe las fotos del anuncio (base64/dataURL) desde el SaaS y las guarda en
+// profiles/<id>/photos, dejando el adDetails.photosPath listo para el proximo repost.
+app.post('/api/control/profiles/:id/photos', requireControlKey, (req, res) => {
+  try {
+    const id = req.params.id;
+    const controller = controllers.get(id);
+    const config = loadConfig();
+    const profile = config.find((x) => x.id === id);
+    if (!controller || !profile) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
+
+    const fotos = Array.isArray(req.body && req.body.fotos) ? req.body.fotos.filter(Boolean).slice(0, 12) : [];
+    const targetDir = path.join(__dirname, 'profiles', id, 'photos');
+    fs.mkdirSync(targetDir, { recursive: true });
+    for (const name of fs.readdirSync(targetDir)) {
+      try { fs.unlinkSync(path.join(targetDir, name)); } catch (_) {}
+    }
+
+    let saved = 0;
+    fotos.forEach((dataUrl, i) => {
+      const raw = String(dataUrl || '');
+      const m = raw.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s);
+      let buffer = null;
+      if (m) buffer = Buffer.from(m[2], 'base64');
+      else if (!raw.startsWith('data:') && raw.length > 100) buffer = Buffer.from(raw, 'base64');
+      if (!buffer || !buffer.length) return;
+      const ext = m && /png/i.test(m[1]) ? 'png' : (m && /webp/i.test(m[1]) ? 'webp' : 'jpg');
+      fs.writeFileSync(path.join(targetDir, `photo-${i + 1}.${ext}`), buffer);
+      saved++;
+    });
+
+    const photosPath = saved > 0 ? `profiles/${id}/photos` : '';
+    if (!profile.adDetails) profile.adDetails = {};
+    profile.adDetails.photosPath = photosPath;
+    if (controller.cfg.adDetails) controller.cfg.adDetails.photosPath = photosPath;
+    saveConfig(config);
+    controller.log(`🖼️ ${saved} foto(s) recibidas del SaaS -> ${photosPath || '(vacío)'}`);
+    res.json({ ok: true, photosPath, saved });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Notificaciones (Telegram/Discord) para avisar errores al móvil, editables desde el SaaS.
+app.get('/api/control/notify', requireControlKey, (req, res) => {
+  const cfg = loadNotifyConfig();
+  res.json({ ok: true, notify: { telegramToken: cfg.telegramToken || '', telegramChatId: cfg.telegramChatId || '', discordWebhook: cfg.discordWebhook || '' } });
+});
+
+app.patch('/api/control/notify', requireControlKey, (req, res) => {
+  try {
+    const cfg = {
+      telegramToken: String(req.body?.telegramToken || '').trim(),
+      telegramChatId: String(req.body?.telegramChatId || '').trim(),
+      discordWebhook: String(req.body?.discordWebhook || '').trim()
+    };
+    saveNotifyConfig(cfg);
+    res.json({ ok: true, notify: cfg });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/control/notify/test', requireControlKey, async (req, res) => {
+  try {
+    const actual = loadNotifyConfig();
+    const cfg = {
+      telegramToken: String(req.body?.telegramToken || actual.telegramToken || '').trim(),
+      telegramChatId: String(req.body?.telegramChatId || actual.telegramChatId || '').trim(),
+      discordWebhook: String(req.body?.discordWebhook || actual.discordWebhook || '').trim()
+    };
+    if (cfg.telegramToken || cfg.discordWebhook) saveNotifyConfig(cfg);
+    if (!cfg.telegramToken && !cfg.discordWebhook) return res.status(400).json({ ok: false, error: 'Falta el token y el chat ID de Telegram.' });
+    await notify('✅ Prueba de notificación. ¡Funciona!');
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Accion (start/pause/resume/stop) sobre TODOS los perfiles a la vez.
+app.post('/api/control/all/:action', requireControlKey, async (req, res) => {
+  const action = String(req.params.action || '').toLowerCase();
+  const results = [];
+  for (const c of controllers.values()) {
+    try {
+      if (action === 'start' || action === 'iniciar') await c.start();
+      else if (action === 'resume' || action === 'reanudar') c.resume();
+      else if (action === 'pause' || action === 'pausar') c.pause();
+      else if (action === 'stop' || action === 'detener') await c.stop();
+      else return res.status(400).json({ ok: false, error: `Acción desconocida: ${action}` });
+      results.push({ id: c.id, ok: true });
+    } catch (e) {
+      results.push({ id: c.id, ok: false, error: e.message });
+    }
+  }
+  res.json({ ok: true, action, total: results.length, results });
+});
+
 app.delete('/api/control/profiles/:id', requireControlKey, async (req, res) => {
   try {
     const config = loadConfig();
@@ -585,7 +729,22 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
     else if (action === 'pause' || action === 'pausar') controller.pause();
     else if (action === 'resume' || action === 'reanudar') controller.resume();
     else if (action === 'stop' || action === 'detener') controller.stop();
-    else if (action === 'publish' || action === 'publicar') controller.publishNow();
+    else if (action === 'publish' || action === 'publicar') {
+      if (!controller.started) { try { await controller.start(); } catch (_) {} }
+      controller.publishNow();
+    }
+    else if (action === 'repost' || action === 'republicar' || action === 'edit-existing' || action === 'editar-post') {
+      (async () => {
+        try {
+          if (!controller.page) await controller.open();
+          if (controller.page) {
+            controller._operationPromise = editExistingPost(controller.page, controller);
+            await controller._operationPromise.catch(() => {});
+            controller._operationPromise = null;
+          }
+        } catch (e) { controller.log(`⚠️ Editar post falló: ${e.message}`); }
+      })();
+    }
     else if (action === 'open' || action === 'abrir') controller.open();
     else if (action === 'verify' || action === 'verificar') {
       const check = await runSafetyCheck(controller).catch(() => null);
@@ -1361,6 +1520,22 @@ function hhmmss(ms) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Pausa "humana": tiempo aleatorio para no parecer un bot (evita bloqueos por automatizacion).
+async function humanPause(min = 500, max = 1600) {
+  const ms = min + Math.random() * Math.max(0, max - min);
+  return sleep(Math.round(ms));
+}
+
+// ¿Estamos dentro del horario de trabajo? (from/to en "HH:MM"; soporta cruzar medianoche)
+function dentroHorario(from, to, d = new Date()) {
+  const toMin = (t) => { const m = String(t || '').match(/^(\d{1,2}):(\d{2})$/); return m ? (+m[1]) * 60 + (+m[2]) : null; };
+  const a = toMin(from);
+  const b = toMin(to);
+  if (a == null || b == null || a === b) return true;
+  const now = d.getHours() * 60 + d.getMinutes();
+  return a < b ? (now >= a && now < b) : (now >= a || now < b);
 }
 
 function killChromeForProfileDir(profileDir) {
@@ -2773,9 +2948,20 @@ async function fillPhone(page, value) {
     };
 
     const direct = document.querySelector(
-      'input[type="tel"], input[name*="phone" i], input[id*="phone" i], input[autocomplete="tel"]'
+      'input[type="tel"], input[name*="phone" i], input[id*="phone" i], input[autocomplete="tel"], input[name*="cell" i], input[id*="cell" i], input[name*="mobile" i], input[id*="mobile" i]'
     );
     if (setVal(direct)) return true;
+
+    // Si hay un selector de país (+1) junto a un input, ese input es el teléfono.
+    const countrySelects = Array.from(document.querySelectorAll('select')).filter((s) =>
+      Array.from(s.options).some((o) => /\+1\b/.test(o.textContent || ''))
+    );
+    for (const s of countrySelects) {
+      const wrap = s.parentElement;
+      if (!wrap) continue;
+      const input = Array.from(wrap.querySelectorAll('input:not([type="hidden"])')).find((i) => i.type !== 'checkbox' && i.type !== 'radio');
+      if (setVal(input)) return true;
+    }
 
     const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
     const labels = Array.from(document.querySelectorAll('label, b, strong, span, td, th, p, div'));
@@ -2788,6 +2974,93 @@ async function fillPhone(page, value) {
     }
     return false;
   }, value);
+}
+
+// Selecciona las categorías obligatorias "I AM" / "I SEE" (si no, el sitio rechaza el anuncio).
+async function selectIamAndIsee(page, details = {}) {
+  const iam = String(details.iam || 'A woman').trim();
+  const isee = Array.isArray(details.isee) && details.isee.length ? details.isee.map((v) => String(v || '').trim()).filter(Boolean) : ['Men'];
+  return page.evaluate((iamWanted, iseeWanted) => {
+    const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    const norm = (s) => clean(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const fire = (el) => {
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('blur', { bubbles: true }));
+    };
+    const optionMatch = (opt, wanted) => {
+      const w = norm(wanted);
+      return norm(opt.value) === w || norm(opt.textContent) === w || norm(opt.textContent).includes(w);
+    };
+
+    const labels = Array.from(document.querySelectorAll('label, b, strong, span, td, th, p, div'))
+      .filter((el) => { const t = clean(el.textContent); return t && t.length <= 30; });
+    const scopeFor = (el) => {
+      if (el.htmlFor) { const f = document.getElementById(el.htmlFor); if (f) return f; }
+      let f = el.querySelector('select, input, textarea');
+      if (f) return f;
+      let sib = el.nextElementSibling;
+      while (sib) { f = sib.matches('select, input, textarea') ? sib : sib.querySelector('select, input, textarea'); if (f) return f; sib = sib.nextElementSibling; }
+      const parent = el.parentElement;
+      if (parent) { f = parent.querySelector('select, input, textarea'); if (f) return f; }
+      return null;
+    };
+
+    let iamDone = false;
+    const iamLabel = labels.find((el) => /^i\s*am/i.test(clean(el.textContent)));
+    if (iamLabel) {
+      const sel = scopeFor(iamLabel) || (iamLabel.parentElement && iamLabel.parentElement.querySelector('select'));
+      const select = sel && sel.tagName === 'SELECT' ? sel : (sel && sel.closest && sel.closest('select'));
+      if (select && (!select.value || /^$|^select$/i.test(norm(select.options[select.selectedIndex] ? select.options[select.selectedIndex].textContent : '')))) {
+        const opt = Array.from(select.options).find((o) => optionMatch(o, iamWanted)) || Array.from(select.options).find((o) => o.value && !/select|^\s*$/i.test(o.textContent));
+        if (opt) { select.value = opt.value; fire(select); iamDone = true; }
+      }
+    }
+
+    let iseeDone = false;
+    const iseeLabel = labels.find((el) => /^i\s*see/i.test(clean(el.textContent)));
+    if (iseeLabel) {
+      const scope = iseeLabel.parentElement || iseeLabel;
+      const multi = scope.querySelector('select') || (iseeLabel.nextElementSibling && iseeLabel.nextElementSibling.querySelector && iseeLabel.nextElementSibling.querySelector('select'));
+      const select = multi && multi.tagName === 'SELECT' ? multi : (multi && multi.closest ? multi.closest('select') : null);
+      if (select && select.multiple) {
+        const yaHay = Array.from(select.options).some((o) => o.selected);
+        if (!yaHay) {
+          for (const wanted of iseeWanted) {
+            const opt = Array.from(select.options).find((o) => optionMatch(o, wanted));
+            if (opt) { opt.selected = true; iseeDone = true; }
+          }
+          if (!iseeDone && select.options.length) { select.options[0].selected = true; iseeDone = true; }
+          if (iseeDone) fire(select);
+        }
+      } else if (select) {
+        const cur = select.options[select.selectedIndex];
+        if (!select.value || /^$|^select$/i.test(norm(cur ? cur.textContent : ''))) {
+          const opt = Array.from(select.options).find((o) => optionMatch(o, iseeWanted[0])) || Array.from(select.options).find((o) => o.value && !/select|^\s*$/i.test(o.textContent));
+          if (opt) { select.value = opt.value; fire(select); iseeDone = true; }
+        }
+      } else {
+        const boxes = Array.from(scope.querySelectorAll('input[type="checkbox"]'));
+        if (boxes.length && !boxes.some((b) => b.checked)) {
+          for (const b of boxes) {
+            const t = norm(b.closest('label') ? b.closest('label').textContent : (b.parentElement ? b.parentElement.textContent : ''));
+            if (iseeWanted.some((w) => norm(w) && t.includes(norm(w)))) { if (!b.checked) b.click(); iseeDone = true; }
+          }
+          if (!iseeDone && boxes[0] && !boxes[0].checked) { boxes[0].click(); iseeDone = true; }
+        }
+      }
+    }
+
+    return { iamDone, iseeDone };
+  }, iam, isee).catch(() => ({ iamDone: false, iseeDone: false }));
+}
+
+// Detecta errores de validación del formulario (categorías/teléfono) que impiden avanzar.
+async function detectFormValidationError(page) {
+  return page.evaluate(() => {
+    const text = (document.body && document.body.innerText) || '';
+    return /category not selected|at least 1 category|is required|required field|not selected|please select/i.test(text);
+  }).catch(() => false);
 }
 
 async function fillExactField(page, selector, value) {
@@ -3175,12 +3448,20 @@ async function deleteAndRepost(page, controller, options = {}) {
     const textToUse = pickVariant(controller, 'text');
     if (headlineToUse && headlineToUse !== details.headline) controller.log(`🔤 Usando variante de título.`);
     if (textToUse && textToUse !== details.text) controller.log(`🔤 Usando variante de texto.`);
+    await humanPause(500, 1200);
+    await selectIamAndIsee(page, details);
+    await humanPause(600, 1500);
     await fillExactField(page, '#name', details.name) || await fillFieldByLabel(page, '^\\s*name', details.name);
+    await humanPause(700, 1800);
     await fillFieldByLabel(page, '^\\s*headline', headlineToUse);
+    await humanPause(800, 2000);
     await fillExactField(page, '#age', details.age) || await fillFieldByLabel(page, '^\\s*age', details.age);
+    await humanPause(1200, 2800);
     await fillFieldByLabel(page, '^\\s*body', textToUse);
+    await humanPause(700, 1700);
     controller.setCycleStage('city', `Seleccionando ciudad: ${details.city}.`);
     if (!(await selectCity(page, details.city, controller))) return false;
+    await humanPause(700, 1600);
     const locationFilled = await fillExactField(page, '#location', details.location)
       || await fillFieldByLabel(page, '^\\s*location', details.location);
     if (details.location && !locationFilled) {
@@ -3189,9 +3470,20 @@ async function deleteAndRepost(page, controller, options = {}) {
       return false;
     }
     if (locationFilled) controller.log(`📍 Location/Area escrito: ${details.location}.`);
+    await humanPause(600, 1400);
     await fillPhone(page, details.phone);
+    await humanPause(1200, 2600);
 
     if (!(await clickNextStep(page, controller))) return false;
+
+    await sleep(1500);
+    if (await detectFormValidationError(page)) {
+      const mensaje = 'El formulario rechazó el anuncio (I AM / I SEE / teléfono).';
+      controller.setCycleStage('error', mensaje);
+      controller.log(`❌ ${mensaje}`);
+      notify(`❌ REPOST incompleto en "${controller.id}": ${mensaje}`);
+      return false;
+    }
 
     if (details.photosPath) {
       controller.setCycleStage('photos', 'Cargando fotos.');
@@ -3347,6 +3639,157 @@ async function deleteAndRepost(page, controller, options = {}) {
     return true;
   } catch (error) {
     controller.log(`❌ Error en el ciclo de republicación: ${error.message}`);
+    return false;
+  }
+}
+
+// Aplica los cambios del anuncio en la cuenta real:
+//  - Si hay un post: pulsa "Edit Post" y guarda (no borra).
+//  - Si NO hay post (ya borrado) o ya estamos en /users/posts/create: crea/publica el anuncio.
+async function editExistingPost(page, controller, options = {}) {
+  const urls = siteUrls(controller);
+  const details = controller.cfg.adDetails || {};
+
+  const fillForm = async () => {
+    const headlineToUse = pickVariant(controller, 'headline');
+    const textToUse = pickVariant(controller, 'text');
+    await humanPause(500, 1200);
+    await selectIamAndIsee(page, details);
+    await humanPause(600, 1500);
+    await fillExactField(page, '#name', details.name) || await fillFieldByLabel(page, '^\\s*name', details.name);
+    await humanPause(700, 1800);
+    await fillFieldByLabel(page, '^\\s*headline', headlineToUse);
+    await humanPause(800, 2000);
+    await fillExactField(page, '#age', details.age) || await fillFieldByLabel(page, '^\\s*age', details.age);
+    await humanPause(1200, 2800);
+    await fillFieldByLabel(page, '^\\s*body', textToUse);
+    await humanPause(700, 1800);
+    controller.setCycleStage('city', `Seleccionando ciudad: ${details.city}.`);
+    const okCity = await selectCity(page, details.city, controller);
+    await humanPause(700, 1600);
+    await fillExactField(page, '#location', details.location) || await fillFieldByLabel(page, '^\\s*location', details.location);
+    await humanPause(600, 1500);
+    await fillPhone(page, details.phone);
+    await humanPause(900, 2200);
+    return okCity;
+  };
+
+  const uploadPhotos = async () => {
+    if (!details.photosPath) return;
+    const photosDir = path.resolve(__dirname, details.photosPath);
+    if (!fs.existsSync(photosDir)) return;
+    const photos = fs.readdirSync(photosDir).filter((n) => /\.(jpg|jpeg|png|webp)$/i.test(n)).map((n) => path.join(photosDir, n));
+    if (!photos.length) return;
+    const inputs = await page.$$('input[type="file"]');
+    let input = null; let multi = false;
+    for (const el of inputs) {
+      const info = await el.evaluate((n) => ({ multiple: Boolean(n.multiple) })).catch(() => ({ multiple: false }));
+      if (info.multiple) { input = el; multi = true; break; }
+      if (!input) input = el;
+    }
+    if (!input) { controller.log('⚠️ No hay campo de fotos para subir.'); return; }
+    try {
+      if (multi) await input.uploadFile(...photos);
+      else for (const p of photos) { await input.uploadFile(p); await sleep(700); }
+      controller.log(`🖼️ ${photos.length} foto(s) cargadas.`);
+    } catch (e) { controller.log(`⚠️ Subida de fotos falló: ${e.message}`); }
+  };
+
+  const saveAndConfirm = async () => {
+    controller.setCycleStage('publishing', 'Guardando anuncio.');
+    await humanPause(1500, 3200);
+    let clicked = await clickTextControl(page, ['save', 'publish', 'update', 'post\\s+ad', 'guardar', 'aplicar', 'publicar'], 8000);
+    if (!clicked) {
+      clicked = await trustedClick(page, () => {
+        const direct = document.getElementById('input_send') || document.querySelector('.myButton.previewbutton');
+        if (direct && direct.offsetParent !== null) return direct;
+        const form = document.querySelector('form');
+        const submit = form && form.querySelector('button[type="submit"], input[type="submit"]');
+        if (submit && submit.offsetParent !== null && !submit.disabled) return submit;
+        return Array.from(document.querySelectorAll('button, input[type="submit"], a'))
+          .find((el) => el.offsetParent !== null && !el.disabled && /save|update|publish|guardar|publicar|send/i.test(`${el.innerText || ''} ${el.value || ''} ${el.id || ''}`)) || null;
+      });
+    }
+    if (!clicked) return false;
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+      const href = await page.evaluate(() => window.location.href).catch(() => '');
+      if (href.includes('success_publish') || /\/users\/posts\/list/.test(href)) return true;
+      if (page.url().includes('pendingImages')) await clickPendingImagesOk(page).catch(() => {});
+      await confirmTokenPopup(page).catch(() => {});
+      if (await detectCaptchaRejected(page)) { await reloadImageCaptcha(page).catch(() => {}); await waitForManualCaptcha(page, controller).catch(() => {}); }
+      await sleep(1500);
+    }
+    return false;
+  };
+
+  try {
+    let modo = 'edit';
+    const yaEnCreate = page.url().includes('/users/posts/create');
+
+    if (yaEnCreate) {
+      modo = 'create';
+      controller.log('ℹ️ Ya estamos en /users/posts/create: lleno y publico.');
+    } else {
+      controller.setCycleStage('removing', 'Abriendo Manage Posts (editar).');
+      await page.goto(urls.manage, { waitUntil: 'networkidle2', timeout: 60000 });
+      if (await ensureSession(page, controller)) {
+        await page.goto(urls.manage, { waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {});
+      }
+      if (await checkForBlock(page, controller)) return false;
+
+      const clicked = await trustedClick(page, () => {
+        const direct = document.querySelector('#edit-post-id')
+          || document.querySelector('a[href*="/users/posts/edit"], a[href*="/posts/edit"]')
+          || document.querySelector('input[value*="Edit" i], button[id*="edit" i]');
+        if (direct && direct.offsetParent !== null) return direct;
+        return Array.from(document.querySelectorAll('button, a, input[type="button"], input[type="submit"], div'))
+          .find((el) => el.offsetParent !== null && /edit\s*post|editar\s*anuncio/i.test(`${el.innerText || ''} ${el.value || ''} ${el.id || ''}`)) || null;
+      });
+
+      if (!clicked) {
+        controller.log('ℹ️ No hay post para editar (quizá borrado). Paso a CREATE POST.');
+        modo = 'create';
+      } else {
+        await sleep(2500);
+        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+        await humanPause(1200, 2600);
+      }
+    }
+
+    if (modo === 'create' && !yaEnCreate) {
+      controller.setCycleStage('filling', 'Abriendo Create Post (no había post para editar).');
+      await page.goto(urls.create, { waitUntil: 'networkidle2', timeout: 60000 });
+    }
+
+    if (await checkForBlock(page, controller)) return false;
+
+    controller.setCycleStage('filling', modo === 'edit' ? 'Editando datos del anuncio.' : 'Creando anuncio (no había post).');
+    const okCity = await fillForm();
+    if (modo === 'create') await uploadPhotos();
+    if (!okCity) return false;
+
+    if (!(await waitForManualCaptcha(page, controller))) return false;
+
+    const confirmed = await saveAndConfirm();
+    if (!confirmed) {
+      if (await checkForBlock(page, controller)) return false;
+      const msg = modo === 'edit' ? 'No se confirmó el guardado de la edición.' : 'No se confirmó la publicación (Create Post).';
+      controller.setCycleStage('error', msg);
+      controller.log(`❌ ${msg}`);
+      notify(`❌ ${msg} en "${controller.id}".`);
+      return false;
+    }
+
+    controller.log(modo === 'edit' ? '✅ Anuncio editado y guardado (sin borrar el post).' : '✅ Anuncio creado/publicado (no había post).');
+    controller.setCycleStage('completed', modo === 'edit' ? 'Edición confirmada.' : 'Publicación confirmada.');
+    controller.recordBump();
+    await dismissOkModal(page).catch(() => {});
+    await sleep(800);
+    return true;
+  } catch (error) {
+    controller.log(`❌ Error aplicando cambios en la cuenta real: ${error.message}`);
+    notify(`❌ Error aplicando cambios en "${controller.id}": ${error.message}`);
     return false;
   }
 }
@@ -3919,6 +4362,8 @@ emitActive() {
     this.cycleStage = stage;
     this.cycleDetail = detail;
     this.cycleUpdatedAt = Date.now();
+    if (stage === 'error' && detail) this.lastError = { message: String(detail).slice(0, 200), at: Date.now() };
+    else if (stage === 'completed') this.lastError = null;
     io.emit('cycle-stage', {
       id: this.id,
       stage,
@@ -4733,6 +5178,7 @@ emitActive() {
       } else {
         this.warn(`⚠️ La republicación falló (${error.message}). Se reprograma.`);
       }
+      notify(`⚠️ REPOST falló en "${this.id}": ${error.message}`);
       this.recordCycleResult(false);
       if (this.started && !this.paused) {
         this.scheduleNext();
@@ -4766,6 +5212,7 @@ emitActive() {
       await this._operationPromise;
     } catch (error) {
       this.warn(isNetworkError(error) ? `🌐 Sin internet al publicar (${error.message}). Se reprograma.` : `⚠️ La publicación falló (${error.message}). Se reprograma.`);
+      notify(`⚠️ PUBLICAR falló en "${this.id}": ${error.message}`);
       if (this.started && !this.paused) this.scheduleNext();
     } finally {
       this._operationPromise = null;
@@ -4799,6 +5246,7 @@ emitActive() {
       await this._operationPromise;
     } catch (error) {
       this.warn(isNetworkError(error) ? `🌐 Sin internet al reintentar (${error.message}). Se reprograma.` : `⚠️ El reintento falló (${error.message}). Se reprograma.`);
+      notify(`⚠️ REPOST (manual) falló en "${this.id}": ${error.message}`);
     } finally {
       this._operationPromise = null;
     }
@@ -5599,6 +6047,26 @@ server.listen(PORT, () => {
   setInterval(refreshTwoCaptchaBalance, 30 * 60 * 1000).unref();
   setInterval(checkProxiesHealth, 10 * 60 * 1000).unref();
   startTelegramBot();
+
+  // Horario de trabajo por perfil: pausa/reanuda segun la hora configurada.
+  setInterval(() => {
+    for (const c of controllers.values()) {
+      const s = c.cfg && c.cfg.schedule;
+      if (!s || !s.enabled) continue;
+      const activo = dentroHorario(s.from, s.to);
+      try {
+        if (!activo) {
+          if (c.started && !c.paused) { c.log(`⏸️ Fuera de horario (${s.from}–${s.to}): pauso el perfil.`); c.pause(); }
+        } else if (c.paused) {
+          c.log(`▶️ Dentro de horario (${s.from}–${s.to}): reanudo.`);
+          c.resume();
+        } else if (!c.started && s.autoStart !== false) {
+          c.log(`▶️ Dentro de horario (${s.from}–${s.to}): inicio el perfil.`);
+          Promise.resolve(c.start && c.start()).catch(() => {});
+        }
+      } catch (_) {}
+    }
+  }, 60 * 1000).unref();
 });
 
 server.on('error', (error) => {
