@@ -419,6 +419,53 @@ app.get('/api/control/profiles', requireControlKey, (req, res) => {
   res.json({ ok: true, profiles: [...controllers.values()].map(controlProfileState) });
 });
 
+// Crear un perfil nuevo en el bot (desde el SaaS).
+app.post('/api/control/profiles', requireControlKey, (req, res) => {
+  try {
+    const body = req.body || {};
+    const cleanId = String(body.id || '').trim();
+    if (!cleanId) return res.status(400).json({ ok: false, error: 'Falta el nombre del perfil.' });
+    if (/[\\/:*?"<>|]/.test(cleanId)) return res.status(400).json({ ok: false, error: 'El nombre no puede tener: \\ / : * ? " < > |' });
+    const config = loadConfig();
+    if (config.some((p) => p.id === cleanId)) return res.status(409).json({ ok: false, error: 'Ya existe un perfil con ese nombre.' });
+
+    let port = Number(body.port);
+    const usedPorts = new Set(config.map((p) => Number(p.port)));
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      port = 9334; while (usedPorts.has(port)) port += 1;
+    } else if (usedPorts.has(port)) {
+      return res.status(409).json({ ok: false, error: 'Ese puerto ya está en uso.' });
+    }
+
+    const min = Math.max(1, Math.floor(Number(body.bumpMinMinutes) || 16));
+    const max = Math.max(min, Math.floor(Number(body.bumpMaxMinutes) || min));
+    const np = {
+      id: cleanId, port,
+      email: '', password: '', supportEmail: '', supportUrl: '',
+      intervalMinutes: min, bumpMinMinutes: min, bumpMaxMinutes: max,
+      url: String(body.url || DEFAULT_URL).trim() || DEFAULT_URL,
+      device: isValidDevice(body.device) ? body.device : 'iphone',
+      settings: {
+        rotateAds: body.rotateAds !== false,
+        randomizedDelay: body.randomizedDelay !== false,
+        publishOnStart: Boolean(body.publishOnStart)
+      },
+      adDetails: { name: '', headline: '', city: '', age: '', location: '', phone: '', text: '', textVariants: [], headlineVariants: [], photosPath: '' },
+      limits: { dailyLimit: 0, conservativeMode: false }
+    };
+    if (body.proxy && body.proxy.host) {
+      np.proxy = { host: String(body.proxy.host).trim(), port: Number(body.proxy.port) || 0, username: String(body.proxy.username || ''), password: String(body.proxy.password || ''), type: body.proxy.type === 'socks5' ? 'socks5' : 'http' };
+    }
+    config.push(np);
+    saveConfig(config);
+    controllers.set(np.id, new ProfileController(np));
+    io.emit('profiles-updated', config);
+    res.status(201).json({ ok: true, profile: controlProfileFull(controllers.get(np.id)) });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.get('/api/control/profiles/:id', requireControlKey, (req, res) => {
   const c = controllers.get(req.params.id);
   if (!c) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
