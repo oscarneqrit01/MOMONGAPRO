@@ -402,9 +402,16 @@ app.get('/api/control/ping', requireControlKey, (req, res) => {
 });
 
 app.get('/api/control/devices', requireControlKey, (req, res) => {
-  const base = ['iphone', 'android', 'pixel', 'pixel_pro', 'samsung', 'samsung_ultra'];
+  const base = [
+    { key: 'iphone', label: 'iPhone (Safari)' },
+    { key: 'android', label: 'Android (genérico)' },
+    { key: 'pixel', label: 'Pixel (genérico)' },
+    { key: 'pixel_pro', label: 'Pixel Pro (genérico)' },
+    { key: 'samsung', label: 'Samsung (genérico)' },
+    { key: 'samsung_ultra', label: 'Samsung Ultra (genérico)' }
+  ];
   let modern = [];
-  try { modern = (typeof MODERN_ANDROID !== 'undefined' && Array.isArray(MODERN_ANDROID)) ? MODERN_ANDROID.map((d) => d.key) : []; } catch (_) {}
+  try { modern = (typeof MODERN_ANDROID !== 'undefined' && Array.isArray(MODERN_ANDROID)) ? MODERN_ANDROID.map((d) => ({ key: d.key, label: d.label || d.key })) : []; } catch (_) {}
   res.json({ ok: true, devices: [...base, ...modern] });
 });
 
@@ -477,6 +484,24 @@ app.patch('/api/control/profiles/:id', requireControlKey, (req, res) => {
       const parsed = parseProxy(body.proxy);
       if (!parsed) delete profile.proxy; else profile.proxy = parsed;
       controller.cfg.proxy = profile.proxy;
+    }
+    if (body.adDetails && typeof body.adDetails === 'object') {
+      const d = profile.adDetails || {};
+      const pick = (k, v) => (k in body.adDetails ? String(body.adDetails[k] || '') : (v || ''));
+      const nd = {
+        name: pick('name', d.name).trim(),
+        headline: pick('headline', d.headline).trim(),
+        city: pick('city', d.city).trim(),
+        age: pick('age', d.age).trim(),
+        location: pick('location', d.location).trim(),
+        phone: pick('phone', d.phone).trim(),
+        text: pick('text', d.text),
+        photosPath: pick('photosPath', d.photosPath).trim(),
+        textVariants: Array.isArray(d.textVariants) ? d.textVariants : [],
+        headlineVariants: Array.isArray(d.headlineVariants) ? d.headlineVariants : []
+      };
+      profile.adDetails = nd;
+      controller.cfg.adDetails = nd;
     }
     saveConfig(config);
     io.emit('profiles-updated', config);
