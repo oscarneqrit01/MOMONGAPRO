@@ -267,7 +267,8 @@ function controlProfileFull(c) {
     proxy: p.proxy ? { host: p.proxy.host, port: p.proxy.port, username: p.proxy.username || '', password: p.proxy.password || '', type: p.proxy.type || 'http' } : null,
     adDetails: {
       name: d.name || '', headline: d.headline || '', city: d.city || '', age: d.age || '',
-      location: d.location || '', phone: d.phone || '', text: (d.text || '').slice(0, 400), photosPath: d.photosPath || ''
+      location: d.location || '', phone: d.phone || '', text: (d.text || '').slice(0, 400), photosPath: d.photosPath || '',
+      iam: d.iam || 'A woman', isee: Array.isArray(d.isee) ? d.isee : ['Men']
     }
   };
 }
@@ -462,7 +463,7 @@ app.post('/api/control/profiles', requireControlKey, (req, res) => {
         randomizedDelay: body.randomizedDelay !== false,
         publishOnStart: Boolean(body.publishOnStart)
       },
-      adDetails: { name: '', headline: '', city: '', age: '', location: '', phone: '', text: '', textVariants: [], headlineVariants: [], photosPath: '' },
+      adDetails: { name: '', headline: '', city: '', age: '', location: '', phone: '', text: '', textVariants: [], headlineVariants: [], photosPath: '', iam: 'A woman', isee: ['Men'] },
       apiKey2Captcha: String(body.apiKey2Captcha || '').trim(),
       limits: { dailyLimit: 0, conservativeMode: false }
     };
@@ -570,6 +571,8 @@ app.patch('/api/control/profiles/:id', requireControlKey, (req, res) => {
         phone: pick('phone', d.phone).trim(),
         text: pick('text', d.text),
         photosPath: pick('photosPath', d.photosPath).trim(),
+        iam: ('iam' in body.adDetails ? String(body.adDetails.iam || '') : (d.iam || 'A woman')).trim(),
+        isee: Array.isArray(body.adDetails.isee) ? body.adDetails.isee.map((v) => String(v || '')).filter(Boolean) : (Array.isArray(d.isee) ? d.isee : ['Men']),
         textVariants: Array.isArray(d.textVariants) ? d.textVariants : [],
         headlineVariants: Array.isArray(d.headlineVariants) ? d.headlineVariants : []
       };
@@ -3013,9 +3016,11 @@ async function fillPhone(page, value) {
 
 // Selecciona las categorías obligatorias "I AM" / "I SEE" (si no, el sitio rechaza el anuncio).
 async function selectIamAndIsee(page, details = {}) {
-  const iam = String(details.iam || 'A woman').trim();
-  const isee = Array.isArray(details.isee) && details.isee.length ? details.isee.map((v) => String(v || '').trim()).filter(Boolean) : ['Men'];
-  return page.evaluate((iamWanted, iseeWanted) => {
+  const iamForzado = String(details.iam || '').trim();
+  const iseeForzado = Array.isArray(details.isee) ? details.isee.map((v) => String(v || '').trim()).filter(Boolean) : [];
+  const iam = iamForzado || 'A woman';
+  const isee = iseeForzado.length ? iseeForzado : ['Men'];
+  return page.evaluate((iamWanted, iseeWanted, forceIam, forceIsee) => {
     const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
     const norm = (s) => clean(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const fire = (el) => {
@@ -3046,7 +3051,7 @@ async function selectIamAndIsee(page, details = {}) {
     if (iamLabel) {
       const sel = scopeFor(iamLabel) || (iamLabel.parentElement && iamLabel.parentElement.querySelector('select'));
       const select = sel && sel.tagName === 'SELECT' ? sel : (sel && sel.closest && sel.closest('select'));
-      if (select && (!select.value || /^$|^select$/i.test(norm(select.options[select.selectedIndex] ? select.options[select.selectedIndex].textContent : '')))) {
+      if (select && (forceIam || !select.value || /^$|^select$/i.test(norm(select.options[select.selectedIndex] ? select.options[select.selectedIndex].textContent : '')))) {
         const opt = Array.from(select.options).find((o) => optionMatch(o, iamWanted)) || Array.from(select.options).find((o) => o.value && !/select|^\s*$/i.test(o.textContent));
         if (opt) { select.value = opt.value; fire(select); iamDone = true; }
       }
@@ -3060,7 +3065,7 @@ async function selectIamAndIsee(page, details = {}) {
       const select = multi && multi.tagName === 'SELECT' ? multi : (multi && multi.closest ? multi.closest('select') : null);
       if (select && select.multiple) {
         const yaHay = Array.from(select.options).some((o) => o.selected);
-        if (!yaHay) {
+        if (forceIsee || !yaHay) {
           for (const wanted of iseeWanted) {
             const opt = Array.from(select.options).find((o) => optionMatch(o, wanted));
             if (opt) { opt.selected = true; iseeDone = true; }
@@ -3070,13 +3075,13 @@ async function selectIamAndIsee(page, details = {}) {
         }
       } else if (select) {
         const cur = select.options[select.selectedIndex];
-        if (!select.value || /^$|^select$/i.test(norm(cur ? cur.textContent : ''))) {
+        if (forceIsee || !select.value || /^$|^select$/i.test(norm(cur ? cur.textContent : ''))) {
           const opt = Array.from(select.options).find((o) => optionMatch(o, iseeWanted[0])) || Array.from(select.options).find((o) => o.value && !/select|^\s*$/i.test(o.textContent));
           if (opt) { select.value = opt.value; fire(select); iseeDone = true; }
         }
       } else {
         const boxes = Array.from(scope.querySelectorAll('input[type="checkbox"]'));
-        if (boxes.length && !boxes.some((b) => b.checked)) {
+        if (boxes.length && (forceIsee || !boxes.some((b) => b.checked))) {
           for (const b of boxes) {
             const t = norm(b.closest('label') ? b.closest('label').textContent : (b.parentElement ? b.parentElement.textContent : ''));
             if (iseeWanted.some((w) => norm(w) && t.includes(norm(w)))) { if (!b.checked) b.click(); iseeDone = true; }
@@ -3087,7 +3092,7 @@ async function selectIamAndIsee(page, details = {}) {
     }
 
     return { iamDone, iseeDone };
-  }, iam, isee).catch(() => ({ iamDone: false, iseeDone: false }));
+  }, iam, isee, Boolean(iamForzado), iseeForzado.length > 0).catch(() => ({ iamDone: false, iseeDone: false }));
 }
 
 // Detecta errores de validación del formulario (categorías/teléfono) que impiden avanzar.
