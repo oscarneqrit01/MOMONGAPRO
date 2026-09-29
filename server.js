@@ -201,6 +201,36 @@ const MACHINE_SALT = (() => {
   }
   return `${os.hostname()}|${id}`;
 })();
+
+// --- API de control (maquina-a-maquina para el SaaS de renta) ---
+const CONTROL_KEY_PATH = path.join(__dirname, '.control-key');
+const CONTROL_API_KEY = (() => {
+  if (process.env.CONTROL_API_KEY) return String(process.env.CONTROL_API_KEY);
+  let k = '';
+  try { if (fs.existsSync(CONTROL_KEY_PATH)) k = fs.readFileSync(CONTROL_KEY_PATH, 'utf8').trim(); } catch (_) {}
+  if (!k) { k = crypto.randomBytes(16).toString('hex'); try { fs.writeFileSync(CONTROL_KEY_PATH, k, 'utf8'); } catch (_) {} }
+  return k;
+})();
+
+function requireControlKey(req, res, next) {
+  const key = req.get('x-api-key') || req.query.key || (req.body && req.body.key);
+  if (!key || key !== CONTROL_API_KEY) return res.status(401).json({ error: 'API key inválida.' });
+  next();
+}
+
+function controlProfileState(c) {
+  return {
+    id: c.id,
+    port: c.cfg?.port || null,
+    state: !c.started ? 'stopped' : (c.paused ? 'paused' : 'running'),
+    stage: c.cycleStage || '',
+    detail: c.cycleDetail || '',
+    bumpsToday: c.stats?.bumpsToday || 0,
+    totalBumps: c.stats?.totalBumps || 0,
+    proxy: c.cfg?.proxy ? `${c.cfg.proxy.host}:${c.cfg.proxy.port}` : '',
+    device: c.cfg?.device || 'iphone'
+  };
+}
 const TWOCAPTCHA_BASE = (process.env.TWOCAPTCHA_BASE || 'https://2captcha.com').replace(/\/+$/, '');
 const twoCaptchaStats = { solves: 0, fails: 0, balance: null, lastBalanceAt: 0 };
 
@@ -332,9 +362,44 @@ app.post('/login', (req, res) => {
 
 app.use((req, res, next) => {
   if (req.path === '/login' || req.path === '/favicon.ico') return next();
+  if (req.path.startsWith('/api/control/')) return next(); // API de control (se valida con API key)
   if (isAuthed(req)) return next();
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'No autorizado. Inicia sesión en el panel.' });
   return res.redirect('/login');
+});
+
+// --- API de control para el SaaS de renta (autenticada con API key) ---
+app.get('/api/control/ping', requireControlKey, (req, res) => {
+  res.json({ ok: true, service: 'momonga-bot', at: Date.now() });
+});
+
+app.get('/api/control/profiles', requireControlKey, (req, res) => {
+  res.json({ ok: true, profiles: [...controllers.values()].map(controlProfileState) });
+});
+
+app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res) => {
+  const controller = controllers.get(req.params.id);
+  if (!controller) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
+  const action = String(req.params.action || '').toLowerCase();
+  try {
+    if (action === 'start' || action === 'iniciar') controller.start();
+    else if (action === 'pause' || action === 'pausar') controller.pause();
+    else if (action === 'resume' || action === 'reanudar') controller.resume();
+    else if (action === 'stop' || action === 'detener') controller.stop();
+    else if (action === 'publish' || action === 'publicar') controller.publishNow();
+    else if (action === 'open' || action === 'abrir') controller.open();
+    else if (action === 'verify' || action === 'verificar') {
+      const check = await runSafetyCheck(controller).catch(() => null);
+      if (check) reportSafetyCheck(controller, check);
+      return res.json({ ok: Boolean(check && check.ok), result: check || null, profile: controlProfileState(controller) });
+    } else {
+      return res.status(400).json({ ok: false, error: `Acción desconocida: ${action}` });
+    }
+    await sleep(500);
+    res.json({ ok: true, action, profile: controlProfileState(controller) });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -5326,6 +5391,7 @@ server.listen(PORT, () => {
   console.log(`🚀 Servidor en http://localhost:${PORT}`);
   console.log(`📋 Perfiles cargados: ${controllers.size}`);
   serverLog(`Servidor iniciado en puerto ${PORT} con ${controllers.size} perfil(es).`);
+  console.log(`🔑 API de control (para el SaaS): ${CONTROL_API_KEY}`);
   if (!process.env.PANEL_PASSWORD) {
     console.warn('⚠️ Contraseña del panel por defecto: "momonga". Define PANEL_PASSWORD para cambiarla.');
   }

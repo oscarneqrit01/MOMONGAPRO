@@ -11,6 +11,7 @@ panel-auth.json
 notifications.json
 .secrets-key
 .machine-id
+.control-key
 backups/
 test/.tmp/
 .env
