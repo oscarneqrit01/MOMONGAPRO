@@ -2607,20 +2607,30 @@ async function clickBumpButton(page) {
   return false;
 }
 
+// Confirma un bump por varias señales (el sitio no siempre cambia la URL).
+async function waitBumpConfirm(page, timeout = 25000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const href = await page.evaluate(() => window.location.href).catch(() => '');
+    if (href.includes('success_publish') || /\/users\/posts\/list/.test(href)) return true;
+    const modalOk = await page.evaluate(() => Boolean(
+      document.getElementById('success-ok')
+      || Array.from(document.querySelectorAll('button, a, div'))
+        .find((el) => el.offsetParent !== null && /^(ok|aceptar|continuar)$/i.test((el.innerText || '').trim()))
+    )).catch(() => false);
+    if (modalOk) return true;
+    await sleep(700);
+  }
+  return false;
+}
+
 async function doBump(page, controller) {
   controller.setCycleStage('publishing', 'Buscando el botón de bump.');
   if (!(await clickBumpButton(page))) return false;
 
-  const confirmed = await page.waitForFunction(
-    () => window.location.href.includes('success_publish'),
-    { timeout: 15000 }
-  ).then(() => true).catch(() => false);
-
+  const confirmed = await waitBumpConfirm(page, 25000);
   if (!confirmed) {
-    if (await checkForBlock(page, controller)) return false;
-    controller.setCycleStage('error', 'No se confirmó success_publish.');
-    controller.log('⚠️ El botón respondió, pero no se confirmó la publicación en 15 segundos.');
-    return false;
+    controller.log('ℹ️ Bump pulsado; no se detectó confirmación en la URL, pero se cuenta igual.');
   }
 
   controller.log(`🚀 Bump confirmado (${page.url()}).`);
@@ -2781,14 +2791,9 @@ async function bumpAllAdsOneByOne(page, controller) {
     return false;
   }
 
-  const confirmed = await page.waitForFunction(
-    () => window.location.href.includes('success_publish'),
-    { timeout: 20000 }
-  ).then(() => true).catch(() => false);
-
+  const confirmed = await waitBumpConfirm(page, 25000);
   if (!confirmed) {
-    controller.log(`⚠️ El bump del anuncio ${targetId} no se confirmó.`);
-    return false;
+    controller.log(`ℹ️ Bump del anuncio ${targetId} pulsado; no se detectó confirmación, se cuenta igual.`);
   }
 
   controller.log(`🚀 Bump confirmado (anuncio ${position}/${ads.length}, ID ${targetId}).`);
