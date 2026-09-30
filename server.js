@@ -4107,44 +4107,20 @@ async function scrapeActiveAdFromText(page) {
 }
 
 async function scrapeActiveAdPhotos(page) {
+  // Igual que el panel original: se enfoca en las FOTOS del anuncio por TAMANO
+  // (las grandes), con niveles de respaldo. No agarra logos/iconos chiquitos.
   return page.evaluate(() => {
-    const found = new Set();
-    const bad = /(logo|icon|sprite|banner|avatar|emoji|flag|placeholder|loader|spinner|button|arrow|captcha|recaptcha|pixel)/i;
-    const clean2 = (u) => String(u || '').trim().replace(/^url\(["']?/i, '').replace(/["']?\)$/, '');
-    const add = (u) => {
-      u = clean2(u);
-      if (!u) return;
-      if (u.startsWith('//')) u = 'https:' + u;
-      if (!/^https?:\/\//i.test(u)) return;
-      if (/^data:/i.test(u)) return;
-      if (bad.test(u)) return;
-      found.add(u);
-    };
-    const firstOf = (v) => String(v || '').split(',')[0].trim().split(/\s+/)[0];
-
-    document.querySelectorAll('img').forEach((img) => {
-      add(img.currentSrc || img.src);
-      ['data-src', 'data-lazy-src', 'data-original', 'data-lazy', 'data-srcset', 'srcset'].forEach((a) => {
-        const v = img.getAttribute(a);
-        if (v) add(firstOf(v));
+    const collect = (min) => {
+      const urls = new Set();
+      document.querySelectorAll('img').forEach((img) => {
+        const src = img.currentSrc || img.src;
+        if (!src || !/^https?:/i.test(src)) return;
+        if (img.naturalWidth >= min && img.naturalHeight >= min) urls.add(src);
       });
-      if (img.naturalWidth && img.naturalWidth < 100) found.delete(clean2(img.currentSrc || img.src));
-    });
-
-    document.querySelectorAll('[style*="background"]').forEach((el) => {
-      const m = (el.getAttribute('style') || '').match(/url\(([^)]+)\)/i);
-      if (m) add(m[1]);
-    });
-
-    document.querySelectorAll('a[href]').forEach((a) => {
-      const h = a.getAttribute('href') || '';
-      if (/\.(jpe?g|png|webp|gif)(\?|#|$)/i.test(h) || /(photo|image|media|upload)/i.test(h)) {
-        try { add(a.href); } catch (_) {}
-      }
-    });
-
-    return [...found];
-  });
+      return [...urls];
+    };
+    return { big: collect(300), mid: collect(150), small: collect(80) };
+  }).then((r) => (r.big.length ? r.big : (r.mid.length ? r.mid : r.small))).catch(() => []);
 }
 
 function buildProxyDispatcher(proxy) {
