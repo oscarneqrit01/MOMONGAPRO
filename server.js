@@ -723,6 +723,22 @@ app.delete('/api/control/profiles/:id', requireControlKey, async (req, res) => {
   }
 });
 
+// Importar el anuncio real (datos + fotos sin EXIF). Debe ir ANTES de la ruta generica :action.
+app.post('/api/control/profiles/:id/import', requireControlKey, async (req, res) => {
+  try {
+    const controller = controllers.get(req.params.id);
+    if (!controller) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
+    if (!controller.page) { await controller.open().catch(() => {}); }
+    if (!controller.page) return res.status(400).json({ ok: false, error: 'No se pudo abrir el navegador del perfil (revisa el proxy).' });
+    await controller.page.goto(siteUrls(controller).manage, { waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {});
+    await sleep(1500);
+    const data = await scrapeAndSaveAd(controller);
+    res.json({ ok: true, data });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res) => {
   const controller = controllers.get(req.params.id);
   if (!controller) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
@@ -5797,22 +5813,6 @@ app.post('/api/profiles/:id/scrape', async (req, res) => {
     res.json({ success: true, data: await scrapeAndSaveAd(controller) });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Version para el SaaS: abre el perfil si hace falta, va a Manage Posts y copia datos + fotos (sin EXIF).
-app.post('/api/control/profiles/:id/import', requireControlKey, async (req, res) => {
-  try {
-    const controller = controllers.get(req.params.id);
-    if (!controller) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
-    if (!controller.page) { await controller.open().catch(() => {}); }
-    if (!controller.page) return res.status(400).json({ ok: false, error: 'No se pudo abrir el navegador del perfil (revisa el proxy).' });
-    await controller.page.goto(siteUrls(controller).manage, { waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {});
-    await sleep(1500);
-    const data = await scrapeAndSaveAd(controller);
-    res.json({ ok: true, data });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
   }
 });
 
