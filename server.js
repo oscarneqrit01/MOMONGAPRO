@@ -5794,6 +5794,13 @@ async function scrapeAndSaveAd(controller) {
 
   const photoUrls = (data.city || data.text) ? await scrapeActiveAdPhotos(controller.page) : [];
   if (data.city || data.text) controller.log(`🖼️ Fotos detectadas en la página: ${photoUrls.length}.`);
+  if ((data.city || data.text) && photoUrls.length === 0) {
+    try {
+      const sample = await controller.page.evaluate(() => Array.from(document.querySelectorAll('img'))
+        .slice(0, 15).map((i) => i.currentSrc || i.src || i.getAttribute('data-src') || i.getAttribute('data-lazy-src') || '').filter(Boolean));
+      controller.log('🔎 imgs en la página: ' + JSON.stringify(sample));
+    } catch (_) {}
+  }
   let photosPath = '';
   let photosSaved = 0;
   if (photoUrls.length > 0) {
