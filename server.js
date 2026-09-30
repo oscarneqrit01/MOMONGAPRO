@@ -4108,31 +4108,42 @@ async function scrapeActiveAdFromText(page) {
 
 async function scrapeActiveAdPhotos(page) {
   return page.evaluate(() => {
-    const urls = new Set();
-
-    const add = (img) => {
-      const src = img.currentSrc || img.src;
-      if (!src || !/^https?:/i.test(src)) return;
-      // Si ya cargó y es enano, se descarta; si aún no cargó (lazy), se acepta.
-      if (img.naturalWidth && img.naturalWidth < 100) return;
-      const meta = `${img.className || ''} ${img.id || ''} ${img.alt || ''} ${src}`.toLowerCase();
-      if (/(logo|icon|sprite|banner|avatar|emoji|flag|placeholder|loader|spinner)/.test(meta)) return;
-      urls.add(src);
+    const found = new Set();
+    const bad = /(logo|icon|sprite|banner|avatar|emoji|flag|placeholder|loader|spinner|button|arrow|captcha|recaptcha|pixel)/i;
+    const clean2 = (u) => String(u || '').trim().replace(/^url\(["']?/i, '').replace(/["']?\)$/, '');
+    const add = (u) => {
+      u = clean2(u);
+      if (!u) return;
+      if (u.startsWith('//')) u = 'https:' + u;
+      if (!/^https?:\/\//i.test(u)) return;
+      if (/^data:/i.test(u)) return;
+      if (bad.test(u)) return;
+      found.add(u);
     };
+    const firstOf = (v) => String(v || '').split(',')[0].trim().split(/\s+/)[0];
 
-    document.querySelectorAll('.post_preview_media img, .media-wrapper img').forEach(add);
+    document.querySelectorAll('img').forEach((img) => {
+      add(img.currentSrc || img.src);
+      ['data-src', 'data-lazy-src', 'data-original', 'data-lazy', 'data-srcset', 'srcset'].forEach((a) => {
+        const v = img.getAttribute(a);
+        if (v) add(firstOf(v));
+      });
+      if (img.naturalWidth && img.naturalWidth < 100) found.delete(clean2(img.currentSrc || img.src));
+    });
 
-    if (urls.size === 0) {
-      const galleries = document.querySelectorAll(
-        '[class*="photo" i], [class*="gallery" i], [class*="pic" i], [class*="upload" i], [class*="image" i], [class*="media" i], ' +
-        '[id*="photo" i], [id*="gallery" i], [id*="upload" i], [id*="image" i]'
-      );
-      galleries.forEach((g) => g.querySelectorAll('img').forEach(add));
-    }
+    document.querySelectorAll('[style*="background"]').forEach((el) => {
+      const m = (el.getAttribute('style') || '').match(/url\(([^)]+)\)/i);
+      if (m) add(m[1]);
+    });
 
-    if (urls.size === 0) document.querySelectorAll('img').forEach(add);
+    document.querySelectorAll('a[href]').forEach((a) => {
+      const h = a.getAttribute('href') || '';
+      if (/\.(jpe?g|png|webp|gif)(\?|#|$)/i.test(h) || /(photo|image|media|upload)/i.test(h)) {
+        try { add(a.href); } catch (_) {}
+      }
+    });
 
-    return [...urls];
+    return [...found];
   });
 }
 
@@ -5782,6 +5793,7 @@ async function scrapeAndSaveAd(controller) {
   } catch (_) {}
 
   const photoUrls = (data.city || data.text) ? await scrapeActiveAdPhotos(controller.page) : [];
+  if (data.city || data.text) controller.log(`🖼️ Fotos detectadas en la página: ${photoUrls.length}.`);
   let photosPath = '';
   let photosSaved = 0;
   if (photoUrls.length > 0) {
