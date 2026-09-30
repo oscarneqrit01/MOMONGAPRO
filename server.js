@@ -1587,6 +1587,13 @@ function dentroHorario(from, to, d = new Date()) {
   return a < b ? (now >= a && now < b) : (now >= a || now < b);
 }
 
+// Deja solo el numero de telefono (quita "City : ...", "Location : ...", etc.).
+function soloTelefono(v) {
+  const s = String(v == null ? '' : v);
+  const m = s.match(/\+?\d[\d\s().-]{6,}\d/);
+  return m ? m[0].replace(/\s+/g, ' ').trim() : '';
+}
+
 function killChromeForProfileDir(profileDir) {
   return new Promise((resolve) => {
     if (process.platform === 'win32') {
@@ -4106,7 +4113,8 @@ async function scrapeActiveAdPhotos(page) {
     const add = (img) => {
       const src = img.currentSrc || img.src;
       if (!src || !/^https?:/i.test(src)) return;
-      if (img.naturalWidth < 200 || img.naturalHeight < 200) return;
+      // Si ya cargó y es enano, se descarta; si aún no cargó (lazy), se acepta.
+      if (img.naturalWidth && img.naturalWidth < 100) return;
       const meta = `${img.className || ''} ${img.id || ''} ${img.alt || ''} ${src}`.toLowerCase();
       if (/(logo|icon|sprite|banner|avatar|emoji|flag|placeholder|loader|spinner)/.test(meta)) return;
       urls.add(src);
@@ -5760,7 +5768,18 @@ async function scrapeAndSaveAd(controller) {
       headline: data.headline || textData.headline
     };
   }
+  data.phone = soloTelefono(data.phone);
   controller.log(`📥 Leído de la página actual -> ciudad: "${data.city}", edad: "${data.age}", texto: ${data.text ? data.text.length + ' caracteres' : 'vacío'}`);
+
+  // Baja la pagina para forzar la carga de fotos "lazy" antes de leerlas.
+  try {
+    await controller.page.evaluate(async () => {
+      const h = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+      for (let y = 0; y < h; y += 600) { window.scrollTo(0, y); await new Promise((r) => setTimeout(r, 250)); }
+      window.scrollTo(0, 0);
+    });
+    await sleep(1500);
+  } catch (_) {}
 
   const photoUrls = (data.city || data.text) ? await scrapeActiveAdPhotos(controller.page) : [];
   let photosPath = '';
