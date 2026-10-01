@@ -3780,21 +3780,36 @@ async function editExistingPost(page, controller, options = {}) {
     const photos = fs.readdirSync(photosDir).filter((n) => /\.(jpg|jpeg|png|webp)$/i.test(n)).map((n) => path.join(photosDir, n));
     if (!photos.length) return;
     try {
-      const removed = await page.evaluate(() => {
-        let n = 0;
-        const els = Array.from(document.querySelectorAll('a, button, span, i, div'));
-        for (const el of els) {
-          if (el.offsetParent === null) continue;
-          const txt = (el.innerText || el.getAttribute('title') || el.getAttribute('aria-label') || '').trim();
-          const cls = (el.className || '').toString();
-          const looksDelete = /(delete|remove|borrar)[-_]?(photo|foto|image)/i.test(cls)
-            || /(delete|remove)(photo|foto|image)/i.test(el.id || '');
-          if (!looksDelete) continue;
-          const wrap = el.closest('div, li, td');
-          if (wrap && wrap.querySelector('img')) { try { el.click(); n++; } catch (_) {} }
-        }
-        return n;
-      });
+      // Botón real de borrar foto: <div class="imagedelete" onclick="deleteImage(n)"></div>
+      const onDialog = (d) => { try { d.accept(); } catch (_) {} };
+      page.on('dialog', onDialog);
+      let removed = 0;
+      for (let i = 0; i < 24; i++) {
+        const clicked = await trustedClick(page, () => {
+          const els = Array.from(document.querySelectorAll('.imagedelete, [onclick*="deleteImage"]'));
+          return els.find((e) => e.offsetParent !== null) || null;
+        });
+        if (!clicked) break;
+        removed++;
+        await humanPause(500, 1200);
+      }
+      page.off('dialog', onDialog);
+      if (!removed) {
+        removed = await page.evaluate(() => {
+          let n = 0;
+          const els = Array.from(document.querySelectorAll('a, button, span, i, div'));
+          for (const el of els) {
+            if (el.offsetParent === null) continue;
+            const cls = (el.className || '').toString();
+            const looksDelete = /(delete|remove|borrar)[-_]?(photo|foto|image)/i.test(cls)
+              || /(delete|remove)(photo|foto|image)/i.test(el.id || '');
+            if (!looksDelete) continue;
+            const wrap = el.closest('div, li, td');
+            if (wrap && wrap.querySelector('img')) { try { el.click(); n++; } catch (_) {} }
+          }
+          return n;
+        }).catch(() => 0);
+      }
       if (removed) { controller.log(`🧹 ${removed} foto(s) previas quitadas del editor.`); await humanPause(800, 1800); }
     } catch (_) {}
     await uploadPhotos();
@@ -3816,11 +3831,31 @@ async function editExistingPost(page, controller, options = {}) {
       });
     }
     if (!clicked) return false;
-    const deadline = Date.now() + 60000;
+    const deadline = Date.now() + 90000;
     while (Date.now() < deadline) {
       const href = await page.evaluate(() => window.location.href).catch(() => '');
-      if (href.includes('success_publish') || /\/users\/posts(\/list)?\/?$/.test(href)) return true;
-      if (page.url().includes('pendingImages')) await clickPendingImagesOk(page).catch(() => {});
+      // Ya estamos en la lista de anuncios: terminado.
+      if (/\/users\/posts(\/list)?\/?$/.test(href)) return true;
+
+      // Página/modal "tus imágenes fueron revisadas": pulsar el OK (id success-ok / buttonOk.png).
+      const enRevisado = page.url().includes('pendingImages')
+        || await page.evaluate(() => /have\s+been\s+reviewed/i.test(document.body ? document.body.innerText : '')).catch(() => false);
+      if (enRevisado) {
+        const ok = await clickPendingImagesOk(page).catch(() => false);
+        controller.log(ok ? '🖼️ OK de "imágenes revisadas" pulsado.' : '⚠️ No encontré el OK de "imágenes revisadas".');
+        await sleep(2000);
+        continue;
+      }
+
+      // Página "Sweet! Your Post has been published": volver a MY POSTS.
+      if (href.includes('success_publish')) {
+        await dismissOkModal(page).catch(() => {});
+        const went = await clickTextControl(page, ['my\\s+posts', 'mis\\s+anuncios'], 5000).catch(() => false);
+        if (went) await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+        else await page.goto(urls.manage, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+        return true;
+      }
+
       await confirmTokenPopup(page).catch(() => {});
       if (await detectCaptchaRejected(page)) { await reloadImageCaptcha(page).catch(() => {}); await waitForManualCaptcha(page, controller).catch(() => {}); }
       if (await detectFormValidationError(page)) { controller.log('⚠️ El sitio rechazo el guardado (validacion de categorias/telefono).'); return false; }
@@ -3888,11 +3923,10 @@ async function editExistingPost(page, controller, options = {}) {
       await uploadPhotos();
       controller.lastPhotoHash = currentHash;
     } else if (currentHash && controller.lastPhotoHash && currentHash === controller.lastPhotoHash) {
+      // Las fotos no cambiaron: se conservan las que ya tiene el anuncio (no se duplican).
       controller.log('🖼️ Fotos sin cambios: se conservan las del anuncio (no se duplican).');
-    } else if (!controller.lastPhotoHash) {
-      controller.lastPhotoHash = currentHash;
-      controller.log('🖼️ El anuncio ya tiene fotos: no se re-suben (evita duplicados).');
     } else {
+      // Las fotos cambiaron (o no hay registro previo): quita las viejas y pone las nuevas.
       await replacePhotosInEdit();
       controller.lastPhotoHash = currentHash;
     }
