@@ -2881,6 +2881,9 @@ async function bumpAllAdsOneByOne(page, controller) {
   const viaSelect = target.href && target.href.indexOf('/users/posts/select/') > -1;
   let clicked = false;
 
+  // El sitio exige "1 peticion cada 5 segundos": espera antes de abrir el anuncio.
+  await sleep(5500);
+
   if (viaSelect) {
     // Ir a la pagina del anuncio y pulsar "Bump to Top" (metodo fiable)
     try {
@@ -2894,14 +2897,14 @@ async function bumpAllAdsOneByOne(page, controller) {
     await sleep(5500);
     if (await detectRateLimit(page)) {
       controller.warn('⏳ El sitio pidió esperar (rate-limit). Espero 9s y reintento...');
-      await sleep(9000);
+      await sleep(20000);
       try { await page.goto(target.href, { waitUntil: 'networkidle2', timeout: 60000 }); } catch (_) {}
       await sleep(2500);
       if (await detectRateLimit(page)) { controller._rateLimited = true; return false; }
     }
     clicked = await trustedClick(page, '#managePublishAd');
     if (!clicked && await detectRateLimit(page)) {
-      await sleep(9000);
+      await sleep(20000);
       clicked = await trustedClick(page, '#managePublishAd');
       if (!clicked) { controller._rateLimited = true; return false; }
     }
@@ -5378,6 +5381,8 @@ emitActive() {
     } catch (error) {
       this.log(`Recarga fallida: ${error.message}`);
     }
+    // Respeta "1 peticion cada 5 segundos" del sitio antes de seguir.
+    await sleep(4500);
 
     // Revisa la sesión antes de operar; si murió, re-loguea.
     await ensureSession(this.page, this);
@@ -5559,6 +5564,8 @@ emitActive() {
     } catch (error) {
       this.log(`Recarga fallida: ${error.message}`);
     }
+    // Respeta "1 peticion cada 5 segundos" del sitio antes de seguir.
+    await sleep(4500);
 
     // Revisa la sesión antes de operar; si murió, re-loguea.
     await ensureSession(this.page, this);
