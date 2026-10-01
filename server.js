@@ -730,10 +730,26 @@ app.post('/api/control/profiles/:id/import', requireControlKey, async (req, res)
     if (!controller) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
     if (!controller.page) { await controller.open().catch(() => {}); }
     if (!controller.page) return res.status(400).json({ ok: false, error: 'No se pudo abrir el navegador del perfil (revisa el proxy).' });
-    await controller.page.goto(siteUrls(controller).manage, { waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {});
-    await sleep(1500);
-    const data = await scrapeAndSaveAd(controller);
-    res.json({ ok: true, data });
+
+    // Captura las respuestas de las fotos del anuncio (CDN drome6) mientas el navegador las carga.
+    const photoBuffers = new Map();
+    const onResp = (resp) => {
+      try {
+        const u = resp.url();
+        if (/drome6\.com\/imgs\//i.test(u)) {
+          resp.buffer().then((b) => { if (b && b.length) photoBuffers.set(u, b); }).catch(() => {});
+        }
+      } catch (_) {}
+    };
+    controller.page.on('response', onResp);
+    try {
+      await controller.page.goto(siteUrls(controller).manage, { waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {});
+      await sleep(1500);
+      const data = await scrapeAndSaveAd(controller, photoBuffers);
+      res.json({ ok: true, data });
+    } finally {
+      try { controller.page.off('response', onResp); } catch (_) {}
+    }
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -4169,31 +4185,42 @@ async function scrapeActiveAdFromText(page) {
 }
 
 async function scrapeActiveAdPhotos(page) {
-  // Igual que el panel original: se enfoca en las FOTOS del anuncio por TAMANO
-  // (las grandes), con niveles de respaldo. EXCLUYE recursos del sitio
-  // (logos, destellos/explosion, iconos, banners, divisores, etc.).
+  // Fotos del anuncio: estan en el CDN de fotos (img1/img2.drome6.com/imgs/...).
+  // Se toman del CDN aunque esten en data-src (lazy, sin cargar). Se DESCARTAN los
+  // recursos del propio sitio (mismo dominio: logos, destellos, iconos, banners...).
   return page.evaluate(() => {
+    const host = location.host;
+    const fuente = (img) => img.currentSrc || img.src || img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || '';
     const esAdorno = (u) => {
       try {
         const x = new URL(u, location.href);
         if (/\/resources\//i.test(x.pathname)) return true;
-        if (/\/(logo|sprite|icon|banner|header|footer|emoji|explosion|favicon|placeholder|divider|notices|bug|starburst|sticker)/i.test(x.pathname)) return true;
+        if (/\/(logo|sprite|icon|banner|header|footer|emoji|explosion|favicon|placeholder|divider|notices|bug|starburst|sticker|button)/i.test(x.pathname)) return true;
         return false;
-      } catch (_) {
-        return true;
-      }
+      } catch (_) { return true; }
     };
-    const collect = (min) => {
+    const porTamano = (min, excluirMismoHost) => {
       const urls = new Set();
       document.querySelectorAll('img').forEach((img) => {
-        const src = img.currentSrc || img.src;
-        if (!src || !/^https?:/i.test(src) || esAdorno(src)) return;
-        if (img.naturalWidth >= min && img.naturalHeight >= min) urls.add(src);
+        const s = fuente(img);
+        if (!s || !/^https?:/i.test(s) || esAdorno(s)) return;
+        try { if (excluirMismoHost && new URL(s, location.href).host === host) return; } catch (_) { return; }
+        if (img.naturalWidth >= min && img.naturalHeight >= min) urls.add(s);
       });
       return [...urls];
     };
-    return { big: collect(300), mid: collect(150), small: collect(80) };
-  }).then((r) => (r.big.length ? r.big : (r.mid.length ? r.mid : r.small))).catch(() => []);
+    const cdn = new Set();
+    document.querySelectorAll('img').forEach((img) => {
+      [fuente(img), img.getAttribute('data-src'), img.getAttribute('data-lazy-src')].forEach((s) => {
+        if (s && /^https?:/i.test(s) && /drome6\.com/i.test(s) && !esAdorno(s)) cdn.add(s);
+      });
+    });
+    return {
+      cdn: [...cdn],
+      big: porTamano(300, true), mid: porTamano(150, true), small: porTamano(80, true),
+      bigAny: porTamano(300, false), midAny: porTamano(150, false), smallAny: porTamano(80, false),
+    };
+  }).then((r) => [r.cdn, r.big, r.mid, r.small, r.bigAny, r.midAny, r.smallAny].find((a) => a.length) || []).catch(() => []);
 }
 
 function buildProxyDispatcher(proxy) {
@@ -4383,26 +4410,57 @@ async function downloadAndSanitizePhoto(imageUrl, outputFolder, profileId, dispa
 
 // Igual que downloadAndSanitizePhoto pero baja la foto DENTRO del navegador (con cookies de
 // sesión y TLS de Chrome), así el CDN (img*.drome6.com) no responde 403 de Cloudflare.
+// Guarda un buffer de imagen como foto sanitizada (mismo pipeline).
+async function savePhotoBuffer(buffer, outputFolder, profileId) {
+  const targetDir = outputFolder || path.join(__dirname, 'profiles', profileId, 'photos');
+  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+  const outputPath = path.join(targetDir, `sanitized_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`);
+  await sharp(buffer)
+    .resize(1080, 1920, { fit: 'inside', withoutEnlargement: true })
+    .modulate({ brightness: 1.01, saturation: 1.02 })
+    .jpeg({ quality: 95, mozjpeg: true })
+    .toFile(outputPath);
+  return outputPath;
+}
+
 async function downloadPhotoViaPage(page, imageUrl, outputFolder, profileId) {
+  const racer = (p, ms, tag) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout ' + tag)), ms))]);
   try {
-    const b64 = await page.evaluate(async (u) => {
-      const r = await fetch(u, { credentials: 'include' });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const buf = new Uint8Array(await r.arrayBuffer());
-      let s = '';
-      for (let i = 0; i < buf.length; i += 8192) s += String.fromCharCode.apply(null, buf.subarray(i, i + 8192));
-      return btoa(s);
-    }, imageUrl);
-    const buffer = Buffer.from(b64, 'base64');
-    const targetDir = outputFolder || path.join(__dirname, 'profiles', profileId, 'photos');
-    if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
-    const outputPath = path.join(targetDir, `sanitized_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`);
-    await sharp(buffer)
-      .resize(1080, 1920, { fit: 'inside', withoutEnlargement: true })
-      .modulate({ brightness: 1.01, saturation: 1.02 })
-      .jpeg({ quality: 95, mozjpeg: true })
-      .toFile(outputPath);
-    return outputPath;
+    let b64 = null; let via = '';
+
+    // 1) fetch dentro de la página imitando una petición de imagen.
+    const r1 = await racer(page.evaluate(async (u) => {
+      try {
+        const ctl = new AbortController();
+        const t = setTimeout(() => ctl.abort(), 8000);
+        const r = await fetch(u, { credentials: 'include', signal: ctl.signal, headers: { Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8' } });
+        clearTimeout(t);
+        if (!r.ok) return { err: 'HTTP ' + r.status };
+        const buf = new Uint8Array(await r.arrayBuffer());
+        let s = ''; for (let i = 0; i < buf.length; i += 8192) s += String.fromCharCode.apply(null, buf.subarray(i, i + 8192));
+        return { b64: btoa(s) };
+      } catch (e) { return { err: String((e && e.message) || e) }; }
+    }, imageUrl), 12000, 'fetch').catch((e) => ({ err: e.message }));
+    if (r1 && r1.b64) { b64 = r1.b64; via = 'fetch'; }
+
+    // 2) dibujar el <img> ya cargado en un canvas (si el CDN permite CORS).
+    if (!b64) {
+      const r2 = await racer(page.evaluate((u) => {
+        try {
+          const img = Array.from(document.querySelectorAll('img')).find((i) => (i.currentSrc || i.src) === u);
+          if (!img || !img.naturalWidth) return { err: 'no img cargada' };
+          const c = document.createElement('canvas');
+          c.width = img.naturalWidth; c.height = img.naturalHeight;
+          c.getContext('2d').drawImage(img, 0, 0);
+          return { b64: c.toDataURL('image/jpeg', 0.95).split(',')[1] };
+        } catch (e) { return { err: String((e && e.message) || e) }; }
+      }, imageUrl), 8000, 'canvas').catch((e) => ({ err: e.message }));
+      if (r2 && r2.b64) { b64 = r2.b64; via = 'canvas'; }
+    }
+
+    if (!b64) throw new Error('no se pudo descargar');
+    try { console.log(`🖼️ Foto bajada vía ${via}.`); } catch (_) {}
+    return await savePhotoBuffer(Buffer.from(b64, 'base64'), outputFolder, profileId);
   } catch (error) {
     console.error(`❌ Error al limpiar la foto: ${error.message}`);
     return null;
@@ -5843,7 +5901,7 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
 });
 
 // Lee el anuncio actual del perfil, limpia metadatos de las fotos y actualiza adDetails.
-async function scrapeAndSaveAd(controller) {
+async function scrapeAndSaveAd(controller, photoBuffers) {
   try { fs.writeFileSync(path.join(LOGS_DIR, `dump-${controller.id}.html`), await controller.page.content(), 'utf8'); } catch (_) {}
 
   let data = await scrapeActiveAdData(controller.page);
@@ -5885,19 +5943,29 @@ async function scrapeAndSaveAd(controller) {
   if (photoUrls.length > 0) {
     const targetDir = path.join(__dirname, 'profiles', controller.id, 'photos');
     const tmpDir = targetDir + '.tmp';
-    controller.log(`🖼️ Descargando y limpiando ${photoUrls.length} foto(s) desde el navegador...`);
+    controller.log(`🖼️ Guardando ${photoUrls.length} foto(s)...`);
     const failed = [];
+    const hallarBuffer = (u) => {
+      if (!photoBuffers || !photoBuffers.size) return null;
+      if (photoBuffers.has(u)) return photoBuffers.get(u);
+      const tail = String(u).split('/').pop();
+      for (const [k, v] of photoBuffers.entries()) { if (k === u || k.split('/').pop() === tail) return v; }
+      return null;
+    };
     try {
       if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
       fs.mkdirSync(tmpDir, { recursive: true });
       for (const url of photoUrls) {
-        const saved = await downloadPhotoViaPage(controller.page, url, tmpDir, controller.id);
+        let saved = null;
+        const buf = hallarBuffer(url);
+        if (buf) { try { saved = await savePhotoBuffer(buf, tmpDir, controller.id); } catch (_) { saved = null; } }
+        if (!saved) saved = await downloadPhotoViaPage(controller.page, url, tmpDir, controller.id);
         if (saved) photosSaved++; else failed.push(url);
       }
     } catch (error) {
       controller.log(`⚠️ Error en la descarga: ${error.message}`);
     }
-    if (failed.length) controller.log(`⚠️ ${failed.length} foto(s) fallaron al descargar (CDN 403).`);
+    if (failed.length) controller.log(`⚠️ ${failed.length} foto(s) no se pudieron guardar.`);
 
     if (photosSaved > 0) {
       fs.mkdirSync(targetDir, { recursive: true });
@@ -5937,7 +6005,21 @@ app.post('/api/profiles/:id/scrape', async (req, res) => {
     return res.status(400).json({ success: false, error: 'Inicia el navegador de ese perfil para copiar sus datos.' });
   }
   try {
-    res.json({ success: true, data: await scrapeAndSaveAd(controller) });
+    const photoBuffers = new Map();
+    const onResp = (resp) => {
+      try {
+        const u = resp.url();
+        if (/drome6\.com\/imgs\//i.test(u)) resp.buffer().then((b) => { if (b && b.length) photoBuffers.set(u, b); }).catch(() => {});
+      } catch (_) {}
+    };
+    controller.page.on('response', onResp);
+    try {
+      await controller.page.goto(siteUrls(controller).manage, { waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {});
+      await sleep(1500);
+      res.json({ success: true, data: await scrapeAndSaveAd(controller, photoBuffers) });
+    } finally {
+      try { controller.page.off('response', onResp); } catch (_) {}
+    }
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
