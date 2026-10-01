@@ -222,6 +222,34 @@ function requireControlKey(req, res, next) {
   next();
 }
 
+function photosDirDe(c) {
+  const pp = c.cfg && c.cfg.adDetails && c.cfg.adDetails.photosPath;
+  if (!pp) return null;
+  try { const dir = path.resolve(__dirname, pp); return fs.existsSync(dir) ? dir : null; } catch (_) { return null; }
+}
+
+function contarFotos(c) {
+  const dir = photosDirDe(c);
+  if (!dir) return 0;
+  try { return fs.readdirSync(dir).filter((n) => /\.(jpg|jpeg|png|webp)$/i.test(n)).length; } catch (_) { return 0; }
+}
+
+async function generarThumb(c) {
+  try {
+    const dir = photosDirDe(c);
+    if (!dir) { c._thumb = ''; return; }
+    const files = fs.readdirSync(dir).filter((n) => /\.(jpg|jpeg|png|webp)$/i.test(n)).sort();
+    if (!files.length) { c._thumb = ''; return; }
+    const buf = await sharp(path.join(dir, files[0])).resize(140, 140, { fit: 'cover' }).jpeg({ quality: 70 }).toBuffer();
+    c._thumb = `data:image/jpeg;base64,${buf.toString('base64')}`;
+  } catch (_) { c._thumb = ''; }
+}
+
+function thumbDe(c) {
+  if (c._thumb === undefined) { c._thumb = ''; generarThumb(c).catch(() => {}); }
+  return c._thumb;
+}
+
 function controlProfileState(c) {
   return {
     id: c.id,
@@ -235,7 +263,10 @@ function controlProfileState(c) {
     device: c.cfg?.device || 'iphone',
     lastBumpAt: c.stats?.lastBumpAt || 0,
     nextBumpAt: c._nextBumpAt || 0,
-    lastError: c.lastError || null
+    lastError: c.lastError || null,
+    headline: (c.cfg?.adDetails?.headline || '').slice(0, 80),
+    photos: contarFotos(c),
+    thumb: thumbDe(c)
   };
 }
 
@@ -650,6 +681,7 @@ app.post('/api/control/profiles/:id/photos', requireControlKey, (req, res) => {
     if (controller.cfg.adDetails) controller.cfg.adDetails.photosPath = photosPath;
     saveConfig(config);
     controller.log(`🖼️ ${saved} foto(s) recibidas del SaaS -> ${photosPath || '(vacío)'}`);
+    try { controller._thumb = undefined; } catch (_) {}
     res.json({ ok: true, photosPath, saved });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
@@ -757,6 +789,24 @@ app.post('/api/control/profiles/:id/import', requireControlKey, async (req, res)
     } finally {
       try { controller.page.off('response', onResp); } catch (_) {}
     }
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Logs recientes de un perfil (ultimas ~250 lineas que mencionan ese id).
+app.get('/api/control/profiles/:id/logs', requireControlKey, (req, res) => {
+  try {
+    const id = req.params.id;
+    const files = fs.readdirSync(LOGS_DIR).filter((f) => f.endsWith('.log')).sort();
+    let out = [];
+    for (let i = files.length - 1; i >= 0 && out.length < 250; i--) {
+      let content = '';
+      try { content = fs.readFileSync(path.join(LOGS_DIR, files[i]), 'utf8'); } catch (_) { continue; }
+      const lines = content.split('\n').filter((l) => l.includes(`[${id}]`));
+      out = [...lines.reverse(), ...out];
+    }
+    res.json({ ok: true, id, lines: out.slice(-250) });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -6091,6 +6141,7 @@ async function scrapeAndSaveAd(controller, photoBuffers) {
         try { fs.renameSync(path.join(tmpDir, name), path.join(targetDir, name)); } catch (_) {}
       }
       photosPath = `profiles/${controller.id}/photos`;
+      controller._thumb = undefined;
       controller.log(`🛡️ ${photosSaved} foto(s) blindada(s) en ${photosPath}.`);
     } else {
       controller.log('⚠️ 0 fotos descargadas: se conservan las anteriores.');
