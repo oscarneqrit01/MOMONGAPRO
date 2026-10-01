@@ -4170,13 +4170,24 @@ async function scrapeActiveAdFromText(page) {
 
 async function scrapeActiveAdPhotos(page) {
   // Igual que el panel original: se enfoca en las FOTOS del anuncio por TAMANO
-  // (las grandes), con niveles de respaldo. No agarra logos/iconos chiquitos.
+  // (las grandes), con niveles de respaldo. EXCLUYE recursos del sitio
+  // (logos, destellos/explosion, iconos, banners, divisores, etc.).
   return page.evaluate(() => {
+    const esAdorno = (u) => {
+      try {
+        const x = new URL(u, location.href);
+        if (/\/resources\//i.test(x.pathname)) return true;
+        if (/\/(logo|sprite|icon|banner|header|footer|emoji|explosion|favicon|placeholder|divider|notices|bug|starburst|sticker)/i.test(x.pathname)) return true;
+        return false;
+      } catch (_) {
+        return true;
+      }
+    };
     const collect = (min) => {
       const urls = new Set();
       document.querySelectorAll('img').forEach((img) => {
         const src = img.currentSrc || img.src;
-        if (!src || !/^https?:/i.test(src)) return;
+        if (!src || !/^https?:/i.test(src) || esAdorno(src)) return;
         if (img.naturalWidth >= min && img.naturalHeight >= min) urls.add(src);
       });
       return [...urls];
