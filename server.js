@@ -795,6 +795,18 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
       })();
     }
     else if (action === 'open' || action === 'abrir') controller.open();
+    else if (action === 'create-post' || action === 'crear-post' || action === 'write-new' || action === 'nuevo') {
+      (async () => {
+        try {
+          if (!controller.page) await controller.open();
+          if (controller.page) {
+            controller._operationPromise = editExistingPost(controller.page, controller, { forceCreate: true });
+            await controller._operationPromise.catch(() => {});
+            controller._operationPromise = null;
+          }
+        } catch (e) { controller.log(`⚠️ Crear post falló: ${e.message}`); }
+      })();
+    }
     else if (action === 'verify' || action === 'verificar') {
       const check = await runSafetyCheck(controller).catch(() => null);
       if (check) reportSafetyCheck(controller, check);
@@ -1542,7 +1554,8 @@ function saveState() {
         cycleUpdatedAt: controller.cycleUpdatedAt,
         cycleDeleteCompleted: Boolean(controller.cycleDeleteCompleted),
         rotateQueue: Array.isArray(controller.rotateQueue) ? controller.rotateQueue : [],
-        variantIndex: controller.variantIndex || {}
+        variantIndex: controller.variantIndex || {},
+        lastPhotoHash: controller.lastPhotoHash || null
       };
     }
     backupFile(STATE_PATH, 'state');
@@ -3681,6 +3694,7 @@ async function deleteAndRepost(page, controller, options = {}) {
     controller.log('✅ ¡Anuncio republicado de forma idéntica con éxito!');
     controller.setCycleStage('completed', 'Publicación confirmada.');
     controller.cycleDeleteCompleted = false;
+    controller.lastPhotoHash = hashPhotoSet((controller.cfg.adDetails || {}).photosPath);
     saveState();
     controller.recordBump();
 
@@ -3819,9 +3833,15 @@ async function editExistingPost(page, controller, options = {}) {
 
   try {
     let modo = 'edit';
-    const yaEnCreate = page.url().includes('/users/posts/create');
+    let yaEnCreate = page.url().includes('/users/posts/create');
 
-    if (yaEnCreate) {
+    if (options.forceCreate) {
+      modo = 'create';
+      controller.setCycleStage('filling', 'Abriendo Create Post (nuevo anuncio / Write New).');
+      await page.goto(urls.create, { waitUntil: 'networkidle2', timeout: 60000 });
+      yaEnCreate = true;
+      controller.log('ℹ️ Creando un anuncio NUEVO (Write New).');
+    } else if (yaEnCreate) {
       modo = 'create';
       controller.log('ℹ️ Ya estamos en /users/posts/create: lleno y publico.');
     } else {
@@ -3863,10 +3883,18 @@ async function editExistingPost(page, controller, options = {}) {
     if (!okCity) return false;
     // Paso 1 -> Paso 2 (fotos + captcha). Igual que el flujo de crear/remover.
     if (!(await clickNextStep(page, controller))) return false;
+    const currentHash = hashPhotoSet(details.photosPath);
     if (modo === 'create') {
       await uploadPhotos();
+      controller.lastPhotoHash = currentHash;
+    } else if (currentHash && controller.lastPhotoHash && currentHash === controller.lastPhotoHash) {
+      controller.log('🖼️ Fotos sin cambios: se conservan las del anuncio (no se duplican).');
+    } else if (!controller.lastPhotoHash) {
+      controller.lastPhotoHash = currentHash;
+      controller.log('🖼️ El anuncio ya tiene fotos: no se re-suben (evita duplicados).');
     } else {
       await replacePhotosInEdit();
+      controller.lastPhotoHash = currentHash;
     }
     if (!(await waitForManualCaptcha(page, controller))) return false;
 
@@ -4334,6 +4362,7 @@ class ProfileController {
     this.cycleDeleteCompleted = false;
     this.rotateQueue = [];
     this.variantIndex = {};
+    this.lastPhotoHash = null;
     this._stopping = false;
     this._recovering = false;
     this._socksBridge = null;
@@ -5406,6 +5435,7 @@ function buildControllers() {
         controller.cycleDeleteCompleted = Boolean(saved.cycleDeleteCompleted);
         controller.rotateQueue = Array.isArray(saved.rotateQueue) ? saved.rotateQueue : [];
         controller.variantIndex = (saved.variantIndex && typeof saved.variantIndex === 'object') ? saved.variantIndex : {};
+        controller.lastPhotoHash = saved.lastPhotoHash || null;
       }
       controllers.set(profile.id, controller);
     }
