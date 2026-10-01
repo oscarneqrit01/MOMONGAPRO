@@ -2455,6 +2455,19 @@ async function isVerificationPage(page) {
   }
 }
 
+// Detecta el aviso de rate-limit del sitio: "Too many requests ... Allow one request per 5 seconds".
+async function detectRateLimit(page) {
+  try {
+    if (/too.?many.?request|rate.?limit|one request per/i.test(page.url())) return true;
+    return await page.evaluate(() => {
+      const t = `${document.body ? document.body.innerText : ''} ${document.title || ''}`;
+      return /too many requests|one request per|please wait\s*(a few|\d+)?\s*seconds?|rate limit|espera.*segundos/i.test(t);
+    }).catch(() => false);
+  } catch (_) {
+    return false;
+  }
+}
+
 async function checkForBlock(page, controller, opts = {}) {
   // Sesión caducada (página de login) NO es un bloqueo: nunca parar las demás cuentas.
   if (!opts.skipLoginCheck && controller && await isLoginPage(page)) {
@@ -2791,7 +2804,11 @@ async function performBump(page, controller) {
 
   if (await checkForBlock(page, controller)) return false;
 
+  if (await detectRateLimit(page)) { controller._rateLimited = true; return false; }
+
   if (await doBump(page, controller)) return true;
+
+  if (await detectRateLimit(page)) { controller._rateLimited = true; return false; }
 
   controller.log('⚠️ No se encontró el botón Bump to Top. Puede que el anuncio ya esté arriba o no sea elegible para bump.');
   return false;
@@ -2873,8 +2890,21 @@ async function bumpAllAdsOneByOne(page, controller) {
       return false;
     }
     if (await checkForBlock(page, controller)) return false;
-    await sleep(2500);
+    // Respeta el limite del sitio: "Allow one request per 5 seconds".
+    await sleep(5500);
+    if (await detectRateLimit(page)) {
+      controller.warn('⏳ El sitio pidió esperar (rate-limit). Espero 9s y reintento...');
+      await sleep(9000);
+      try { await page.goto(target.href, { waitUntil: 'networkidle2', timeout: 60000 }); } catch (_) {}
+      await sleep(2500);
+      if (await detectRateLimit(page)) { controller._rateLimited = true; return false; }
+    }
     clicked = await trustedClick(page, '#managePublishAd');
+    if (!clicked && await detectRateLimit(page)) {
+      await sleep(9000);
+      clicked = await trustedClick(page, '#managePublishAd');
+      if (!clicked) { controller._rateLimited = true; return false; }
+    }
   } else {
     // Bump directo por enlace
     clicked = await trustedClick(page, `a[href*="/users/posts/bump/${targetId}"]`);
@@ -5363,6 +5393,12 @@ emitActive() {
     } else {
       ok = await performBump(this.page, this);
     }
+    if (this._rateLimited) {
+      this._rateLimited = false;
+      this.log('⏳ El sitio pidió esperar (rate-limit). Reintento en 1 min (no cuenta como fallo).');
+      this.scheduleRetrySoon(1);
+      return;
+    }
     this.recordCycleResult(ok);
     this.log('Ciclo completado.');
 
@@ -5540,6 +5576,13 @@ emitActive() {
       await bumpAllAdsOneByOne(this.page, this);
     } else {
       await performBump(this.page, this);
+    }
+
+    if (this._rateLimited) {
+      this._rateLimited = false;
+      this.log('⏳ El sitio pidió esperar (rate-limit). Reintento en 1 min.');
+      this.scheduleRetrySoon(1);
+      return;
     }
 
     this.log('Publicación manual completada.');
