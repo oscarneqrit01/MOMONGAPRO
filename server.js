@@ -830,6 +830,18 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
         } catch (e) { controller.log(`⚠️ Crear post falló: ${e.message}`); }
       })();
     }
+    else if (action === 'remove-post' || action === 'remover-post' || action === 'remove' || action === 'delete-post' || action === 'eliminar-post') {
+      (async () => {
+        try {
+          if (!controller.page) await controller.open();
+          if (controller.page) {
+            controller._operationPromise = removePost(controller.page, controller);
+            await controller._operationPromise.catch(() => {});
+            controller._operationPromise = null;
+          }
+        } catch (e) { controller.log(`⚠️ Remover post falló: ${e.message}`); }
+      })();
+    }
     else if (action === 'verify' || action === 'verificar') {
       const check = await runSafetyCheck(controller).catch(() => null);
       if (check) reportSafetyCheck(controller, check);
@@ -3781,6 +3793,50 @@ async function deleteAndRepost(page, controller, options = {}) {
 // Aplica los cambios del anuncio en la cuenta real:
 //  - Si hay un post: pulsa "Edit Post" y guarda (no borra).
 //  - Si NO hay post (ya borrado) o ya estamos en /users/posts/create: crea/publica el anuncio.
+// Remueve el anuncio actual (solo borra; NO crea nada). Para cuentas con 2 anuncios
+// o cuando quieres quitar la publicacion y luego hacer una nueva.
+async function removePost(page, controller) {
+  const urls = siteUrls(controller);
+  controller.setCycleStage('removing', 'Abriendo Manage Posts para remover.');
+  controller.log('🗑️ Removiendo el anuncio...');
+  try {
+    await page.goto(urls.manage, { waitUntil: 'networkidle2', timeout: 60000 });
+  } catch (e) {
+    controller.log(`No se pudo abrir Mis Anuncios: ${e.message}`);
+    return false;
+  }
+  if (await ensureSession(page, controller)) {
+    await page.goto(urls.manage, { waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {});
+  }
+  if (await checkForBlock(page, controller)) return false;
+
+  const clicked = await trustedClick(page, () => {
+    const knownButton = document.querySelector('#delete-post-id');
+    if (knownButton && knownButton.offsetParent !== null) return knownButton;
+    return Array.from(document.querySelectorAll('button, a, input[type="submit"]'))
+      .find((el) => el.offsetParent !== null && /remove\s*post|delete\s*post|remove|delete|borrar|eliminar/i.test(`${el.innerText || ''} ${el.value || ''}`)) || null;
+  });
+  if (!clicked) {
+    controller.log('ℹ️ No se encontró el botón de remover (quizá ya no hay anuncio).');
+    controller.setCycleStage('error', 'No se encontró el botón Remover.');
+    return false;
+  }
+
+  await sleep(3000);
+  await page.waitForFunction(() => {
+    const controls = Array.from(document.querySelectorAll('button, a, input[type="submit"]'));
+    return controls.some(c => /confirm|yes|sí|si|delete|borrar/i.test(`${c.innerText || ''} ${c.value || ''}`));
+  }, { timeout: 5000 }).then(() => clickTextControl(page, ['confirm', '^yes$', '^sí$', '^si$', 'delete', 'remove', 'borrar'], 3000)).catch(() => {});
+  await sleep(1500);
+
+  if (await detectRateLimit(page)) { controller._rateLimited = true; return false; }
+  await dismissOkModal(page).catch(() => {});
+  controller.log('✅ Anuncio removido (solo remoción, sin crear).');
+  controller.setCycleStage('completed', 'Anuncio removido.');
+  notify(`🗑️ Anuncio removido en "${controller.id}".`);
+  return true;
+}
+
 async function editExistingPost(page, controller, options = {}) {
   const urls = siteUrls(controller);
   const details = controller.cfg.adDetails || {};
