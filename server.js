@@ -257,6 +257,7 @@ function controlProfileFull(c) {
     lastError: c.lastError || null,
     bumpMinMinutes: p.bumpMinMinutes || p.intervalMinutes || 16,
     bumpMaxMinutes: p.bumpMaxMinutes || p.bumpMinMinutes || p.intervalMinutes || 16,
+    postsARotar: Math.max(0, Math.floor(Number(p.postsARotar) || 0)),
     apiKey2Captcha: p.apiKey2Captcha || '',
     settings: {
       rotateAds: Boolean(c.settings?.rotateAds),
@@ -456,6 +457,7 @@ app.post('/api/control/profiles', requireControlKey, (req, res) => {
       id: cleanId, port,
       email: '', password: '', supportEmail: '', supportUrl: '',
       intervalMinutes: min, bumpMinMinutes: min, bumpMaxMinutes: max,
+      postsARotar: Math.max(0, Math.floor(Number(body.postsARotar) || 0)),
       url: String(body.url || DEFAULT_URL).trim() || DEFAULT_URL,
       device: isValidDevice(body.device) ? body.device : 'iphone',
       settings: {
@@ -536,6 +538,11 @@ app.patch('/api/control/profiles/:id', requireControlKey, (req, res) => {
     if ('apiKey2Captcha' in body) {
       profile.apiKey2Captcha = String(body.apiKey2Captcha || '').trim();
       controller.cfg.apiKey2Captcha = profile.apiKey2Captcha;
+    }
+    if ('postsARotar' in body) {
+      const n = Math.max(0, Math.floor(Number(body.postsARotar) || 0));
+      profile.postsARotar = n;
+      controller.cfg.postsARotar = n;
     }
     if ('rotateAds' in body || 'randomizedDelay' in body || 'publishOnStart' in body) {
       profile.settings = {
@@ -2837,7 +2844,9 @@ async function bumpAllAdsOneByOne(page, controller) {
     return false;
   }
 
-  const currentIds = ads.map((ad) => ad.id);
+  const limite = Math.max(0, Math.floor(Number(controller.cfg.postsARotar) || 0));
+  const lista = limite >= 1 ? ads.slice(0, Math.min(ads.length, limite)) : ads;
+  const currentIds = lista.map((ad) => ad.id);
   const queue = (Array.isArray(controller.rotateQueue) ? controller.rotateQueue : [])
     .filter((id) => currentIds.includes(id));
   for (const id of currentIds) {
@@ -2848,9 +2857,9 @@ async function bumpAllAdsOneByOne(page, controller) {
   const targetId = queue.shift();
   queue.push(targetId);
   const position = currentIds.indexOf(targetId) + 1;
-  const target = ads.find((ad) => ad.id === targetId) || { id: targetId, title: '' };
+  const target = lista.find((ad) => ad.id === targetId) || { id: targetId, title: '' };
 
-  controller.log(`🔄 Anuncio ${position}/${ads.length} (ID ${targetId}${target.title ? ` · ${target.title}` : ''}).`);
+  controller.log(`🔄 Anuncio ${position}/${lista.length}${limite >= 1 ? ` (rotando ${limite} de ${ads.length})` : ' (todos)'} (ID ${targetId}${target.title ? ` · ${target.title}` : ''}).`);
 
   const viaSelect = target.href && target.href.indexOf('/users/posts/select/') > -1;
   let clicked = false;
