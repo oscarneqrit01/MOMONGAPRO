@@ -4370,6 +4370,34 @@ async function downloadAndSanitizePhoto(imageUrl, outputFolder, profileId, dispa
   }
 }
 
+// Igual que downloadAndSanitizePhoto pero baja la foto DENTRO del navegador (con cookies de
+// sesión y TLS de Chrome), así el CDN (img*.drome6.com) no responde 403 de Cloudflare.
+async function downloadPhotoViaPage(page, imageUrl, outputFolder, profileId) {
+  try {
+    const b64 = await page.evaluate(async (u) => {
+      const r = await fetch(u, { credentials: 'include' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const buf = new Uint8Array(await r.arrayBuffer());
+      let s = '';
+      for (let i = 0; i < buf.length; i += 8192) s += String.fromCharCode.apply(null, buf.subarray(i, i + 8192));
+      return btoa(s);
+    }, imageUrl);
+    const buffer = Buffer.from(b64, 'base64');
+    const targetDir = outputFolder || path.join(__dirname, 'profiles', profileId, 'photos');
+    if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+    const outputPath = path.join(targetDir, `sanitized_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`);
+    await sharp(buffer)
+      .resize(1080, 1920, { fit: 'inside', withoutEnlargement: true })
+      .modulate({ brightness: 1.01, saturation: 1.02 })
+      .jpeg({ quality: 95, mozjpeg: true })
+      .toFile(outputPath);
+    return outputPath;
+  } catch (error) {
+    console.error(`❌ Error al limpiar la foto: ${error.message}`);
+    return null;
+  }
+}
+
 class ProfileController {
   constructor(cfg) {
     this.cfg = cfg;
@@ -5845,25 +5873,35 @@ async function scrapeAndSaveAd(controller) {
   let photosSaved = 0;
   if (photoUrls.length > 0) {
     const targetDir = path.join(__dirname, 'profiles', controller.id, 'photos');
-    const dispatcher = buildProxyDispatcher(controller.cfg.proxy);
-    controller.log(`🖼️ Descargando y limpiando ${photoUrls.length} foto(s)${dispatcher ? ' vía proxy' : ''}...`);
+    const tmpDir = targetDir + '.tmp';
+    controller.log(`🖼️ Descargando y limpiando ${photoUrls.length} foto(s) desde el navegador...`);
+    const failed = [];
     try {
-      if (fs.existsSync(targetDir)) {
-        for (const name of fs.readdirSync(targetDir)) {
-          try { fs.unlinkSync(path.join(targetDir, name)); } catch (_) {}
-        }
-      }
+      if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.mkdirSync(tmpDir, { recursive: true });
       for (const url of photoUrls) {
-        const saved = await downloadAndSanitizePhoto(url, targetDir, controller.id, dispatcher);
-        if (saved) photosSaved++;
+        const saved = await downloadPhotoViaPage(controller.page, url, tmpDir, controller.id);
+        if (saved) photosSaved++; else failed.push(url);
       }
-    } finally {
-      if (dispatcher) await dispatcher.close().catch(() => {});
+    } catch (error) {
+      controller.log(`⚠️ Error en la descarga: ${error.message}`);
     }
+    if (failed.length) controller.log(`⚠️ ${failed.length} foto(s) fallaron al descargar (CDN 403).`);
+
     if (photosSaved > 0) {
+      fs.mkdirSync(targetDir, { recursive: true });
+      for (const name of fs.readdirSync(targetDir)) {
+        try { fs.unlinkSync(path.join(targetDir, name)); } catch (_) {}
+      }
+      for (const name of fs.readdirSync(tmpDir)) {
+        try { fs.renameSync(path.join(tmpDir, name), path.join(targetDir, name)); } catch (_) {}
+      }
       photosPath = `profiles/${controller.id}/photos`;
       controller.log(`🛡️ ${photosSaved} foto(s) blindada(s) en ${photosPath}.`);
+    } else {
+      controller.log('⚠️ 0 fotos descargadas: se conservan las anteriores.');
     }
+    try { if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
   }
 
   const config = loadConfig();
