@@ -4065,15 +4065,25 @@ async function appealContactUsClean(email, apiKey, proxy) {
     browser = await puppeteer.launch({
       headless: false,
       executablePath: detectChromeExecutable(),
+      ignoreDefaultArgs: ['--enable-automation'],
       args,
       defaultViewport: { width: 1280, height: 900 },
     });
     const page = await browser.newPage();
+    await page.evaluateOnNewDocument(() => {
+      try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch (_) {}
+      try {
+        const orig = navigator.permissions && navigator.permissions.query;
+        if (orig) navigator.permissions.query = (p) => (p && p.name === 'notifications' ? Promise.resolve({ state: Notification.permission }) : orig.call(navigator.permissions, p));
+      } catch (_) {}
+    }).catch(() => {});
     if (proxy && proxy.host && proxy.username && proxy.type !== 'socks5') {
       try { await page.authenticate({ username: String(proxy.username), password: String(proxy.password || '') }); } catch (_) {}
     }
     await page.goto('https://megapersonals.eu/public/contact_us', { waitUntil: 'networkidle2', timeout: 60000 });
-    await sleep(3500);
+    // Espera a que el formulario esté listo.
+    try { await page.waitForSelector('#person_username_field_login, input[name="email"]', { timeout: 25000 }); } catch (_) {}
+    await sleep(2500);
     try {
       const info = await page.evaluate(() => ({
         url: location.href,
