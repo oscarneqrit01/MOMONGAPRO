@@ -264,6 +264,7 @@ function controlProfileState(c) {
     lastBumpAt: c.stats?.lastBumpAt || 0,
     nextBumpAt: c._nextBumpAt || 0,
     lastError: c.lastError || null,
+    blocked: Boolean(c.blocked),
     headline: (c.cfg?.adDetails?.headline || '').slice(0, 80),
     photos: contarFotos(c),
     thumb: thumbDe(c)
@@ -891,6 +892,12 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
           }
         } catch (e) { controller.log(`⚠️ Remover post falló: ${e.message}`); }
       })();
+    }
+    else if (action === 'unblock' || action === 'desbloquear' || action === 'desmarcar-bloqueada') {
+      controller.blocked = false;
+      saveState();
+      controller.log('✅ Perfil desmarcado como bloqueado. Ya se puede Iniciar de nuevo.');
+      notify(`✅ La cuenta "${controller.id}" se desmarcó como bloqueada (lista para reintentar).`);
     }
     else if (action === 'verify' || action === 'verificar') {
       const check = await runSafetyCheck(controller).catch(() => null);
@@ -1640,7 +1647,8 @@ function saveState() {
         cycleDeleteCompleted: Boolean(controller.cycleDeleteCompleted),
         rotateQueue: Array.isArray(controller.rotateQueue) ? controller.rotateQueue : [],
         variantIndex: controller.variantIndex || {},
-        lastPhotoHash: controller.lastPhotoHash || null
+        lastPhotoHash: controller.lastPhotoHash || null,
+        blocked: Boolean(controller.blocked)
       };
     }
     backupFile(STATE_PATH, 'state');
@@ -2190,6 +2198,13 @@ async function detectBlock(page) {
 async function emergencyStop(reason, sourceId) {
   if (emergencyActive) return;
   emergencyActive = true;
+
+  // Marca el perfil de origen como BLOQUEADA: no se re-arranca solo (ni por horario),
+  // asi la pagina queda usable para apelar desde el mismo navegador.
+  if (sourceId) {
+    const src = controllers.get(sourceId);
+    if (src) { src.blocked = true; try { saveState(); } catch (_) {} }
+  }
 
   const active = [...controllers.values()].filter((c) => c.started);
 
@@ -4623,6 +4638,7 @@ class ProfileController {
     this.page = null;
     this.started = false;
     this.paused = false;
+    this.blocked = false;
     this._nextBumpAt = 0;
     this._cycleTimer = null;
     this._countdownTimer = null;
@@ -5259,6 +5275,10 @@ emitActive() {
   }
 
   async _startInternal() {
+    if (this.blocked) {
+      this.log('⛔ Perfil marcado como BLOQUEADO: no se reinicia solo (para no recargar la página y poder apelar). Usa "Desmarcar bloqueada" para reactivarlo.');
+      return;
+    }
     if (this.started) {
       if (this.paused) {
         this.resume();
@@ -5732,6 +5752,7 @@ function buildControllers() {
         controller.rotateQueue = Array.isArray(saved.rotateQueue) ? saved.rotateQueue : [];
         controller.variantIndex = (saved.variantIndex && typeof saved.variantIndex === 'object') ? saved.variantIndex : {};
         controller.lastPhotoHash = saved.lastPhotoHash || null;
+        controller.blocked = Boolean(saved.blocked);
       }
       controllers.set(profile.id, controller);
     }
