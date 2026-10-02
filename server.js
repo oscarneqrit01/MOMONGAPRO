@@ -4026,11 +4026,17 @@ function contactoApelacion() {
 async function appealContactUsClean(email, apiKey, proxy) {
   if (!email) return { ok: false, error: 'Falta el email.' };
   let browser = null;
+  let bridge = null;
   try {
     const args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'];
     if (proxy && proxy.host) {
-      const scheme = proxy.type === 'socks5' ? 'socks5' : 'http';
-      args.push(`--proxy-server=${scheme}://${proxy.host}:${proxy.port}`);
+      if (proxy.type === 'socks5' && proxy.username) {
+        // Chrome no soporta SOCKS5 con usuario/clave: levantamos un puente local.
+        try { bridge = await startSocksBridge(proxy); args.push(`--proxy-server=http://127.0.0.1:${bridge.address().port}`); } catch (_) {}
+      } else {
+        const scheme = proxy.type === 'socks5' ? 'socks5' : 'http';
+        args.push(`--proxy-server=${scheme}://${proxy.host}:${proxy.port}`);
+      }
     }
     browser = await puppeteer.launch({
       headless: false,
@@ -4039,7 +4045,7 @@ async function appealContactUsClean(email, apiKey, proxy) {
       defaultViewport: { width: 1280, height: 900 },
     });
     const page = await browser.newPage();
-    if (proxy && proxy.host && proxy.username) {
+    if (proxy && proxy.host && proxy.username && proxy.type !== 'socks5') {
       try { await page.authenticate({ username: String(proxy.username), password: String(proxy.password || '') }); } catch (_) {}
     }
     await page.goto('https://megapersonals.eu/public/contact_us', { waitUntil: 'networkidle2', timeout: 60000 });
@@ -4065,6 +4071,7 @@ async function appealContactUsClean(email, apiKey, proxy) {
   } catch (e) {
     return { ok: false, error: e.message };
   } finally {
+    try { if (bridge) bridge.close(); } catch (_) {}
     try { if (browser) await browser.close(); } catch (_) {}
   }
 }
