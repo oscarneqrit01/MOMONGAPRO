@@ -906,8 +906,11 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
           if (controller.page) {
             let origin = 'https://megapersonals.eu';
             try { origin = new URL(siteUrls(controller).list).origin; } catch (_) {}
-            await controller.page.goto(`${origin}/public/support_request`, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
-            controller.log('📨 Abrí la página de apelación/soporte en el navegador del perfil.');
+            const permitidos = ['/public/support_request', '/public/scam_request', '/reset_user_password'];
+            const pedido = String((req.body && req.body.path) || '').trim();
+            const ruta = permitidos.includes(pedido) ? pedido : permitidos[0];
+            await controller.page.goto(`${origin}${ruta}`, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+            controller.log(`📨 Abrí ${ruta} en el navegador del perfil.`);
           }
         } catch (e) { controller.log(`⚠️ Apelar falló: ${e.message}`); }
       })();
