@@ -2333,13 +2333,8 @@ async function captureBlockEvidence(page, controller, reason) {
     io.emit('block-evidence', record);
 
     if (controller.cfg.autoAppeal !== false) {
-      const { outlookUrl } = buildAppealDraft(record);
-      if (outlookUrl) {
-        controller.log(`📧 Abriendo el correo para apelar a ${record.supportEmail}...`);
-        const ok = await openUrlInProfileBrowser(controller, outlookUrl);
-        if (ok) controller.log('📧 Correo abierto en el navegador del perfil.');
-        else openExternalUrl(outlookUrl);
-      }
+      controller.log('📨 Apelando automáticamente por el formulario de soporte...');
+      await appealSupportForm(page, controller).catch(() => {});
     }
 
     return record;
@@ -2541,12 +2536,9 @@ async function createManualAppeal(controller, reason = 'Apelación manual desde 
     } catch (_) {}
     index.push(record);
     fs.writeFileSync(indexPath, `${JSON.stringify(index.slice(-200), null, 2)}\n`, 'utf8');
-    const { outlookUrl } = buildAppealDraft(record);
-    if (outlookUrl && controller.cfg.autoAppeal !== false) {
-      controller.log(`📧 Abriendo el correo para apelar a ${record.supportEmail}...`);
-      const ok = await openUrlInProfileBrowser(controller, outlookUrl);
-      if (ok) controller.log('📧 Correo abierto en el navegador del perfil.');
-      else openExternalUrl(outlookUrl);
+    if (controller.cfg.autoAppeal !== false) {
+      controller.log('📨 Apelando por el formulario de soporte...');
+      await appealSupportForm(controller.page, controller).catch(() => {});
     }
     controller.log('📨 Apelación manual creada (revisa "Bloqueos detectados").');
     io.emit('block-evidence', record);
@@ -3963,11 +3955,9 @@ async function appealSupportForm(page, controller) {
     controller.log(`No se pudo abrir la apelación: ${e.message}`);
     return false;
   }
-  if (await checkForBlock(page, controller)) return false;
   await sleep(2000);
 
-  const email = (controller.cfg && controller.cfg.email) || '';
-  const phone = (controller.cfg && controller.cfg.adDetails && controller.cfg.adDetails.phone) || '';
+  const email = (controller.cfg && controller.cfg.email) || '';  const phone = (controller.cfg && controller.cfg.adDetails && controller.cfg.adDetails.phone) || '';
   const detalle = 'Hello, I think my account was blocked by mistake. I never used a scam site; I only use megapersonals.eu and I have always followed the rules. Please review my account and reactivate it. Thank you.';
 
   await page.evaluate((em, ph, det) => {
