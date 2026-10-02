@@ -4065,7 +4065,6 @@ async function appealContactUsClean(email, apiKey, proxy) {
     browser = await puppeteer.launch({
       headless: false,
       executablePath: detectChromeExecutable(),
-      userDataDir: path.join(__dirname, 'profiles', '_apelaciones'),
       args,
       defaultViewport: { width: 1280, height: 900 },
     });
