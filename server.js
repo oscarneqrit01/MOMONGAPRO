@@ -772,6 +772,9 @@ app.post('/api/control/mail/close', requireControlKey, async (req, res) => {
   catch (error) { res.status(500).json({ ok: false, error: error.message }); }
 });
 app.get('/api/control/mail/list', requireControlKey, (req, res) => res.json({ ok: true, abiertos: [...mailBrowsers.keys()] }));
+app.get('/api/control/mail/status', requireControlKey, async (req, res) => {
+  try { res.json(await mailStatus()); } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
 
 app.post('/api/control/all/:action', requireControlKey, async (req, res) => {
   const action = String(req.params.action || '').toLowerCase();
@@ -4093,6 +4096,21 @@ async function closeMailBrowser(id) {
   if (m && m.browser) { try { await m.browser.close(); } catch (_) {} }
   mailBrowsers.delete(key);
   return { ok: true };
+}
+
+// Estado de los correos abiertos: titulo de la pestana de Outlook (trae el conteo de no leidos).
+async function mailStatus() {
+  const out = [];
+  for (const [id, m] of mailBrowsers.entries()) {
+    let title = '', url = '';
+    try {
+      const ps = await m.browser.pages();
+      const p = ps.find((x) => /outlook|live\.com|office/i.test(x.url())) || ps[0];
+      if (p) { title = await p.title().catch(() => ''); url = p.url(); }
+    } catch (_) {}
+    out.push({ id, title, url });
+  }
+  return { ok: true, mails: out };
 }
 
 // Apelacion por el formulario CONTACT US en un navegador LIMPIO (sin sesion): solo el correo.
