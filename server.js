@@ -919,6 +919,18 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
         try {
           if (!controller.page) await controller.open();
           if (controller.page) {
+            controller._operationPromise = appealSupportForm(controller.page, controller);
+            await controller._operationPromise.catch(() => {});
+            controller._operationPromise = null;
+          }
+        } catch (e) { controller.log(`⚠️ Apelar falló: ${e.message}`); }
+      })();
+    }
+    else if (action === 'appeal-open' || action === 'abrir-apelacion') {
+      (async () => {
+        try {
+          if (!controller.page) await controller.open();
+          if (controller.page) {
             let origin = 'https://megapersonals.eu';
             try { origin = new URL(siteUrls(controller).list).origin; } catch (_) {}
             const permitidos = ['/public/support_request', '/public/scam_request', '/reset_user_password'];
@@ -927,7 +939,7 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
             await controller.page.goto(`${origin}${ruta}`, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
             controller.log(`📨 Abrí ${ruta} en el navegador del perfil.`);
           }
-        } catch (e) { controller.log(`⚠️ Apelar falló: ${e.message}`); }
+        } catch (e) { controller.log(`⚠️ Abrir apelación falló: ${e.message}`); }
       })();
     }
     else if (action === 'verify' || action === 'verificar') {
@@ -3930,6 +3942,56 @@ async function removePost(page, controller) {
   controller.log('✅ Anuncio removido (solo remoción, sin crear).');
   controller.setCycleStage('completed', 'Anuncio removido.');
   notify(`🗑️ Anuncio removido en "${controller.id}".`);
+  return true;
+}
+
+// Apelacion por el FORMULARIO (no por correo): abre /public/support_request, rellena
+// email/telefono/detalle, resuelve el captcha (2Captcha) y envia "Send to Support".
+async function appealSupportForm(page, controller) {
+  let origin = 'https://megapersonals.eu';
+  try { origin = new URL(siteUrls(controller).list).origin; } catch (_) {}
+  controller.setCycleStage('removing', 'Abriendo formulario de apelación.');
+  controller.log('📨 Abriendo el formulario de apelación (Support Request)...');
+  try {
+    await page.goto(`${origin}/public/support_request`, { waitUntil: 'networkidle2', timeout: 60000 });
+  } catch (e) {
+    controller.log(`No se pudo abrir la apelación: ${e.message}`);
+    return false;
+  }
+  if (await checkForBlock(page, controller)) return false;
+  await sleep(2000);
+
+  const email = (controller.cfg && controller.cfg.email) || '';
+  const phone = (controller.cfg && controller.cfg.adDetails && controller.cfg.adDetails.phone) || '';
+  const detalle = 'Hello, I think my account was blocked by mistake. I never used a scam site; I only use megapersonals.eu and I have always followed the rules. Please review my account and reactivate it. Thank you.';
+
+  await page.evaluate((em, ph, det) => {
+    const setVal = (el, v) => { if (!el) return; try { el.focus(); } catch (_) {} el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
+    const inputs = Array.from(document.querySelectorAll('input')).filter((i) => !['hidden', 'submit', 'button'].includes(i.type));
+    const emailEl = inputs.find((i) => /email/i.test(`${i.type} ${i.name} ${i.placeholder}`)) || inputs[0];
+    setVal(emailEl, em);
+    const phoneEl = inputs.find((i) => /phone|tel|movil|móvil|cel/i.test(`${i.type} ${i.name} ${i.placeholder}`)) || inputs.find((i) => i !== emailEl && /text|tel/i.test(i.type));
+    if (phoneEl) setVal(phoneEl, ph);
+    const ta = document.querySelector('textarea');
+    if (ta) setVal(ta, det);
+  }, email, phone, detalle).catch(() => {});
+  controller.log('📝 Formulario rellenado (email/teléfono/detalle).');
+  await humanPause(800, 1600);
+
+  if (controller.cfg && controller.cfg.apiKey2Captcha) {
+    try { await solveImageCaptcha(controller.cfg.apiKey2Captcha, page, controller); } catch (e) { controller.log(`⚠️ Captcha automático: ${e.message}`); }
+  }
+  await humanPause(600, 1400);
+
+  const enviado = await clickTextControl(page, ['send\\s+to\\s+support', 'send', 'enviar', 'submit'], 8000);
+  if (!enviado) {
+    controller.log('⚠️ No encontré el botón "Send to Support" (quizá falta el captcha). Déjalo abierto para terminar a mano.');
+    return false;
+  }
+  await sleep(3000);
+  await dismissOkModal(page).catch(() => {});
+  controller.log('✅ Apelación ENVIADA por el formulario de soporte.');
+  notify(`📨 Apelación enviada para "${controller.id}" (formulario de soporte).`);
   return true;
 }
 
