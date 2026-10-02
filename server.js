@@ -292,6 +292,7 @@ function controlProfileFull(c) {
     bumpMaxMinutes: p.bumpMaxMinutes || p.bumpMinMinutes || p.intervalMinutes || 16,
     postsARotar: Math.max(0, Math.floor(Number(p.postsARotar) || 0)),
     apiKey2Captcha: p.apiKey2Captcha || '',
+    email: p.email || '',
     settings: {
       rotateAds: Boolean(c.settings?.rotateAds),
       randomizedDelay: c.settings?.randomizedDelay !== false,
@@ -571,6 +572,10 @@ app.patch('/api/control/profiles/:id', requireControlKey, (req, res) => {
     if ('apiKey2Captcha' in body) {
       profile.apiKey2Captcha = String(body.apiKey2Captcha || '').trim();
       controller.cfg.apiKey2Captcha = profile.apiKey2Captcha;
+    }
+    if ('email' in body) {
+      profile.email = String(body.email || '').trim();
+      controller.cfg.email = profile.email;
     }
     if ('postsARotar' in body) {
       const n = Math.max(0, Math.floor(Number(body.postsARotar) || 0));
@@ -3966,7 +3971,7 @@ async function appealSupportForm(page, controller) {
   const detalle = 'Hello, I think my account was blocked by mistake. I never used a scam site; I only use megapersonals.eu and I have always followed the rules. Please review my account and reactivate it. Thank you.';
 
   await page.evaluate((em, ph, det) => {
-    const setVal = (el, v) => { if (!el) return; try { el.focus(); } catch (_) {} el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
+    const setVal = (el, v) => { if (!el || v === undefined || v === null || v === '') return; try { el.focus(); } catch (_) {} el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
     const inputs = Array.from(document.querySelectorAll('input')).filter((i) => !['hidden', 'submit', 'button'].includes(i.type));
     const emailEl = inputs.find((i) => /email/i.test(`${i.type} ${i.name} ${i.placeholder}`)) || inputs[0];
     setVal(emailEl, em);
