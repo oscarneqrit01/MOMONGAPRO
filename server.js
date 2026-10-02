@@ -795,6 +795,20 @@ app.post('/api/control/profiles/:id/import', requireControlKey, async (req, res)
   }
 });
 
+// Imagen (captura) del ultimo bloqueo de este perfil.
+app.get('/api/control/profiles/:id/block-image', requireControlKey, (req, res) => {
+  try {
+    const id = req.params.id;
+    let files = [];
+    try { files = fs.readdirSync(APPEALS_DIR).filter((f) => f.startsWith(`${id}-`) && f.endsWith('.png')).sort(); } catch (_) {}
+    if (!files.length) return res.json({ ok: true, image: '' });
+    const buf = fs.readFileSync(path.join(APPEALS_DIR, files[files.length - 1]));
+    res.json({ ok: true, image: `data:image/png;base64,${buf.toString('base64')}` });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 // Logs recientes de un perfil (ultimas ~250 lineas que mencionan ese id).
 app.get('/api/control/profiles/:id/logs', requireControlKey, (req, res) => {
   try {
