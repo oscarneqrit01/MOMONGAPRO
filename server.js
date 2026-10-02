@@ -4027,6 +4027,7 @@ async function appealContactUsClean(email, apiKey, proxy) {
   if (!email) return { ok: false, error: 'Falta el email.' };
   let browser = null;
   let bridge = null;
+  let keepOpen = false;
   try {
     const args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'];
     if (proxy && proxy.host) {
@@ -4050,30 +4051,71 @@ async function appealContactUsClean(email, apiKey, proxy) {
       try { await page.authenticate({ username: String(proxy.username), password: String(proxy.password || '') }); } catch (_) {}
     }
     await page.goto('https://megapersonals.eu/public/contact_us', { waitUntil: 'networkidle2', timeout: 60000 });
-    await sleep(2500);
+    await sleep(3500);
     const { subject, message } = contactoApelacion();
+
+    // Rellenar escribiendo de verdad (más fiable que solo poner .value).
+    const emailSel = 'input[placeholder*="email" i], input[type="email"], input[name*="email" i]';
+    const subjSel = 'input[placeholder*="subject" i], input[name*="subject" i]';
+    const msgSel = 'textarea';
+    const escribir = async (sel, val) => {
+      try {
+        const el = await page.$(sel);
+        if (!el) return false;
+        await el.click({ clickCount: 3 }).catch(() => {});
+        await el.evaluate((n) => { n.value = ''; }).catch(() => {});
+        await el.type(String(val), { delay: 15 + Math.floor(Math.random() * 25) });
+        return true;
+      } catch (_) { return false; }
+    };
+    await escribir(emailSel, email);
+    await escribir(subjSel, subject);
+    await escribir(msgSel, message);
+    // Respaldo por si el tecleo falla: set directo.
     await page.evaluate((em, sub, msg) => {
-      const setVal = (el, v) => { if (!el) return; try { el.focus(); } catch (_) {} el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
+      const setVal = (el, v) => { if (!el) return; el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
       const inputs = Array.from(document.querySelectorAll('input')).filter((i) => !['hidden', 'submit', 'button'].includes(i.type));
       const emailEl = inputs.find((i) => /email/i.test(`${i.type} ${i.name} ${i.placeholder}`)) || inputs[0];
-      setVal(emailEl, em);
+      if (emailEl && !emailEl.value) setVal(emailEl, em);
       const subjEl = inputs.find((i) => /subject|asunto/i.test(`${i.name} ${i.placeholder}`)) || inputs.find((i) => i !== emailEl && /text/i.test(i.type));
-      if (subjEl) setVal(subjEl, sub);
+      if (subjEl && !subjEl.value) setVal(subjEl, sub);
       const ta = document.querySelector('textarea');
-      if (ta) setVal(ta, msg);
+      if (ta && !ta.value) setVal(ta, msg);
     }, email, subject, message).catch(() => {});
-    await sleep(2000);
+    await sleep(1500);
+
+    // Verifica que email y mensaje quedaron escritos.
+    const check = await page.evaluate(() => {
+      const inputs = Array.from(document.querySelectorAll('input')).filter((i) => !['hidden', 'submit', 'button'].includes(i.type));
+      const emailEl = inputs.find((i) => /email/i.test(`${i.type} ${i.name} ${i.placeholder}`)) || inputs[0];
+      const ta = document.querySelector('textarea');
+      return { email: emailEl ? String(emailEl.value || '').trim() : '', msg: ta ? String(ta.value || '').trim() : '' };
+    }).catch(() => ({ email: '', msg: '' }));
+    if (!check.email || !check.msg) {
+      keepOpen = true;
+      return { ok: false, error: 'No se pudieron rellenar los campos (email/mensaje). Dejo el navegador abierto para que lo completes.' };
+    }
 
     if (apiKey) { try { await solveImageCaptcha(apiKey, page, { log: () => {} }); } catch (_) {} }
-    await sleep(1200);
+    await sleep(1500);
+    const captchaLleno = await page.evaluate(() => {
+      const i = document.querySelector('input[placeholder*="picture" i], #captcha_code, input[name*="captcha" i]');
+      return i ? String(i.value || '').trim().length > 0 : false;
+    }).catch(() => false);
+    if (!captchaLleno) {
+      keepOpen = true;
+      return { ok: false, error: 'No se llenó el captcha. Dejo el navegador abierto para que lo completes y envíes.' };
+    }
+
     const enviado = await clickTextControl(page, ['send\\s+message', 'send', 'enviar'], 8000);
     await sleep(4000);
-    return { ok: Boolean(enviado), subject, message };
+    if (!enviado) { keepOpen = true; return { ok: false, error: 'No encontré el botón "Send Message".' }; }
+    return { ok: true, subject, message };
   } catch (e) {
     return { ok: false, error: e.message };
   } finally {
     try { if (bridge) bridge.close(); } catch (_) {}
-    try { if (browser) await browser.close(); } catch (_) {}
+    if (!keepOpen && browser) { try { await browser.close(); } catch (_) {} }
   }
 }
 
