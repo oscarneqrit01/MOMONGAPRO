@@ -2247,12 +2247,13 @@ async function emergencyStop(reason, sourceId) {
   if (emergencyActive) return;
   emergencyActive = true;
 
-  // Marca el perfil de origen como BLOQUEADA: no se re-arranca solo (ni por horario),
-  // asi la pagina queda usable para apelar desde el mismo navegador.
-  if (sourceId) {
-    const src = controllers.get(sourceId);
-    if (src) { src.blocked = true; try { saveState(); } catch (_) {} }
-  }
+  // Marca el perfil de origen como BLOQUEADA (no se re-arranca solo) y solo pausa a las
+  // demas la PRIMERA vez; si ya estaba bloqueada, no vuelve a parar todo (asi al "Apelar"
+  // de nuevo no detiene a las cuentas que siguen actualizandose).
+  const src = sourceId ? controllers.get(sourceId) : null;
+  const yaBloqueada = Boolean(src && src.blocked);
+  if (src) { src.blocked = true; try { saveState(); } catch (_) {} }
+  if (yaBloqueada) { emergencyActive = false; return; }
 
   const active = [...controllers.values()].filter((c) => c.started);
 
@@ -3942,6 +3943,43 @@ async function removePost(page, controller) {
   return true;
 }
 
+// Genera un texto de apelacion distinto cada vez, con la hora en que se bloqueo.
+function appealDetail(controller) {
+  let hora = '';
+  try {
+    const idx = JSON.parse(fs.readFileSync(path.join(APPEALS_DIR, 'index.json'), 'utf8'));
+    const rec = (Array.isArray(idx) ? idx : []).slice().reverse().find((r) => r.profile === controller.id);
+    if (rec && rec.at) hora = new Date(rec.at).toLocaleString('en-US', { timeZone: 'America/New_York' });
+  } catch (_) {}
+  if (!hora) hora = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+
+  const abridor = [
+    'Hello', 'Hi', 'Good day', 'Greetings', 'Hi there', 'Hello team',
+  ];
+  const cuerpo = [
+    'I think my account was blocked by mistake.',
+    'I believe my account has been blocked in error.',
+    'My account appears to have been suspended by accident.',
+    'I think my ad was blocked by mistake.',
+  ];
+  const extra = [
+    'I am a real person and I always follow your rules.',
+    'I only use megapersonals.eu and I never used any scam site.',
+    'I never used a scam site; I only post here on megapersonals.eu.',
+    'I have always used only the real site and I never shared my password with anyone.',
+    'I did not click any suspicious link and I only log in here on megapersonals.eu.',
+  ];
+  const cierre = [
+    'Please review my account and reactivate it. Thank you very much.',
+    'Please check my account and turn it back on. Thanks in advance.',
+    'I would really appreciate it if you could review and reactivate my account. Thank you.',
+    'Kindly review my account and reactivate it. Thank you for your time.',
+  ];
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+  const txt = `${pick(abridor)}, ${pick(cuerpo)} It was blocked on ${hora}. ${pick(extra)} ${pick(cierre)}`;
+  return txt.slice(0, 512);
+}
+
 // Apelacion por el FORMULARIO (no por correo): abre /public/support_request, rellena
 // email/telefono/detalle, resuelve el captcha (2Captcha) y envia "Send to Support".
 async function appealSupportForm(page, controller) {
@@ -3958,7 +3996,7 @@ async function appealSupportForm(page, controller) {
   await sleep(2000);
 
   const email = (controller.cfg && controller.cfg.email) || '';  const phone = (controller.cfg && controller.cfg.adDetails && controller.cfg.adDetails.phone) || '';
-  const detalle = 'Hello, I think my account was blocked by mistake. I never used a scam site; I only use megapersonals.eu and I have always followed the rules. Please review my account and reactivate it. Thank you.';
+  const detalle = appealDetail(controller);
 
   await page.evaluate((em, ph, det) => {
     const setVal = (el, v) => { if (!el || v === undefined || v === null || v === '') return; try { el.focus(); } catch (_) {} el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
