@@ -4082,7 +4082,7 @@ async function openMailBrowser(id) {
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
     defaultViewport: null,
   });
-  mailBrowsers.set(key, { browser });
+  mailBrowsers.set(key, { browser, email: String(id) });
   browser.on('disconnected', () => { const m = mailBrowsers.get(key); if (m && m.browser === browser) mailBrowsers.delete(key); });
   const pages = await browser.pages();
   const page = pages[0] || await browser.newPage();
@@ -4108,7 +4108,7 @@ async function mailStatus() {
       const p = ps.find((x) => /outlook|live\.com|office/i.test(x.url())) || ps[0];
       if (p) { title = await p.title().catch(() => ''); url = p.url(); }
     } catch (_) {}
-    out.push({ id, title, url });
+    out.push({ id, email: m.email || id, title, url });
   }
   return { ok: true, mails: out };
 }
