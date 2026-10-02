@@ -3971,19 +3971,38 @@ async function appealSupportForm(page, controller) {
     if (ta) setVal(ta, det);
   }, email, phone, detalle).catch(() => {});
   controller.log('📝 Formulario rellenado (email/teléfono/detalle).');
-  await humanPause(800, 1600);
+  await humanPause(1200, 2200);
+
+  // Esperar a que el captcha esté presente en la página.
+  for (let i = 0; i < 12; i++) { if (await markImageCaptcha(page)) break; await sleep(1000); }
+  await sleep(1500);
 
   if (controller.cfg && controller.cfg.apiKey2Captcha) {
-    try { await solveImageCaptcha(controller.cfg.apiKey2Captcha, page, controller); } catch (e) { controller.log(`⚠️ Captcha automático: ${e.message}`); }
+    for (let intento = 1; intento <= 2; intento++) {
+      try { await solveImageCaptcha(controller.cfg.apiKey2Captcha, page, controller); } catch (e) { controller.log(`⚠️ Captcha (intento ${intento}): ${e.message}`); }
+      await sleep(1200);
+      const lleno = await page.evaluate(() => { const i = document.querySelector('#captcha_code') || document.querySelector('[data-momonga-captcha-input]') || document.querySelector('input[placeholder*="picture" i]'); return i ? String(i.value || '').trim().length : 0; }).catch(() => 0);
+      if (lleno) { controller.log('🔢 Captcha escrito.'); break; }
+      controller.log(`🔁 Captcha vacío; recargo y reintento (${intento}/2)...`);
+      await reloadImageCaptcha(page).catch(() => {});
+      await sleep(2500);
+    }
   }
-  await humanPause(600, 1400);
 
-  const enviado = await clickTextControl(page, ['send\\s+to\\s+support', 'send', 'enviar', 'submit'], 8000);
-  if (!enviado) {
-    controller.log('⚠️ No encontré el botón "Send to Support" (quizá falta el captcha). Déjalo abierto para terminar a mano.');
+  // Verifica que el captcha tenga valor antes de enviar.
+  const captchaLleno = await page.evaluate(() => { const i = document.querySelector('#captcha_code') || document.querySelector('[data-momonga-captcha-input]') || document.querySelector('input[placeholder*="picture" i]'); return i ? String(i.value || '').trim().length > 0 : true; }).catch(() => true);
+  if (!captchaLleno) {
+    controller.log('⚠️ El captcha no se llenó. Dejo el formulario abierto para completarlo a mano.');
     return false;
   }
-  await sleep(3000);
+
+  await humanPause(900, 1800);
+  const enviado = await clickTextControl(page, ['send\\s+to\\s+support', 'send', 'enviar', 'submit'], 8000);
+  if (!enviado) {
+    controller.log('⚠️ No encontré el botón "Send to Support". Déjalo abierto para terminar a mano.');
+    return false;
+  }
+  await sleep(5000);
   await dismissOkModal(page).catch(() => {});
   controller.log('✅ Apelación ENVIADA por el formulario de soporte.');
   notify(`📨 Apelación enviada para "${controller.id}" (formulario de soporte).`);
