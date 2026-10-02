@@ -287,6 +287,7 @@ function controlProfileFull(c) {
     nextBumpAt: c._nextBumpAt || 0,
     lastBumpAt: c.stats?.lastBumpAt || 0,
     lastError: c.lastError || null,
+    blocked: Boolean(c.blocked),
     bumpMinMinutes: p.bumpMinMinutes || p.intervalMinutes || 16,
     bumpMaxMinutes: p.bumpMaxMinutes || p.bumpMinMinutes || p.intervalMinutes || 16,
     postsARotar: Math.max(0, Math.floor(Number(p.postsARotar) || 0)),
