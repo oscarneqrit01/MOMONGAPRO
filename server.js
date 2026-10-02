@@ -899,6 +899,19 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
       controller.log('✅ Perfil desmarcado como bloqueado. Ya se puede Iniciar de nuevo.');
       notify(`✅ La cuenta "${controller.id}" se desmarcó como bloqueada (lista para reintentar).`);
     }
+    else if (action === 'appeal' || action === 'apelar') {
+      (async () => {
+        try {
+          if (!controller.page) await controller.open();
+          if (controller.page) {
+            let origin = 'https://megapersonals.eu';
+            try { origin = new URL(siteUrls(controller).list).origin; } catch (_) {}
+            await controller.page.goto(`${origin}/public/support_request`, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+            controller.log('📨 Abrí la página de apelación/soporte en el navegador del perfil.');
+          }
+        } catch (e) { controller.log(`⚠️ Apelar falló: ${e.message}`); }
+      })();
+    }
     else if (action === 'verify' || action === 'verificar') {
       const check = await runSafetyCheck(controller).catch(() => null);
       if (check) reportSafetyCheck(controller, check);
