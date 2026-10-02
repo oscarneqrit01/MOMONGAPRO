@@ -760,6 +760,19 @@ app.post('/api/control/appeal-clean-all', requireControlKey, async (req, res) =>
   }
 });
 
+app.post('/api/control/mail/open', requireControlKey, async (req, res) => {
+  try {
+    const id = String((req.body && req.body.id) || '').trim();
+    if (!id) return res.status(400).json({ ok: false, error: 'Falta el correo.' });
+    res.json(await openMailBrowser(id));
+  } catch (error) { res.status(500).json({ ok: false, error: error.message }); }
+});
+app.post('/api/control/mail/close', requireControlKey, async (req, res) => {
+  try { res.json(await closeMailBrowser(String((req.body && req.body.id) || '').trim())); }
+  catch (error) { res.status(500).json({ ok: false, error: error.message }); }
+});
+app.get('/api/control/mail/list', requireControlKey, (req, res) => res.json({ ok: true, abiertos: [...mailBrowsers.keys()] }));
+
 app.post('/api/control/all/:action', requireControlKey, async (req, res) => {
   const action = String(req.params.action || '').toLowerCase();
   const results = [];
@@ -4043,6 +4056,43 @@ function contactoApelacion() {
     subject: pick(subjects),
     message: `${pick(abridor)}, ${pick(cuerpo)} I have been trying since ${hora}. ${pick(extra)} ${pick(cierre)}`.slice(0, 512),
   };
+}
+
+// Navegadores dedicados por CORREO (Outlook) para ver la bandeja desde el panel.
+const mailBrowsers = new Map();
+const mailIdDe = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9@._-]/g, '_').slice(0, 80) || 'correo';
+
+async function openMailBrowser(id) {
+  const key = mailIdDe(id);
+  const ya = mailBrowsers.get(key);
+  if (ya && ya.browser && ya.browser.connected) {
+    try { const ps = await ya.browser.pages(); if (ps[0]) await ps[0].bringToFront(); } catch (_) {}
+    return { ok: true, abierto: true, ya: true };
+  }
+  const dir = path.join(__dirname, 'profiles', '_correos', key);
+  fs.mkdirSync(dir, { recursive: true });
+  const browser = await puppeteer.launch({
+    headless: false,
+    executablePath: detectChromeExecutable(),
+    ignoreDefaultArgs: ['--enable-automation'],
+    userDataDir: dir,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
+    defaultViewport: null,
+  });
+  mailBrowsers.set(key, { browser });
+  browser.on('disconnected', () => { const m = mailBrowsers.get(key); if (m && m.browser === browser) mailBrowsers.delete(key); });
+  const pages = await browser.pages();
+  const page = pages[0] || await browser.newPage();
+  await page.goto('https://outlook.live.com/mail/0/', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+  return { ok: true, abierto: true };
+}
+
+async function closeMailBrowser(id) {
+  const key = mailIdDe(id);
+  const m = mailBrowsers.get(key);
+  if (m && m.browser) { try { await m.browser.close(); } catch (_) {} }
+  mailBrowsers.delete(key);
+  return { ok: true };
 }
 
 // Apelacion por el formulario CONTACT US en un navegador LIMPIO (sin sesion): solo el correo.
