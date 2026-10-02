@@ -736,10 +736,24 @@ app.post('/api/control/notify/test', requireControlKey, async (req, res) => {
 // Apelacion por Contact Us en navegador limpio (solo el correo). Para cuentas que fallaron al registrar.
 app.post('/api/control/appeal-clean', requireControlKey, async (req, res) => {
   try {
-    const email = String((req.body && req.body.email) || '').trim();
-    const apiKey = String((req.body && req.body.apiKey) || process.env.TWOCAPTCHA_KEY || '').trim();
+    const body = req.body || {};
+    const email = String(body.email || '').trim();
+    const apiKey = String(body.apiKey || process.env.TWOCAPTCHA_KEY || '').trim();
+    const proxy = body.proxy && body.proxy.host ? body.proxy : null;
     if (!email) return res.status(400).json({ ok: false, error: 'Falta el email.' });
-    const r = await appealContactUsClean(email, apiKey);
+    const r = await appealContactUsClean(email, apiKey, proxy);
+    res.json(r);
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/control/appeal-clean-all', requireControlKey, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const apiKey = String(body.apiKey || process.env.TWOCAPTCHA_KEY || '').trim();
+    const proxy = body.proxy && body.proxy.host ? body.proxy : null;
+    const r = await appealContactUsAll(body.emails, apiKey, proxy);
     res.json(r);
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
@@ -4009,17 +4023,25 @@ function contactoApelacion() {
 }
 
 // Apelacion por el formulario CONTACT US en un navegador LIMPIO (sin sesion): solo el correo.
-async function appealContactUsClean(email, apiKey) {
+async function appealContactUsClean(email, apiKey, proxy) {
   if (!email) return { ok: false, error: 'Falta el email.' };
   let browser = null;
   try {
+    const args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'];
+    if (proxy && proxy.host) {
+      const scheme = proxy.type === 'socks5' ? 'socks5' : 'http';
+      args.push(`--proxy-server=${scheme}://${proxy.host}:${proxy.port}`);
+    }
     browser = await puppeteer.launch({
       headless: false,
       executablePath: detectChromeExecutable(),
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
+      args,
       defaultViewport: { width: 1280, height: 900 },
     });
     const page = await browser.newPage();
+    if (proxy && proxy.host && proxy.username) {
+      try { await page.authenticate({ username: String(proxy.username), password: String(proxy.password || '') }); } catch (_) {}
+    }
     await page.goto('https://megapersonals.eu/public/contact_us', { waitUntil: 'networkidle2', timeout: 60000 });
     await sleep(2500);
     const { subject, message } = contactoApelacion();
@@ -4045,6 +4067,18 @@ async function appealContactUsClean(email, apiKey) {
   } finally {
     try { if (browser) await browser.close(); } catch (_) {}
   }
+}
+
+// Apela una LISTA de correos, uno por uno, cada uno con su propio navegador limpio.
+async function appealContactUsAll(emails, apiKey, proxy) {
+  const lista = Array.isArray(emails) ? emails.map((e) => String(e || '').trim()).filter(Boolean) : [];
+  const results = [];
+  for (const email of lista) {
+    const r = await appealContactUsClean(email, apiKey, proxy).catch((e) => ({ ok: false, error: e.message }));
+    results.push({ email, ok: Boolean(r && r.ok) });
+    await sleep(3000);
+  }
+  return { ok: true, results };
 }
 
 // Apelacion por el FORMULARIO (no por correo): abre /public/support_request, rellena
