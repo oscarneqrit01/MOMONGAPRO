@@ -4075,51 +4075,59 @@ async function appealContactUsClean(email, apiKey, proxy) {
     }
     await page.goto('https://megapersonals.eu/public/contact_us', { waitUntil: 'networkidle2', timeout: 60000 });
     await sleep(3500);
+    try {
+      const info = await page.evaluate(() => ({
+        url: location.href,
+        title: document.title,
+        fields: Array.from(document.querySelectorAll('input,textarea,select')).map((i) => ({ tag: i.tagName, type: i.type, name: i.name, ph: i.placeholder, id: i.id })),
+      })).catch(() => null);
+      fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] ${email} :: ${JSON.stringify(info)}\n`);
+    } catch (_) {}
     const { subject, message } = contactoApelacion();
 
-    // Rellenar escribiendo de verdad (más fiable que solo poner .value).
-    const emailSel = 'input[placeholder*="email" i], input[type="email"], input[name*="email" i]';
-    const subjSel = 'input[placeholder*="subject" i], input[name*="subject" i]';
-    const msgSel = 'textarea';
-    const escribir = async (sel, val) => {
-      try {
-        const el = await page.$(sel);
-        if (!el) return false;
-        await el.click({ clickCount: 3 }).catch(() => {});
-        await el.evaluate((n) => { n.value = ''; }).catch(() => {});
-        await el.type(String(val), { delay: 15 + Math.floor(Math.random() * 25) });
-        return true;
-      } catch (_) { return false; }
-    };
-    await escribir(emailSel, email);
-    await escribir(subjSel, subject);
-    await escribir(msgSel, message);
-    // Respaldo por si el tecleo falla: set directo.
+    // Rellenar con los IDs exactos del formulario (setter nativo + eventos).
     await page.evaluate((em, sub, msg) => {
-      const setVal = (el, v) => { if (!el) return; el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
-      const inputs = Array.from(document.querySelectorAll('input')).filter((i) => !['hidden', 'submit', 'button'].includes(i.type));
-      const emailEl = inputs.find((i) => /email/i.test(`${i.type} ${i.name} ${i.placeholder}`)) || inputs[0];
-      if (emailEl && !emailEl.value) setVal(emailEl, em);
-      const subjEl = inputs.find((i) => /subject|asunto/i.test(`${i.name} ${i.placeholder}`)) || inputs.find((i) => i !== emailEl && /text/i.test(i.type));
-      if (subjEl && !subjEl.value) setVal(subjEl, sub);
-      const ta = document.querySelector('textarea');
-      if (ta && !ta.value) setVal(ta, msg);
+      const set = (el, v) => {
+        if (!el) return false;
+        const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        try { Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v); } catch (_) { el.value = v; }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      };
+      const emailEl = document.getElementById('person_username_field_login') || document.querySelector('input[name="email"]');
+      const subjEl = document.getElementById('subject_id') || document.querySelector('input[name="subject"]');
+      const msgEl = document.getElementById('message_contact_us_field') || document.querySelector('textarea[name="message"]');
+      set(emailEl, em); set(subjEl, sub); set(msgEl, msg);
     }, email, subject, message).catch(() => {});
-    await sleep(1500);
+    await sleep(1200);
 
     // Verifica que email y mensaje quedaron escritos.
     const check = await page.evaluate(() => {
-      const inputs = Array.from(document.querySelectorAll('input')).filter((i) => !['hidden', 'submit', 'button'].includes(i.type));
-      const emailEl = inputs.find((i) => /email/i.test(`${i.type} ${i.name} ${i.placeholder}`)) || inputs[0];
-      const ta = document.querySelector('textarea');
+      const emailEl = document.getElementById('person_username_field_login') || document.querySelector('input[name="email"]');
+      const ta = document.getElementById('message_contact_us_field') || document.querySelector('textarea[name="message"]');
       return { email: emailEl ? String(emailEl.value || '').trim() : '', msg: ta ? String(ta.value || '').trim() : '' };
     }).catch(() => ({ email: '', msg: '' }));
+    try { fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] ${email} :: check=${JSON.stringify({ email: check.email.slice(0, 40), msgLen: check.msg.length })}\n`); } catch (_) {}
     if (!check.email || !check.msg) {
       keepOpen = true;
       return { ok: false, error: 'No se pudieron rellenar los campos (email/mensaje). Dejo el navegador abierto para que lo completes.' };
     }
 
-    if (apiKey) { try { await solveImageCaptcha(apiKey, page, { log: () => {} }); } catch (_) {} }
+    if (apiKey) {
+      // Espera a que la imagen del captcha esté presente (carga async).
+      for (let i = 0; i < 15; i++) { if (await markImageCaptcha(page)) break; await sleep(1000); }
+      await sleep(800);
+      try {
+        const imgs = await page.evaluate(() => Array.from(document.querySelectorAll('img, canvas')).filter((e) => e.offsetParent !== null).map((e) => ({ t: e.tagName, src: (e.src || e.id || '').slice(-45), w: Math.round(e.getBoundingClientRect().width), h: Math.round(e.getBoundingClientRect().height) }))).catch(() => []);
+        fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] ${email} :: imgs=${JSON.stringify(imgs)}\n`);
+      } catch (_) {}
+      const fake = {
+        log: (m) => { try { fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] ${email} :: cap ${m}\n`); } catch (_) {} },
+        warn: () => {}, setCycleStage: () => {}, cycleStage: '', cfg: {},
+      };
+      try { await solveImageCaptcha(apiKey, page, fake); } catch (e) { try { fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] ${email} :: cap ERR ${e.message}\n`); } catch (_) {} }
+    }
     await sleep(1500);
     const captchaLleno = await page.evaluate(() => {
       const i = document.querySelector('input[placeholder*="picture" i], #captcha_code, input[name*="captcha" i]');
