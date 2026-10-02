@@ -4008,17 +4008,40 @@ function appealDetail(controller) {
 }
 
 // Texto de apelacion para el formulario CONTACT US (varias versiones al azar).
+// Enfocado en pedir ayuda para REGISTRARSE / completar la verificacion.
 function contactoApelacion() {
   const hora = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
-  const subjects = ['Account blocked by mistake', 'Please review my blocked account', 'My account was blocked in error', 'Request to reactivate my account', 'Blocked account - please review', 'Help with my blocked account'];
+  const subjects = [
+    'Need help to complete my registration',
+    'Cannot finish my verification',
+    'Help please - cannot complete sign up',
+    'Unable to complete my registration',
+    'Need help verifying my account',
+    'Help finishing my registration',
+  ];
   const abridor = ['Hello team', 'Hi', 'Good day', 'Hello', 'Greetings'];
-  const cuerpo = ['I think my account was blocked by mistake.', 'My account appears to have been blocked in error.', 'I believe my account was suspended by accident.'];
-  const extra = ['I am a real person and I only use megapersonals.eu.', 'I never used any scam site; I only post here on megapersonals.eu.', 'I never shared my password with anyone.'];
-  const cierre = ['Please review my account and reactivate it. Thank you.', 'Kindly check my account and turn it back on. Thanks.', 'I would appreciate it if you could review my account. Thank you.'];
+  const cuerpo = [
+    'I am trying to register on megapersonals.eu but I cannot complete the verification.',
+    'I cannot finish the sign up process; the verification does not go through.',
+    'I am trying to create my account but the registration does not complete.',
+    'I cannot complete my verification in order to finish registering.',
+    'My registration gets stuck and I cannot verify my account.',
+  ];
+  const extra = [
+    'I am a real person and I want to post on your site.',
+    'I only want to use megapersonals.eu.',
+    'I never used any other site.',
+  ];
+  const cierre = [
+    'Could you please help me complete my registration? Thank you.',
+    'I would appreciate your help to finish it. Thanks.',
+    'Please help me get registered. Thank you very much.',
+    'Kindly help me complete the verification. Thanks.',
+  ];
   const pick = (a) => a[Math.floor(Math.random() * a.length)];
   return {
     subject: pick(subjects),
-    message: `${pick(abridor)}, ${pick(cuerpo)} I tried to post on ${hora}. ${pick(extra)} ${pick(cierre)}`.slice(0, 512),
+    message: `${pick(abridor)}, ${pick(cuerpo)} I have been trying since ${hora}. ${pick(extra)} ${pick(cierre)}`.slice(0, 512),
   };
 }
 
