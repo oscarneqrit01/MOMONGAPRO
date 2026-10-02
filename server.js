@@ -733,6 +733,19 @@ app.post('/api/control/notify/test', requireControlKey, async (req, res) => {
 });
 
 // Accion (start/pause/resume/stop) sobre TODOS los perfiles a la vez.
+// Apelacion por Contact Us en navegador limpio (solo el correo). Para cuentas que fallaron al registrar.
+app.post('/api/control/appeal-clean', requireControlKey, async (req, res) => {
+  try {
+    const email = String((req.body && req.body.email) || '').trim();
+    const apiKey = String((req.body && req.body.apiKey) || process.env.TWOCAPTCHA_KEY || '').trim();
+    if (!email) return res.status(400).json({ ok: false, error: 'Falta el email.' });
+    const r = await appealContactUsClean(email, apiKey);
+    res.json(r);
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.post('/api/control/all/:action', requireControlKey, async (req, res) => {
   const action = String(req.params.action || '').toLowerCase();
   const results = [];
@@ -3978,6 +3991,60 @@ function appealDetail(controller) {
   const pick = (a) => a[Math.floor(Math.random() * a.length)];
   const txt = `${pick(abridor)}, ${pick(cuerpo)} It was blocked on ${hora}. ${pick(extra)} ${pick(cierre)}`;
   return txt.slice(0, 512);
+}
+
+// Texto de apelacion para el formulario CONTACT US (varias versiones al azar).
+function contactoApelacion() {
+  const hora = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+  const subjects = ['Account blocked by mistake', 'Please review my blocked account', 'My account was blocked in error', 'Request to reactivate my account', 'Blocked account - please review', 'Help with my blocked account'];
+  const abridor = ['Hello team', 'Hi', 'Good day', 'Hello', 'Greetings'];
+  const cuerpo = ['I think my account was blocked by mistake.', 'My account appears to have been blocked in error.', 'I believe my account was suspended by accident.'];
+  const extra = ['I am a real person and I only use megapersonals.eu.', 'I never used any scam site; I only post here on megapersonals.eu.', 'I never shared my password with anyone.'];
+  const cierre = ['Please review my account and reactivate it. Thank you.', 'Kindly check my account and turn it back on. Thanks.', 'I would appreciate it if you could review my account. Thank you.'];
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
+  return {
+    subject: pick(subjects),
+    message: `${pick(abridor)}, ${pick(cuerpo)} I tried to post on ${hora}. ${pick(extra)} ${pick(cierre)}`.slice(0, 512),
+  };
+}
+
+// Apelacion por el formulario CONTACT US en un navegador LIMPIO (sin sesion): solo el correo.
+async function appealContactUsClean(email, apiKey) {
+  if (!email) return { ok: false, error: 'Falta el email.' };
+  let browser = null;
+  try {
+    browser = await puppeteer.launch({
+      headless: false,
+      executablePath: detectChromeExecutable(),
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
+      defaultViewport: { width: 1280, height: 900 },
+    });
+    const page = await browser.newPage();
+    await page.goto('https://megapersonals.eu/public/contact_us', { waitUntil: 'networkidle2', timeout: 60000 });
+    await sleep(2500);
+    const { subject, message } = contactoApelacion();
+    await page.evaluate((em, sub, msg) => {
+      const setVal = (el, v) => { if (!el) return; try { el.focus(); } catch (_) {} el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
+      const inputs = Array.from(document.querySelectorAll('input')).filter((i) => !['hidden', 'submit', 'button'].includes(i.type));
+      const emailEl = inputs.find((i) => /email/i.test(`${i.type} ${i.name} ${i.placeholder}`)) || inputs[0];
+      setVal(emailEl, em);
+      const subjEl = inputs.find((i) => /subject|asunto/i.test(`${i.name} ${i.placeholder}`)) || inputs.find((i) => i !== emailEl && /text/i.test(i.type));
+      if (subjEl) setVal(subjEl, sub);
+      const ta = document.querySelector('textarea');
+      if (ta) setVal(ta, msg);
+    }, email, subject, message).catch(() => {});
+    await sleep(2000);
+
+    if (apiKey) { try { await solveImageCaptcha(apiKey, page, { log: () => {} }); } catch (_) {} }
+    await sleep(1200);
+    const enviado = await clickTextControl(page, ['send\\s+message', 'send', 'enviar'], 8000);
+    await sleep(4000);
+    return { ok: Boolean(enviado), subject, message };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  } finally {
+    try { if (browser) await browser.close(); } catch (_) {}
+  }
 }
 
 // Apelacion por el FORMULARIO (no por correo): abre /public/support_request, rellena
