@@ -2108,13 +2108,16 @@ async function markImageCaptcha(page) {
         return true;
       };
       const visible = elements.filter(usable);
-      const byName = visible.find((el) => /captcha|verif|code/i.test(`${el.src || ''} ${el.id || ''} ${el.className || ''} ${el.alt || ''}`));
-      const bySize = visible.find((el) => {
-        const rect = el.getBoundingClientRect();
-        return rect.width >= 40 && rect.width <= 420 && rect.height >= 20 && rect.height <= 160;
-      });
-      // Ojo: solo se usa el id conocido si está REALMENTE cargado (si no, es el img roto).
-      const image = (usable(known) ? known : null) || byName || bySize;
+      // Solo imágenes que claramente son el captcha. Se EXCLUYE el botón de recargar,
+      // logos, banners, etc. (antes se colaba el reloadButton y mandaba basura a 2Captcha).
+      const esCaptcha = (el) => {
+        const s = `${el.src || ''} ${el.id || ''} ${el.className || ''} ${el.alt || ''}`;
+        if (/reload|refresh|logo|header|divider|banner|support|email-text/i.test(s)) return false;
+        return /captcha|verif|code from|code/i.test(s) || el.id === 'captcha_image_itself';
+      };
+      const byName = visible.find(esCaptcha);
+      // Solo se usa el id conocido si está cargado y no es el botón de recargar.
+      const image = (usable(known) && esCaptcha(known) ? known : null) || byName;
       if (!image) return false;
 
       image.setAttribute('data-momonga-captcha-image', '1');
@@ -2179,7 +2182,13 @@ async function ensureCaptchaImage(page, controller, intentos = 6) {
     await sleep(1500);
     if (await markImageCaptcha(page)) { await logCapImg(`ok${i}`); return true; }
     if (controller && controller.log) controller.log(`⏳ Esperando la imagen del captcha (${i}/${intentos})...`);
-    await refreshCaptchaImage(page);
+    // Alterna: recargar solo el captcha (clic) y recargar TODA la página (a veces solo así carga).
+    if (i % 2 === 0) {
+      try { await page.reload({ waitUntil: 'networkidle2', timeout: 45000 }); } catch (_) {}
+      await closeCaptchaWarning(page);
+    } else {
+      await refreshCaptchaImage(page);
+    }
     for (let j = 0; j < 8; j++) {
       await sleep(500);
       if (await markImageCaptcha(page)) { await logCapImg(`ok${i}.${j}`); return true; }
@@ -4425,6 +4434,95 @@ async function mailStatus() {
 }
 
 // Apelacion por el formulario CONTACT US en un navegador LIMPIO (sin sesion): solo el correo.
+// Resuelve Cloudflare Turnstile con 2Captcha y lo inyecta en la página.
+async function solveTurnstile(apiKey, sitekey, pageUrl, log) {
+  const L = (m) => { try { if (log) log(m); } catch (_) {} };
+  const inRes = await twoCaptchaFetch(`${TWOCAPTCHA_BASE}/in.php?key=${apiKey}&method=turnstile&sitekey=${encodeURIComponent(sitekey)}&pageurl=${encodeURIComponent(pageUrl)}&json=1`).then((r) => r.json());
+  if (inRes.status !== 1) throw new Error(inRes.request || 'no se pudo crear la tarea Turnstile');
+  const id = inRes.request;
+  L(`⏳ Turnstile: tarea 2Captcha ${id}, esperando token...`);
+  const start = Date.now();
+  while (Date.now() - start < 120000) {
+    await sleep(5000);
+    const res = await twoCaptchaFetch(`${TWOCAPTCHA_BASE}/res.php?key=${apiKey}&action=get&id=${id}&json=1`).then((r) => r.json());
+    if (res.status === 1) return String(res.request || '').trim();
+    if (res.request !== 'CAPCHA_NOT_READY') throw new Error(res.request || 'error 2Captcha Turnstile');
+  }
+  throw new Error('timeout resolviendo Turnstile');
+}
+
+// Pasa la verificación Cloudflare Turnstile: intenta clic y, si no pasa, usa 2Captcha.
+async function passCloudflare(page, log, apiKey) {
+  const L = (m) => { try { if (log) log(m); } catch (_) {} };
+  const getState = () => page.evaluate(() => {
+    const body = (document.body ? document.body.innerText : '') || '';
+    const title = document.title || '';
+    const hayForm = !!document.querySelector('#person_username_field_login, #message_contact_us_field');
+    const turnstile = !!(document.querySelector('.cf-turnstile, [data-sitekey]')
+      || document.querySelector('input[name^="cf-turnstile-response"]')
+      || document.querySelector('iframe[src*="challenges.cloudflare.com"]'));
+    return { body, title, hayForm, turnstile };
+  }).catch(() => ({ body: '', title: '', hayForm: false, turnstile: false }));
+  const enDesafio = (st) => !st.hayForm && (st.turnstile || /just a moment|verify you are human|performing security verification|attention required|checking your browser|un momento/i.test(`${st.body} ${st.title}`));
+
+  const url = page.url();
+  // 1) Renavegar y clicar: al reintentar la navegación, Cloudflare suele pasar solo (cf_clearance).
+  for (let i = 0; i < 4; i++) {
+    const st = await getState();
+    if (!enDesafio(st)) return true;
+    L(`⏳ Cloudflare (${st.title || 'sin titulo'}) — reintentando navegación ${i + 1}/4...`);
+    try {
+      const frames = page.frames().filter((f) => /challenges\.cloudflare\.com|turnstile/i.test(f.url()));
+      for (const fr of frames) {
+        const el = await fr.$('input[type="checkbox"], .ctp-checkbox-label, label, body').catch(() => null);
+        if (!el) continue;
+        const box = await el.boundingBox().catch(() => null);
+        if (box && box.width > 4 && box.height > 4) {
+          await page.mouse.click(box.x + Math.min(30, box.width / 2), box.y + Math.min(box.height / 2, 22)).catch(() => {});
+          break;
+        }
+      }
+    } catch (_) {}
+    await sleep(2500);
+    try { await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 }); } catch (_) {}
+    await sleep(4000);
+  }
+
+  let st = await getState();
+  if (!enDesafio(st)) return true;
+
+  // 2) Fallback: 2Captcha Turnstile.
+  if (apiKey) {
+    try {
+      const sitekey = await page.evaluate(() => {
+        const el = document.querySelector('.cf-turnstile, [data-sitekey]');
+        return el ? String(el.getAttribute('data-sitekey') || '') : '';
+      }).catch(() => '');
+      if (sitekey) {
+        L(`🤖 Cloudflare Turnstile: sitekey ${sitekey.slice(0, 18)}…`);
+        const token = await solveTurnstile(apiKey, sitekey, page.url(), L);
+        await page.evaluate((tk) => {
+          for (const sel of ['input[name="cf-turnstile-response"]', 'textarea[name="cf-turnstile-response"]', 'input[name^="cf-turnstile-response"]']) {
+            document.querySelectorAll(sel).forEach((el) => {
+              try { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, tk); } catch (_) { el.value = tk; }
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+          }
+          const cw = document.querySelector('.cf-turnstile');
+          const cb = cw && cw.getAttribute('data-callback');
+          if (cb && typeof window[cb] === 'function') { try { window[cb](tk); } catch (_) {} }
+        }, token).catch(() => {});
+        L('✅ Turnstile: token inyectado.');
+        for (let i = 0; i < 14; i++) { await sleep(2500); st = await getState(); if (!enDesafio(st)) return true; }
+      } else {
+        L('⚠️ Cloudflare: no encontré el sitekey para 2Captcha.');
+      }
+    } catch (e) { L('⚠️ Cloudflare 2Captcha falló: ' + e.message); }
+  }
+  return false;
+}
+
 async function appealContactUsOnce(email, apiKey, proxy) {
   if (!email) return { ok: false, error: 'Falta el email.' };
   let browser = null;
@@ -4449,6 +4547,7 @@ async function appealContactUsOnce(email, apiKey, proxy) {
       defaultViewport: { width: 1280, height: 900 },
     });
     const page = await browser.newPage();
+    // La apelación usa navegador de ESCRITORIO (pasa Cloudflare mejor que el móvil).
     await page.evaluateOnNewDocument(() => {
       try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch (_) {}
       try {
@@ -4459,9 +4558,12 @@ async function appealContactUsOnce(email, apiKey, proxy) {
     if (proxy && proxy.host && proxy.username && proxy.type !== 'socks5') {
       try { await page.authenticate({ username: String(proxy.username), password: String(proxy.password || '') }); } catch (_) {}
     }
-    await page.goto('https://megapersonals.eu/public/contact_us', { waitUntil: 'networkidle2', timeout: 60000 });
+    await page.goto('https://megapersonals.eu/public/contact_us', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    // Pasa la verificación Cloudflare ("Verify you are human") si aparece.
+    const logCF = (m) => { try { fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] ${email} :: ${m}\n`); } catch (_) {} };
+    await passCloudflare(page, logCF, apiKey);
     // Espera a que el formulario esté listo.
-    try { await page.waitForSelector('#person_username_field_login, input[name="email"]', { timeout: 25000 }); } catch (_) {}
+    try { await page.waitForSelector('#person_username_field_login, input[name="email"]', { timeout: 30000 }); } catch (_) {}
     await sleep(2500);
     try {
       const info = await page.evaluate(() => ({
