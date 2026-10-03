@@ -3216,6 +3216,18 @@ async function returnToPostsList(page, controller) {
     controller.log('⚠ El anuncio dio error.');
   }
 
+  // 0) Cerrar el modal de éxito ("Sweet! Your Post has been published" / "VIEW POST" / "MY POSTS").
+  try {
+    await dismissOkModal(page).catch(() => {});
+    const cogido = await clickTextControl(page, ['my\\s+posts', 'mis\\s+anuncios'], 3500).catch(() => false);
+    if (cogido) {
+      controller.log('↩️ Modal de éxito: volviendo a Mis Anuncios...');
+      await humanPause(1600, 3200);
+      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+      return;
+    }
+  } catch (_) {}
+
   // 1) Pulsar el botón "My Posts" visible si existe (igual que el flujo de la extensión)
   try {
     const myPostsClicked = await trustedClick(page, () => {
