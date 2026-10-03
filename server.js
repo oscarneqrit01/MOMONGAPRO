@@ -187,6 +187,43 @@ function chHeadersFor(device, chromeMajor) {
   });
 }
 
+// Metadatos del navegador (userAgentData) coherentes con el dispositivo. Se aplican
+// por CDP (Emulation.setUserAgentOverride), NO por getters JS (que los detectan).
+function uaMetadataFor(device, chromeMajor) {
+  if (!device || device.kind !== 'android') return undefined;
+  const major = String(chromeMajor || '140');
+  return {
+    brands: [
+      { brand: 'Not?A_Brand', version: '24' },
+      { brand: 'Chromium', version: major },
+      { brand: 'Google Chrome', version: major },
+    ],
+    fullVersionList: [
+      { brand: 'Not?A_Brand', version: '24.0.0.0' },
+      { brand: 'Chromium', version: `${major}.0.0.0` },
+      { brand: 'Google Chrome', version: `${major}.0.0.0` },
+    ],
+    mobile: true,
+    platform: 'Android',
+    platformVersion: device.androidVersion || '16.0.0',
+    model: device.model || 'Pixel 10',
+    architecture: '',
+    bitness: '',
+    wow64: false,
+  };
+}
+
+// Aplica UA + plataforma + userAgentData a una pagina via CDP (sin getters JS).
+async function applyUaOverride(cdp, device, chromeMajor) {
+  const uaMeta = uaMetadataFor(device, chromeMajor);
+  await cdp.send('Emulation.setUserAgentOverride', {
+    userAgent: device.userAgent,
+    acceptLanguage: 'en-US,en',
+    platform: device.kind === 'android' ? 'Linux armv8l' : 'iPhone',
+    ...(uaMeta ? { userAgentMetadata: uaMeta } : {}),
+  });
+}
+
 const DEFAULT_SUPPORT_EMAIL = 'support@megapersonals.eu';
 
 // Sal por MAQUINA: hace que cada PC genere huellas distintas aunque copien el config.
@@ -292,6 +329,7 @@ function controlProfileFull(c) {
     bumpMaxMinutes: p.bumpMaxMinutes || p.bumpMinMinutes || p.intervalMinutes || 16,
     postsARotar: Math.max(0, Math.floor(Number(p.postsARotar) || 0)),
     apiKey2Captcha: p.apiKey2Captcha || '',
+    rotateUrl: p.rotateUrl || '',
     email: p.email || '',
     settings: {
       rotateAds: Boolean(c.settings?.rotateAds),
@@ -501,6 +539,7 @@ app.post('/api/control/profiles', requireControlKey, (req, res) => {
       },
       adDetails: { name: '', headline: '', city: '', age: '', location: '', phone: '', text: '', textVariants: [], headlineVariants: [], photosPath: '', iam: 'A woman', isee: ['Men'] },
       apiKey2Captcha: String(body.apiKey2Captcha || '').trim(),
+      rotateUrl: String(body.rotateUrl || '').trim(),
       limits: { dailyLimit: 0, conservativeMode: false }
     };
     if (body.proxy && body.proxy.host) {
@@ -573,6 +612,11 @@ app.patch('/api/control/profiles/:id', requireControlKey, (req, res) => {
       profile.apiKey2Captcha = String(body.apiKey2Captcha || '').trim();
       controller.cfg.apiKey2Captcha = profile.apiKey2Captcha;
     }
+    if ('rotateUrl' in body) {
+      profile.rotateUrl = String(body.rotateUrl || '').trim();
+      controller.cfg.rotateUrl = profile.rotateUrl;
+    }
+
     if ('email' in body) {
       profile.email = String(body.email || '').trim();
       controller.cfg.email = profile.email;
@@ -774,6 +818,62 @@ app.post('/api/control/mail/close', requireControlKey, async (req, res) => {
 app.get('/api/control/mail/list', requireControlKey, (req, res) => res.json({ ok: true, abiertos: [...mailBrowsers.keys()] }));
 app.get('/api/control/mail/status', requireControlKey, async (req, res) => {
   try { res.json(await mailStatus()); } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Diagnostico temporal: abre BrowserScan bot-detection en el perfil y devuelve el resultado.
+app.get('/api/control/profiles/:id/diagnose', requireControlKey, async (req, res) => {
+  try {
+    const controller = controllers.get(String(req.params.id));
+    if (!controller) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
+    if (!controller.browser) { try { await controller.open(); } catch (_) {} await sleep(4000); }
+    if (!controller.browser) return res.status(500).json({ ok: false, error: 'No se pudo abrir el navegador.' });
+    const page = await controller.browser.newPage();
+    if (typeof controller._applyPage === 'function') await controller._applyPage(page);
+    await page.goto('https://www.browserscan.net/', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+    await sleep(16000);
+    const info = await page.evaluate(() => {
+      const t = document.body ? document.body.innerText : '';
+      return {
+        bot: (t.match(/Bot Detection:?\s*([A-Za-z ]{2,20})/i) || [])[1] || null,
+        score: (t.match(/(\d{1,3})\s*%/) || [])[1] || null,
+        penalties: (t.match(/[A-Z][A-Za-z ]{2,28}\s*[-\u2212]\d{1,2}%/g) || []),
+        text: t.slice(0, 4000),
+        jsTz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        langs: navigator.languages,
+        platform: navigator.platform,
+        uaPlatform: navigator.userAgentData ? navigator.userAgentData.platform : null,
+      };
+    }).catch(() => ({ bot: null, text: '' }));
+    await page.close().catch(() => {});
+    res.json({ ok: true, ...info });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Chequeo externo en ip2location / browserleaks / scamalytics / browserscan.
+app.get('/api/control/profiles/:id/check', requireControlKey, async (req, res) => {
+  try {
+    const controller = controllers.get(String(req.params.id));
+    if (!controller) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
+    res.json(await runExternalCheck(controller));
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// Chequeo de detección (sannysoft / creepjs / detector de extensiones).
+app.get('/api/control/profiles/:id/detect', requireControlKey, async (req, res) => {
+  try {
+    const controller = controllers.get(String(req.params.id));
+    if (!controller) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
+    res.json(await runDetect(controller));
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// IP real de SALIDA del proxy (rápido, sin abrir navegador).
+app.get('/api/control/profiles/:id/exitip', requireControlKey, async (req, res) => {
+  try {
+    const c = controllers.get(String(req.params.id));
+    if (!c) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
+    res.json({ ok: true, ...(await lookupExitIp(c.cfg.proxy)) });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
 app.post('/api/control/all/:action', requireControlKey, async (req, res) => {
@@ -1175,6 +1275,7 @@ function mapConfigSecrets(config, fn) {
     const c = { ...p };
     if (c.password) c.password = fn(c.password);
     if (c.apiKey2Captcha) c.apiKey2Captcha = fn(c.apiKey2Captcha);
+    if (c.rotateUrl) c.rotateUrl = fn(c.rotateUrl);
     if (c.proxy && c.proxy.password) c.proxy = { ...c.proxy, password: fn(c.proxy.password) };
     return c;
   });
@@ -1997,13 +2098,23 @@ async function markImageCaptcha(page) {
 
       const known = document.getElementById('captcha_image_itself');
       const elements = Array.from(document.querySelectorAll('img, canvas'));
-      const visible = elements.filter((el) => el.offsetParent !== null && el.getBoundingClientRect().width > 10);
+      // La imagen del captcha debe estar REALMENTE cargada (ancho Y alto, y natural>0 en IMG).
+      // Si no, manda una imagen rota y 2Captcha devuelve basura ("CAPTCHA").
+      const usable = (el) => {
+        if (!el || el.offsetParent === null) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 10 || r.height <= 10) return false;
+        if (el.tagName === 'IMG' && (!el.naturalWidth || !el.naturalHeight)) return false;
+        return true;
+      };
+      const visible = elements.filter(usable);
       const byName = visible.find((el) => /captcha|verif|code/i.test(`${el.src || ''} ${el.id || ''} ${el.className || ''} ${el.alt || ''}`));
       const bySize = visible.find((el) => {
         const rect = el.getBoundingClientRect();
         return rect.width >= 40 && rect.width <= 420 && rect.height >= 20 && rect.height <= 160;
       });
-      const image = (known && known.offsetParent !== null ? known : null) || byName || bySize;
+      // Ojo: solo se usa el id conocido si está REALMENTE cargado (si no, es el img roto).
+      const image = (usable(known) ? known : null) || byName || bySize;
       if (!image) return false;
 
       image.setAttribute('data-momonga-captcha-image', '1');
@@ -2011,6 +2122,69 @@ async function markImageCaptcha(page) {
       return true;
     }, CAPTCHA_INPUT_SELECTORS).catch(() => false);
     if (marked) return true;
+  }
+  return false;
+}
+
+// Refresca la imagen del captcha (para cuando no cargó o salió mal).
+async function refreshCaptchaImage(page) {
+  for (const frame of page.frames()) {
+    const clicked = await frame.evaluate(() => {
+      const info = (el) => `${el.id || ''} ${el.className || ''} ${el.getAttribute('alt') || ''} ${el.getAttribute('title') || ''} ${el.getAttribute('onclick') || ''} ${el.getAttribute('href') || ''} ${el.getAttribute('src') || ''}`;
+      const all = Array.from(document.querySelectorAll('a, button, img, i, span, div, input[type="button"]')).filter((el) => el.offsetParent !== null);
+      // 1) botón de recargar (reloadButton.png / onclick captcha)
+      const target = all.find((el) => /reloadbutton|reload|refresh|cambiar captcha|renovar|recargar|captcha.*(new|change)|change.*(code|captcha)/i.test(info(el)));
+      if (target) { try { target.click(); return true; } catch (_) {} }
+      const img = document.getElementById('captcha_image_itself');
+      if (img) { try { img.click(); return true; } catch (_) {} }
+      return false;
+    }).catch(() => false);
+    if (clicked) return true;
+  }
+  return false;
+}
+
+// Cierra el aviso "Captcha warning" (imagen no cargó / código incorrecto) si está presente.
+async function closeCaptchaWarning(page) {
+  for (const frame of page.frames()) {
+    const clicked = await frame.evaluate(() => {
+      const t = (document.body ? document.body.innerText : '') || '';
+      if (!/captcha warning|captcha.*(invalid|incorrect|wrong|no coincide)/i.test(t)) return false;
+      const btns = Array.from(document.querySelectorAll('button, a, input[type="button"], input[type="submit"], span, div')).filter((el) => el.offsetParent !== null);
+      const close = btns.find((el) => /^(close|cerrar|aceptar|ok|continuar|entendido)$/i.test((el.innerText || el.value || '').trim()));
+      if (close) { try { close.click(); return true; } catch (_) {} }
+      return false;
+    }).catch(() => false);
+    if (clicked) return true;
+  }
+  return false;
+}
+
+// Espera (con calma) a que la imagen del captcha aparezca REALMENTE cargada; refresca si no.
+async function ensureCaptchaImage(page, controller, intentos = 6) {
+  const logCapImg = async (tag) => {
+    try {
+      const info = await page.evaluate(() => {
+        const img = document.querySelector('[data-momonga-captcha-image]');
+        if (!img) return null;
+        const r = img.getBoundingClientRect();
+        return { tag: img.tagName, src: String(img.currentSrc || img.src || img.id || '').slice(-55), nw: img.naturalWidth || 0, nh: img.naturalHeight || 0, w: Math.round(r.width), h: Math.round(r.height) };
+      }).catch(() => null);
+      fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] capimg(${tag})=${JSON.stringify(info)}\n`);
+    } catch (_) {}
+  };
+  for (let i = 1; i <= intentos; i++) {
+    await closeCaptchaWarning(page); // cierra el aviso "Captcha warning" si está
+    // Da tiempo a que la imagen cargue (la página a veces la carga tarde).
+    await sleep(1500);
+    if (await markImageCaptcha(page)) { await logCapImg(`ok${i}`); return true; }
+    if (controller && controller.log) controller.log(`⏳ Esperando la imagen del captcha (${i}/${intentos})...`);
+    await refreshCaptchaImage(page);
+    for (let j = 0; j < 8; j++) {
+      await sleep(500);
+      if (await markImageCaptcha(page)) { await logCapImg(`ok${i}.${j}`); return true; }
+    }
+    await logCapImg(`fallo${i}`);
   }
   return false;
 }
@@ -2119,7 +2293,11 @@ async function reloadImageCaptcha(page) {
 
 // Resuelve CAPTCHAs de imagen (los que no son reCAPTCHA) con 2Captcha
 async function solveImageCaptcha(apiKey, page, controller) {
-  if (!(await markImageCaptcha(page))) return false;
+  const ok = await ensureCaptchaImage(page, controller);
+  if (!ok) {
+    if (controller && controller.log) controller.log('⚠️ Imagen del captcha no disponible (no cargó).');
+    return false;
+  }
 
   const imageHandle = await findInFrames(page, '[data-momonga-captcha-image]');
   if (!imageHandle) return false;
@@ -2144,6 +2322,7 @@ async function solveImageCaptcha(apiKey, page, controller) {
   for (const attempt of attempts) {
     try {
       const code = await submitAndPollImage(apiKey, attempt.image, controller, 60000, attempt.label);
+      try { fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] captchaCode(${attempt.label})=${code}\n`); } catch (_) {}
       const filled = await fillCaptchaInput(page, code, controller);
       if (!filled) {
         throw new Error('2Captcha resolvió el código, pero no se pudo escribir en el campo del captcha.');
@@ -2492,6 +2671,109 @@ async function runSafetyCheck(controller) {
     result.reasons.push(`riesgo de IP ${result.risk} (> ${FRAUD_MAX_RISK}, ${result.ipType || '?'})`);
   }
   return result;
+}
+
+// Chequeo EXTERNO en las paginas pedidas: browserleaks (IP/fugas),
+// ip2location (geo + fraud_score + proxy + tipo movil), scamalytics (fraud score)
+// y browserscan (deteccion de bot + score). Se hace en el navegador del perfil
+// (con su proxy), así que refleja exactamente lo que ve el sitio.
+async function runExternalCheck(controller) {
+  const out = { ok: true, at: Date.now(), results: {} };
+  if (!controller.browser) { try { await controller.open(); } catch (_) {} await sleep(3000); }
+  if (!controller.browser) return { ok: false, error: 'No se pudo abrir el navegador.' };
+  let page;
+  try {
+    page = await controller.browser.newPage();
+    if (typeof controller._applyPage === 'function') await controller._applyPage(page);
+    const grab = async (url, waitMs) => {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+      await sleep(waitMs || 9000);
+      return page.evaluate(() => (document.body ? document.body.innerText : '')).catch(() => '');
+    };
+    const one = (re, s) => { const m = String(s || '').match(re); return m ? m[1].trim() : null; };
+
+    // 1) browserleaks /ip -> IP real que ve el sitio
+    const bl = await grab('https://browserleaks.com/ip', 9000);
+    out.results.browserleaks_ip = {
+      ip: one(/Your IP Address\s*([\d.]+)/i, bl) || one(/\b([\d]{1,3}(?:\.[\d]{1,3}){3})\b/, bl),
+    };
+
+    const ip = out.results.browserleaks_ip.ip;
+
+    // 2) browserleaks /webrtc -> fuga WebRTC
+    const br = await grab('https://browserleaks.com/webrtc', 10000);
+    {
+      const webrtcIp = one(/(?:Your )?WebRTC IP:?\s*([\d.]+)/i, br) || one(/Public IP Address:?\s*([\d.]+)/i, br);
+      // No hay fuga si la IP de WebRTC coincide con la IP del proxy (o si la pagina dice "No Local IP Leak").
+      const noLeak = /No Local IP Leak/i.test(br) || (webrtcIp && ip && webrtcIp === ip);
+      out.results.webrtc = {
+        remote_ip: one(/Remote IP:?\s*([\d.]+)/i, br) || ip,
+        webrtc_ip: webrtcIp,
+        leak: noLeak ? 'No leak' : (webrtcIp ? `FUGA: WebRTC muestra ${webrtcIp}` : 'Revisar'),
+      };
+    }
+
+    // 3) ip2location -> geo + fraud_score + is_proxy + tipo de uso (MOB = móvil)
+    if (ip) {
+      const i2 = await grab(`https://www.ip2location.com/demo/${ip}`, 10000);
+      out.results.ip2location = {
+        country: one(/"country_name":\s*"([^"]+)"/, i2) || one(/Country\s*\n\s*([^\n\[]+)/i, i2),
+        region: one(/"region_name":\s*"([^"]+)"/, i2) || one(/Region\s*\n\s*([A-Za-z .]+)/i, i2),
+        city: one(/"city_name":\s*"([^"]+)"/, i2) || one(/City\s*\n\s*([A-Za-z .]+)/i, i2),
+        isp: one(/"isp":\s*"([^"]+)"/, i2) || one(/ISP\s*\n\s*([^\n]+)/i, i2),
+        usage: one(/"usage_type":\s*"([^"]+)"/, i2) || one(/Usage Type\s*\n\s*\(?([A-Z]+)\)?/i, i2),
+        is_proxy: one(/"is_proxy":\s*(true|false)/, i2),
+        fraud_score: one(/"fraud_score":\s*(\d+)/, i2),
+        timezone: one(/"olson":\s*"([^"]+)"/, i2),
+      };
+    }
+
+    // 4) scamalytics -> fraud score (puede estar tras Cloudflare)
+    if (ip) {
+      const sc = await grab(`https://scamalytics.com/ip/${ip}`, 9000);
+      out.results.scamalytics = { fraud_score: one(/Fraud Score:?\s*(\d+)/i, sc), blocked: /Just a moment|Cloudflare|Access denied|Forbidden/i.test(sc) && !/Fraud Score/i.test(sc) };
+    }
+
+    // 5) browserscan -> deteccion de bot + score
+    const bs = await grab('https://www.browserscan.net/', 15000);
+    out.results.browserscan = {
+      bot: one(/Bot Detection:?\s*([A-Za-z ]{2,20})/i, bs),
+      score: one(/\b(\d{1,3})\s*%/, bs),
+    };
+
+    controller.log(`🔎 Chequeo externo: IP ${ip || '?'} · fraud ${out.results.ip2location ? out.results.ip2location.fraud_score : '?'} · bot ${out.results.browserscan.bot || '?'}`);
+  } catch (e) {
+    out.ok = false; out.error = e.message;
+  } finally {
+    if (page) await page.close().catch(() => {});
+  }
+  return out;
+}
+
+// Chequeo de DETECCION en las paginas de robots/extensiones: sannysoft, creepjs y
+// el detector de extensiones. Devuelve el texto de cada una para inspeccionar.
+async function runDetect(controller) {
+  const out = { ok: true, at: Date.now(), pages: {} };
+  if (!controller.browser) { try { await controller.open(); } catch (_) {} await sleep(3000); }
+  if (!controller.browser) return { ok: false, error: 'No se pudo abrir el navegador.' };
+  let page;
+  try {
+    page = await controller.browser.newPage();
+    if (typeof controller._applyPage === 'function') await controller._applyPage(page);
+    const grab = async (url, waitMs) => {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+      await sleep(waitMs || 9000);
+      return page.evaluate(() => (document.body ? document.body.innerText : '')).catch(() => '');
+    };
+    out.pages.sannysoft = (await grab('https://bot.sannysoft.com/', 11000)).slice(0, 2200);
+    out.pages.creepjs = (await grab('https://abrahamjuliot.github.io/creepjs/', 15000)).slice(0, 2200);
+    out.pages.extension_detector = (await grab('https://z0ccc.github.io/extension-detector/', 9000)).slice(0, 1500);
+  } catch (e) {
+    out.ok = false; out.error = e.message;
+  } finally {
+    if (page) await page.close().catch(() => {});
+  }
+  return out;
 }
 
 function reportSafetyCheck(controller, result, { pauseOnFail = true } = {}) {
@@ -2906,8 +3188,8 @@ async function doBump(page, controller) {
   // Cerrar el modal "Success!" con OK para poder seguir
   if (await dismissOkModal(page)) await sleep(1200);
 
-  // Igual que la extensión: esperar y volver a la lista de posts.
-  await sleep(1500);
+  // Igual que la extensión: esperar (tiempo humano variable) y volver a la lista de posts.
+  await humanPause(1200, 2500);
   await returnToPostsList(page, controller);
   return true;
 }
@@ -2931,7 +3213,7 @@ async function returnToPostsList(page, controller) {
 
     if (myPostsClicked) {
       controller.log('↩️ Volviendo a Mis Anuncios (My Posts)...');
-      await sleep(2000);
+      await humanPause(1600, 3200); // tiempo humano variable al volver
       return;
     }
   } catch (_) {}
@@ -3042,8 +3324,8 @@ async function bumpAllAdsOneByOne(page, controller) {
   const viaSelect = target.href && target.href.indexOf('/users/posts/select/') > -1;
   let clicked = false;
 
-  // El sitio exige "1 peticion cada 5 segundos": espera antes de abrir el anuncio.
-  await sleep(5500);
+  // El sitio exige "1 peticion cada 5 segundos": espera (variable) antes de abrir el anuncio.
+  await humanPause(5500, 8000);
 
   if (viaSelect) {
     // Ir a la pagina del anuncio y pulsar "Bump to Top" (metodo fiable)
@@ -3054,15 +3336,16 @@ async function bumpAllAdsOneByOne(page, controller) {
       return false;
     }
     if (await checkForBlock(page, controller)) return false;
-    // Respeta el limite del sitio: "Allow one request per 5 seconds".
-    await sleep(5500);
+    // Respeta el limite del sitio: "Allow one request per 5 seconds" (variable).
+    await humanPause(5500, 8000);
     if (await detectRateLimit(page)) {
       controller.warn('⏳ El sitio pidió esperar (rate-limit). Espero 9s y reintento...');
       await sleep(20000);
       try { await page.goto(target.href, { waitUntil: 'networkidle2', timeout: 60000 }); } catch (_) {}
-      await sleep(2500);
+      await humanPause(2000, 3500);
       if (await detectRateLimit(page)) { controller._rateLimited = true; return false; }
     }
+    await humanPause(900, 2200); // pausa humana antes de clicar Bump
     clicked = await trustedClick(page, '#managePublishAd');
     if (!clicked && await detectRateLimit(page)) {
       await sleep(20000);
@@ -3070,7 +3353,8 @@ async function bumpAllAdsOneByOne(page, controller) {
       if (!clicked) { controller._rateLimited = true; return false; }
     }
   } else {
-    // Bump directo por enlace
+    // Bump directo por enlace (pausa humana antes de clicar)
+    await humanPause(900, 2200);
     clicked = await trustedClick(page, `a[href*="/users/posts/bump/${targetId}"]`);
   }
 
@@ -4098,23 +4382,50 @@ async function closeMailBrowser(id) {
   return { ok: true };
 }
 
-// Estado de los correos abiertos: titulo de la pestana de Outlook (trae el conteo de no leidos).
+// Cuenta de no leidos leyendo las carpetas del DOM de Outlook. La version nueva
+// ya NO pone el conteo en el titulo de la pestana, pero cada carpeta (treeitem)
+// trae un title="Bandeja de entrada : Elementos 9 (0 no leidos)". Sumamos todas
+// las carpetas (Bandeja de entrada, Correo no deseado, etc.) sin duplicar.
+async function unreadCountInPage(page) {
+  try {
+    return await page.evaluate(() => {
+      const parse = (t) => {
+        const m = String(t || '').match(/\((\d+)\s*(?:no\s*le[íi]dos?|unread)/i);
+        return m ? Number(m[1]) : 0;
+      };
+      const vistos = new Set();
+      let total = 0;
+      const leer = (el) => {
+        const t = el.getAttribute('title') || '';
+        if (!/no\s*le[íi]dos?|unread/i.test(t)) return;
+        if (vistos.has(t)) return;
+        vistos.add(t);
+        total += parse(t);
+      };
+      for (const el of document.querySelectorAll('[role="treeitem"]')) leer(el);
+      if (!vistos.size) for (const el of document.querySelectorAll('[title]')) leer(el);
+      return total;
+    });
+  } catch (_) { return null; }
+}
+
+// Estado de los correos abiertos: titulo de la pestana + conteo real de no leidos.
 async function mailStatus() {
   const out = [];
   for (const [id, m] of mailBrowsers.entries()) {
-    let title = '', url = '';
+    let title = '', url = '', count = null;
     try {
       const ps = await m.browser.pages();
       const p = ps.find((x) => /outlook|live\.com|office/i.test(x.url())) || ps[0];
-      if (p) { title = await p.title().catch(() => ''); url = p.url(); }
+      if (p) { title = await p.title().catch(() => ''); url = p.url(); count = await unreadCountInPage(p); }
     } catch (_) {}
-    out.push({ id, email: m.email || id, title, url });
+    out.push({ id, email: m.email || id, title, url, count });
   }
   return { ok: true, mails: out };
 }
 
 // Apelacion por el formulario CONTACT US en un navegador LIMPIO (sin sesion): solo el correo.
-async function appealContactUsClean(email, apiKey, proxy) {
+async function appealContactUsOnce(email, apiKey, proxy) {
   if (!email) return { ok: false, error: 'Falta el email.' };
   let browser = null;
   let bridge = null;
@@ -4162,69 +4473,124 @@ async function appealContactUsClean(email, apiKey, proxy) {
     } catch (_) {}
     const { subject, message } = contactoApelacion();
 
-    // Rellenar con los IDs exactos del formulario (setter nativo + eventos).
-    await page.evaluate((em, sub, msg) => {
-      const set = (el, v) => {
-        if (!el) return false;
-        const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-        try { Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v); } catch (_) { el.value = v; }
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
-      };
-      const emailEl = document.getElementById('person_username_field_login') || document.querySelector('input[name="email"]');
-      const subjEl = document.getElementById('subject_id') || document.querySelector('input[name="subject"]');
-      const msgEl = document.getElementById('message_contact_us_field') || document.querySelector('textarea[name="message"]');
-      set(emailEl, em); set(subjEl, sub); set(msgEl, msg);
-    }, email, subject, message).catch(() => {});
-    await sleep(1200);
-
-    // Verifica que email y mensaje quedaron escritos.
-    const check = await page.evaluate(() => {
-      const emailEl = document.getElementById('person_username_field_login') || document.querySelector('input[name="email"]');
-      const ta = document.getElementById('message_contact_us_field') || document.querySelector('textarea[name="message"]');
-      return { email: emailEl ? String(emailEl.value || '').trim() : '', msg: ta ? String(ta.value || '').trim() : '' };
-    }).catch(() => ({ email: '', msg: '' }));
-    try { fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] ${email} :: check=${JSON.stringify({ email: check.email.slice(0, 40), msgLen: check.msg.length })}\n`); } catch (_) {}
+    // Espera a que el formulario esté COMPLETO y rellena; si la página cargó a medias, recarga e intenta de nuevo.
+    let check = { email: '', msg: '' };
+    for (let f = 1; f <= 3; f++) {
+      await page.waitForSelector('#person_username_field_login, input[name="email"]', { timeout: 15000 }).catch(() => {});
+      await page.waitForSelector('#message_contact_us_field, textarea[name="message"]', { timeout: 15000 }).catch(() => {});
+      await sleep(1200);
+      await page.evaluate((em, sub, msg) => {
+        const set = (el, v) => {
+          if (!el) return false;
+          const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          try { Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v); } catch (_) { el.value = v; }
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        };
+        const emailEl = document.getElementById('person_username_field_login') || document.querySelector('input[name="email"]');
+        const subjEl = document.getElementById('subject_id') || document.querySelector('input[name="subject"]');
+        const msgEl = document.getElementById('message_contact_us_field') || document.querySelector('textarea[name="message"]');
+        set(emailEl, em); set(subjEl, sub); set(msgEl, msg);
+      }, email, subject, message).catch(() => {});
+      await sleep(1200);
+      check = await page.evaluate(() => {
+        const emailEl = document.getElementById('person_username_field_login') || document.querySelector('input[name="email"]');
+        const ta = document.getElementById('message_contact_us_field') || document.querySelector('textarea[name="message"]');
+        return { email: emailEl ? String(emailEl.value || '').trim() : '', msg: ta ? String(ta.value || '').trim() : '' };
+      }).catch(() => ({ email: '', msg: '' }));
+      try { fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] ${email} :: fill ${f} email=${check.email.slice(0, 40)} msgLen=${check.msg.length}\n`); } catch (_) {}
+      if (check.email && check.msg) break;
+      if (f < 3) { try { await page.reload({ waitUntil: 'networkidle2', timeout: 60000 }); } catch (_) {} await sleep(3000); }
+    }
     if (!check.email || !check.msg) {
       keepOpen = true;
-      return { ok: false, error: 'No se pudieron rellenar los campos (email/mensaje). Dejo el navegador abierto para que lo completes.' };
+      return { ok: false, error: 'No se pudieron rellenar los campos (email/mensaje) tras varios intentos. Dejo el navegador abierto.', keepOpen: true };
     }
 
-    if (apiKey) {
-      // Espera a que la imagen del captcha esté presente (carga async).
-      for (let i = 0; i < 15; i++) { if (await markImageCaptcha(page)) break; await sleep(1000); }
-      await sleep(800);
-      try {
-        const imgs = await page.evaluate(() => Array.from(document.querySelectorAll('img, canvas')).filter((e) => e.offsetParent !== null).map((e) => ({ t: e.tagName, src: (e.src || e.id || '').slice(-45), w: Math.round(e.getBoundingClientRect().width), h: Math.round(e.getBoundingClientRect().height) }))).catch(() => []);
-        fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] ${email} :: imgs=${JSON.stringify(imgs)}\n`);
-      } catch (_) {}
-      const fake = {
-        log: (m) => { try { fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] ${email} :: cap ${m}\n`); } catch (_) {} },
-        warn: () => {}, setCycleStage: () => {}, cycleStage: '', cfg: {},
-      };
-      try { await solveImageCaptcha(apiKey, page, fake); } catch (e) { try { fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] ${email} :: cap ERR ${e.message}\n`); } catch (_) {} }
+    const fake = {
+      log: (m) => { try { fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] ${email} :: cap ${m}\n`); } catch (_) {} },
+      warn: () => {}, setCycleStage: () => {}, cycleStage: '', cfg: {},
+    };
+
+    let confirmado = false;
+    let errorCaptcha = false;
+    const MAX_CAP = 4;
+    for (let intento = 1; intento <= MAX_CAP && !confirmado; intento++) {
+      // En reintento: limpia el captcha anterior para volver a resolverlo.
+      if (intento > 1) {
+        await page.evaluate(() => {
+          const i = document.querySelector('input[placeholder*="picture" i], #captcha_code, input[name*="captcha" i]');
+          if (i) { try { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, ''); } catch (_) { i.value = ''; } i.dispatchEvent(new Event('input', { bubbles: true })); }
+        }).catch(() => {});
+        await closeCaptchaWarning(page); // cierra el aviso si quedó abierto
+        await refreshCaptchaImage(page); // captcha nuevo para el reintento
+        await sleep(1800);
+      }
+      if (apiKey) {
+        for (let i = 0; i < 15; i++) { if (await markImageCaptcha(page)) break; await sleep(1000); }
+        await sleep(800);
+        try { await solveImageCaptcha(apiKey, page, fake); } catch (e) { try { fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] ${email} :: cap ERR ${e.message}\n`); } catch (_) {} }
+      }
+      await sleep(1500);
+      const captchaLleno = await page.evaluate(() => {
+        const i = document.querySelector('input[placeholder*="picture" i], #captcha_code, input[name*="captcha" i]');
+        return i ? String(i.value || '').trim().length > 0 : false;
+      }).catch(() => false);
+      if (!captchaLleno) { errorCaptcha = true; continue; }
+
+      const enviado = await clickTextControl(page, ['send\\s+message', 'send', 'enviar'], 8000);
+      await sleep(5000);
+      if (!enviado) { keepOpen = true; return { ok: false, error: 'No encontré el botón "Send Message". Dejo el navegador abierto.', keepOpen: true }; }
+
+      const st = await page.evaluate(() => {
+        const t = (document.body ? document.body.innerText : '') || '';
+        return {
+          okText: /has been sent|message sent|successfully|thank you|gracias|enviado|sent successfully|received your/i.test(t),
+          aunForm: !!document.querySelector('#person_username_field_login, #message_contact_us_field'),
+          captchaErr: /captcha code does not match|captcha code should be filled|captcha.*(match|invalid|do not match|no coincide)/i.test(t),
+        };
+      }).catch(() => ({}));
+      if (st && st.okText) { confirmado = true; break; }
+      if (st && st.captchaErr) { errorCaptcha = true; continue; }
+      if (st && !st.aunForm) { confirmado = true; break; }
+      await sleep(2500);
+      const st2 = await page.evaluate(() => {
+        const t = (document.body ? document.body.innerText : '') || '';
+        return { okText: /has been sent|message sent|successfully|thank you|gracias|enviado|received your/i.test(t), aunForm: !!document.querySelector('#person_username_field_login, #message_contact_us_field'), captchaErr: /captcha code does not match|should be filled/i.test(t) };
+      }).catch(() => ({}));
+      if (st2 && st2.okText) { confirmado = true; break; }
+      if (st2 && st2.captchaErr) { errorCaptcha = true; }
+    }
+
+    if (!confirmado) {
+      keepOpen = true;
+      return { ok: false, error: errorCaptcha ? `El captcha falló tras ${MAX_CAP} intentos. Dejo el navegador abierto.` : 'No se confirmó el envío. Dejo el navegador abierto para que verifiques.', keepOpen: true };
     }
     await sleep(1500);
-    const captchaLleno = await page.evaluate(() => {
-      const i = document.querySelector('input[placeholder*="picture" i], #captcha_code, input[name*="captcha" i]');
-      return i ? String(i.value || '').trim().length > 0 : false;
-    }).catch(() => false);
-    if (!captchaLleno) {
-      keepOpen = true;
-      return { ok: false, error: 'No se llenó el captcha. Dejo el navegador abierto para que lo completes y envíes.' };
-    }
-
-    const enviado = await clickTextControl(page, ['send\\s+message', 'send', 'enviar'], 8000);
-    await sleep(4000);
-    if (!enviado) { keepOpen = true; return { ok: false, error: 'No encontré el botón "Send Message".' }; }
     return { ok: true, subject, message };
   } catch (e) {
-    return { ok: false, error: e.message };
+    const msg = String((e && e.message) || e);
+    const retry = (typeof isNetworkError === 'function' && isNetworkError(e)) || /net::|ERR_|proxy|tunnel|ECONN|ETIMEDOUT|EAI_AGAIN|Navigation timeout/i.test(msg);
+    return { ok: false, error: msg, retry };
   } finally {
     try { if (bridge) bridge.close(); } catch (_) {}
     if (!keepOpen && browser) { try { await browser.close(); } catch (_) {} }
   }
+}
+
+// Envuelve la apelación: si el proxy/red falla, REINTENTA; si falla el formulario, deja abierto.
+async function appealContactUsClean(email, apiKey, proxy, intentos = 3) {
+  let ultimo = { ok: false, error: 'sin intentos' };
+  const logr = (o) => { try { fs.appendFileSync(path.join(LOGS_DIR, 'appeal-debug.log'), `[${new Date().toISOString()}] ${email} :: RESULT ${JSON.stringify({ ok: o && o.ok, keepOpen: o && o.keepOpen, retry: o && o.retry, error: o && o.error })}\n`); } catch (_) {} };
+  for (let i = 1; i <= intentos; i++) {
+    ultimo = await appealContactUsOnce(email, apiKey, proxy).catch((e) => ({ ok: false, error: e.message, retry: true }));
+    if (ultimo && ultimo.ok) { logr(ultimo); return ultimo; }
+    if (ultimo && ultimo.keepOpen) { logr(ultimo); return ultimo; }          // problema de formulario: no reintentar
+    if (ultimo && ultimo.retry && i < intentos) { await sleep(4000); continue; } // proxy/red: reintenta
+    logr(ultimo); return ultimo;
+  }
+  logr(ultimo); return ultimo;
 }
 
 // Apela una LISTA de correos, uno por uno, cada uno con su propio navegador limpio.
@@ -4804,6 +5170,34 @@ function buildProxyDispatcher(proxy) {
   return new ProxyAgent(proxyUrl);
 }
 
+// IP REAL de salida del proxy (consultada A TRAVÉS del proxy), para la auditoría.
+// Ligero: usa el puente SOCKS5 + undici, sin abrir navegador.
+async function lookupExitIp(proxy) {
+  if (!proxy || !proxy.host) return { skipped: true };
+  let bridge = null;
+  let dispatcher = null;
+  try {
+    let proxyUrl;
+    if (proxy.type === 'socks5') {
+      bridge = await startSocksBridge(proxy);
+      proxyUrl = `http://127.0.0.1:${bridge.address().port}`;
+    } else {
+      const auth = proxy.username ? `${encodeURIComponent(proxy.username)}:${encodeURIComponent(proxy.password || '')}@` : '';
+      proxyUrl = `http://${auth}${proxy.host}:${proxy.port}`;
+    }
+    dispatcher = new ProxyAgent(proxyUrl);
+    const res = await undiciFetch('https://ipinfo.io/json', { dispatcher, signal: AbortSignal.timeout(15000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const info = await res.json();
+    return { ip: info.ip, org: info.org || '', city: info.city || '', region: info.region || '', country: info.country || '', timezone: info.timezone || '' };
+  } catch (e) {
+    return { error: e.message };
+  } finally {
+    if (dispatcher) await dispatcher.close().catch(() => {});
+    if (bridge) { try { bridge.close(); } catch (_) {} }
+  }
+}
+
 // Chrome no soporta SOCKS5 con usuario/clave. Hacemos un puente local:
 // Chrome -> HTTP proxy local (sin auth) -> SOCKS5 con auth -> destino
 function socks5Connect(proxy, targetHost, targetPort) {
@@ -4908,40 +5302,48 @@ async function resolveProxyGeo(browser, proxy) {
   if (!proxy || !proxy.host) return null;
   const key = `${proxy.type || 'http'}://${proxy.host}:${proxy.port}`;
   const cached = proxyGeoCache.get(key);
-  if (cached && Date.now() - cached.at < 30 * 60 * 1000) return cached.data;
+  // Solo se reutiliza un resultado VÁLIDO (los fallos NO se cachean, para reintentar).
+  if (cached && cached.data && Date.now() - cached.at < 30 * 60 * 1000) return cached.data;
 
-  let tmp;
-  try {
-    tmp = await browser.newPage();
-    if (proxy.type !== 'socks5' && proxy.username) {
-      await tmp.authenticate({ username: proxy.username, password: proxy.password || '' }).catch(() => {});
+  // Varios proveedores por si uno falla o bloquea al proxy. Todos dan timezone.
+  const endpoints = [
+    { url: 'https://ipinfo.io/json', map: (o) => o && o.ip ? { query: o.ip, country: o.country, city: o.city || o.region, timezone: o.timezone, loc: o.loc } : null },
+    { url: 'https://ipwho.is/', map: (o) => o && o.ip && o.success !== false ? { query: o.ip, country: o.country_code || o.country, city: o.city, timezone: (o.timezone && o.timezone.id) || o.timezone, loc: (o.latitude != null ? `${o.latitude},${o.longitude}` : '') } : null },
+    { url: 'https://ipapi.co/json/', map: (o) => o && o.ip ? { query: o.ip, country: o.country_code, city: o.city, timezone: o.timezone, loc: (o.latitude != null ? `${o.latitude},${o.longitude}` : '') } : null },
+  ];
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    for (const ep of endpoints) {
+      let tmp;
+      try {
+        tmp = await browser.newPage();
+        if (proxy.type !== 'socks5' && proxy.username) {
+          await tmp.authenticate({ username: proxy.username, password: proxy.password || '' }).catch(() => {});
+        }
+        await tmp.goto(ep.url, { waitUntil: 'domcontentloaded', timeout: 12000 });
+        const txt = await tmp.evaluate(() => (document.body ? document.body.innerText : ''));
+        const info = ep.map(JSON.parse(txt));
+        if (info && info.timezone) {
+          const [lat, lon] = String(info.loc || '').split(',').map(Number);
+          const data = {
+            status: 'success',
+            query: info.query,
+            country: info.country || '',
+            city: info.city || '',
+            timezone: info.timezone,
+            lat: Number.isFinite(lat) ? lat : undefined,
+            lon: Number.isFinite(lon) ? lon : undefined,
+          };
+          proxyGeoCache.set(key, { at: Date.now(), data });
+          return data;
+        }
+      } catch (_) {
+      } finally {
+        if (tmp) await tmp.close().catch(() => {});
+      }
     }
-    // HTTPS: ip-api (HTTP) no pasa por el puente SOCKS5; ipinfo si (CONNECT).
-    await tmp.goto('https://ipinfo.io/json', {
-      waitUntil: 'domcontentloaded',
-      timeout: 12000
-    });
-    const txt = await tmp.evaluate(() => (document.body ? document.body.innerText : ''));
-    const info = JSON.parse(txt);
-    if (info && info.ip) {
-      const [lat, lon] = String(info.loc || '').split(',').map(Number);
-      const data = {
-        status: 'success',
-        query: info.ip,
-        country: info.country || '',
-        city: info.city || info.region || '',
-        timezone: info.timezone || '',
-        lat: Number.isFinite(lat) ? lat : undefined,
-        lon: Number.isFinite(lon) ? lon : undefined
-      };
-      proxyGeoCache.set(key, { at: Date.now(), data });
-      return data;
-    }
-  } catch (_) {
-  } finally {
-    if (tmp) await tmp.close().catch(() => {});
+    await sleep(1200);
   }
-  proxyGeoCache.set(key, { at: Date.now(), data: null });
   return null;
 }
 
@@ -5347,6 +5749,11 @@ emitActive() {
       viewport: device.viewport
     });
 
+    // Plataforma / idioma / userAgentData a NIVEL CDP (NO con getters JS: los detectan
+    // los scanners tipo BrowserScan "Bot Detection"). Así el UA, la plataforma y las
+    // Client Hints quedan coherentes sin dejar rastro de sobreescritura por JavaScript.
+    try { await applyUaOverride(client, device, chromeMajor); } catch (_) {}
+
     // Anti-deteccion: oculta automatizacion y enmascara la huella por perfil.
     const seed = String(this.id) + '|' + MACHINE_SALT;
     const deviceKind = device.kind;
@@ -5357,14 +5764,9 @@ emitActive() {
       const rand = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
       const pick = (arr) => arr[Math.floor(rand() * arr.length)];
 
-      try { Object.defineProperty(navigator, 'webdriver', { get: () => false }); } catch (_) {}
-
-      // Pantalla coherente con el dispositivo
-      try {
-        const sc = window.screen;
-        const dims = { width: screenW, height: screenH, availWidth: screenW, availHeight: screenH, colorDepth: 24, pixelDepth: 24 };
-        for (const k of Object.keys(dims)) { try { Object.defineProperty(sc, k, { get: () => dims[k] }); } catch (_) {} }
-      } catch (_) {}
+      // IMPORTANTE: NO se sobreescriben webdriver/plugins/languages/platform/vendor/etc.
+      // con getters JS: los scanners (BrowserScan "Bot Detection") los detectan.
+      // La plataforma, el idioma y userAgentData se fijan a nivel CDP en launchProfile().
 
       // Fuentes: limita la lista visible (canvas measureText)
       try {
@@ -5386,7 +5788,7 @@ emitActive() {
         };
       } catch (_) {}
 
-      // WebRTC: NO filtra la IP real y muestra la del proxy (como AdsPower).
+      // WebRTC: NO filtra la IP real y muestra la del proxy.
       try {
         const OrigRTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
         if (OrigRTC) {
@@ -5420,13 +5822,7 @@ emitActive() {
         }
       } catch (_) {}
 
-      // Coherencia con el dispositivo: los moviles no tienen plugins y Safari no tiene window.chrome.
-      try { Object.defineProperty(navigator, 'plugins', { get: () => [] }); } catch (_) {}
-      try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] }); } catch (_) {}
-      try { Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5 }); } catch (_) {}
-      try { Object.defineProperty(navigator, 'platform', { get: () => (kind === 'android' ? 'Linux armv8l' : 'iPhone') }); } catch (_) {}
-      try { Object.defineProperty(navigator, 'vendor', { get: () => (kind === 'android' ? 'Google Inc.' : 'Apple Computer, Inc.') }); } catch (_) {}
-
+      // Coherencia con el dispositivo: Safari no tiene window.chrome.
       if (kind === 'android') {
         try {
           if (!window.chrome) window.chrome = {};
@@ -5436,38 +5832,12 @@ emitActive() {
         try { delete window.chrome; } catch (_) {}
       }
 
-      // userAgentData coherente (Chrome Android lo tiene; Safari no)
-      try {
-        if (kind === 'android') {
-          const brands = [
-            { brand: 'Not?A_Brand', version: '24' },
-            { brand: 'Chromium', version: String(major) },
-            { brand: 'Google Chrome', version: String(major) }
-          ];
-          const plat = String(platformName || 'Android');
-          const mdl = String(model || 'Pixel 10');
-          const pver = String(androidVersion || '16.0.0');
-          const data = {
-            brands,
-            mobile: true,
-            platform: plat,
-            getHighEntropyValues: () => Promise.resolve({
-              architecture: '', bitness: '', brands,
-              fullVersionList: brands.map((b) => ({ brand: b.brand, version: `${b.version}.0.0.0` })),
-              mobile: true, model: mdl, platform: plat, platformVersion: pver,
-              uaFullVersion: `${major}.0.0.0`
-            })
-          };
-          Object.defineProperty(navigator, 'userAgentData', { get: () => data });
-        } else {
-          try { delete navigator.userAgentData; } catch (_) {}
-        }
-      } catch (_) {}
+      // userAgentData / hardwareConcurrency / deviceMemory: NO se tocan por JS.
+      // userAgentData se fija por CDP (Emulation.setUserAgentOverride + userAgentMetadata).
 
-      try { Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => pick([4, 6, 8]) }); } catch (_) {}
-      try { Object.defineProperty(navigator, 'deviceMemory', { get: () => pick([4, 8]) }); } catch (_) {}
-
-      // WebGL coherente con el dispositivo (y variado por perfil en Android).
+      // WebGL: GPU MÓVIL variada por perfil. Sin esto, TODAS las cuentas de la misma PC
+      // muestran la GPU real (NVIDIA) y el sitio las vincula. Se prioriza no filtrar
+      // la GPU real (el "WebGL exception" del scanner es solo un -5% de score, no detección).
       try {
         const gpu = kind === 'android'
           ? pick([
@@ -5493,7 +5863,21 @@ emitActive() {
         patchGL(window.WebGL2RenderingContext && window.WebGL2RenderingContext.prototype);
       } catch (_) {}
 
-      // Canvas: ruido determinista (salvo el canvas del captcha)
+      // hardwareConcurrency / deviceMemory tipo móvil (variado por perfil).
+      try { Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => pick([4, 6, 8]) }); } catch (_) {}
+      try { Object.defineProperty(navigator, 'deviceMemory', { get: () => pick([4, 8]) }); } catch (_) {}
+
+      // maxTouchPoints coherente con móvil. Un SOLO getter (no dispara bot detection) y evita
+      // el aviso "Touch support exception" (el UA dice móvil pero el equipo no es táctil).
+      try { Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5 }); } catch (_) {}
+
+      // Semilla estable (numérica) para ruido DETERMINISTA: mismo canvas => mismo resultado
+      // (así no parece "tampering"), pero distinto entre perfiles.
+      let seedInt = 2166136261 >>> 0;
+      for (let i = 0; i < String(seedStr).length; i++) { seedInt ^= String(seedStr).charCodeAt(i); seedInt = Math.imul(seedInt, 16777619) >>> 0; }
+      seedInt = seedInt >>> 0;
+
+      // Canvas: ruido determinista (salvo el canvas del captcha).
       try {
         const origGet = CanvasRenderingContext2D.prototype.getImageData;
         CanvasRenderingContext2D.prototype.getImageData = function () {
@@ -5503,19 +5887,23 @@ emitActive() {
             if (cv && cv.getAttribute && cv.getAttribute('data-momonga-skip') === '1') return data;
             const d = data.data;
             if (d.length >= 4) {
-              const idx = Math.floor(rand() * (d.length / 4)) * 4;
-              d[idx] = (d[idx] + Math.floor(rand() * 3) - 1 + 256) % 256;
+              let h = seedInt >>> 0;
+              for (let i = 0; i < d.length; i += 131) { h ^= d[i]; h = Math.imul(h, 16777619) >>> 0; }
+              const idx = (h % Math.floor(d.length / 4)) * 4;
+              d[idx] = (d[idx] + (h & 3) - 1 + 256) % 256;
             }
           } catch (_) {}
           return data;
         };
       } catch (_) {}
 
+      // Audio: offset determinista por perfil (no aleatorio) para no parecer manipulado.
       try {
         const origGetFloat = AnalyserNode.prototype.getFloatFrequencyData;
+        const audioOff = (seedInt & 7) * 0.0000001;
         AnalyserNode.prototype.getFloatFrequencyData = function (array) {
           origGetFloat.apply(this, arguments);
-          try { if (array && array.length) array[0] = array[0] + rand() * 0.0000001; } catch (_) {}
+          try { if (array && array.length) array[0] = array[0] + audioOff; } catch (_) {}
         };
       } catch (_) {}
     };
@@ -5539,6 +5927,7 @@ emitActive() {
             const cdp = await p.target().createCDPSession();
             await cdp.send('Emulation.setTimezoneOverride', { timezoneId: timezone });
             await cdp.send('Emulation.setLocaleOverride', { locale: 'en-US' });
+            await applyUaOverride(cdp, device, chromeMajor);
           } catch (_) {}
           try { await p.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height); } catch (_) {}
         })().catch(() => {});
@@ -5841,12 +6230,11 @@ emitActive() {
     const min = Math.max(1, this.cfg.bumpMinMinutes || this.cfg.intervalMinutes || 16);
     const max = Math.max(min, this.cfg.bumpMaxMinutes || min);
 
-    // Exacto igual que la extensión: obtenerIntervaloAleatorio() — siempre dentro del rango configurado
+    // SIEMPRE aleatorio dentro del rango que configures (Bump mín – Bump máx).
+    // Si pones mín = máx, entonces es fijo (no hay rango).
     const minMs = min * 60 * 1000;
     const maxMs = max * 60 * 1000;
-    // Con "Intervalo variable entre ciclos" activado: varia dentro del rango.
-    // Desactivado: usa EXACTO el minimo. En ningun caso pasa del maximo.
-    const waitMs = this.settings.randomizedDelay
+    const waitMs = maxMs > minMs
       ? Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs
       : minMs;
 
@@ -6315,7 +6703,7 @@ app.post('/api/profiles/import', (req, res) => {
 
 app.post('/api/profiles', (req, res) => {
   try {
-    const { id, port, intervalMinutes, bumpMinMinutes, bumpMaxMinutes, url, email, password, supportEmail, supportUrl, proxy, adDetails, limits, device } = req.body || {};
+    const { id, port, intervalMinutes, bumpMinMinutes, bumpMaxMinutes, url, email, password, supportEmail, supportUrl, proxy, adDetails, limits, device, rotateUrl } = req.body || {};
     const cleanId = String(id || '').trim();
     const numericPort = Number(port);
     let minVal = Number(bumpMinMinutes);
@@ -6347,6 +6735,7 @@ app.post('/api/profiles', (req, res) => {
       password: String(password || ''),
       supportEmail: String(supportEmail || '').trim(),
       supportUrl: String(supportUrl || '').trim(),
+      rotateUrl: String(rotateUrl || '').trim(),
       intervalMinutes: minVal,
       bumpMinMinutes: minVal,
       bumpMaxMinutes: maxVal,
@@ -6408,6 +6797,10 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
 
     if ('apiKey2Captcha' in body) {
       profile.apiKey2Captcha = String(body.apiKey2Captcha || '').trim();
+    }
+
+    if ('rotateUrl' in body) {
+      profile.rotateUrl = String(body.rotateUrl || '').trim();
     }
 
     if ('device' in body) {
@@ -6486,6 +6879,43 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
       }
     }
     res.json({ success: true, profile });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Llama al enlace de cambio de IP del proveedor (ProxyPanel y similares).
+app.post('/api/profiles/:id/rotate-ip', async (req, res) => {
+  try {
+    const config = loadConfig();
+    const profile = config.find((item) => item.id === req.params.id);
+    if (!profile) return res.status(404).json({ success: false, error: 'Perfil no encontrado.' });
+    const url = String(profile.rotateUrl || '').trim();
+    if (!/^https?:\/\//i.test(url)) {
+      return res.status(400).json({ success: false, error: 'Configura primero el enlace de cambio de IP.' });
+    }
+
+    const controller = controllers.get(profile.id);
+    const ipBefore = (controller && controller._proxyIp) || null;
+    let message = '';
+    try {
+      const r = await undiciFetch(url, {
+        method: 'GET',
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        signal: AbortSignal.timeout(30000)
+      });
+      message = String(await r.text().catch(() => '')).trim().slice(0, 300);
+      if (!r.ok) {
+        return res.status(502).json({ success: false, error: `El enlace respondió HTTP ${r.status}.`, message });
+      }
+    } catch (error) {
+      return res.status(502).json({ success: false, error: `No se pudo llamar al enlace: ${error.message}` });
+    }
+
+    if (controller) controller.log(`🔄 Cambio de IP solicitado. Respuesta: ${message || 'OK'}`);
+    notify(`🔄 "${profile.id}": cambio de IP solicitado (${message || 'OK'}).`);
+    io.emit('profile-rotate', { id: profile.id, message, at: Date.now(), ipBefore });
+    res.json({ success: true, message: message || 'Cambio de IP solicitado.', ipBefore });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

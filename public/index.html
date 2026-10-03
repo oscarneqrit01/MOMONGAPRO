@@ -1368,6 +1368,10 @@
           <input id="profileProxyPassword" name="proxyPassword" type="password" />
         </div>
         <div class="form-field full">
+          <label for="profileRotateUrl">Enlace de cambio de IP (opcional · ProxyPanel)</label>
+          <input id="profileRotateUrl" name="rotateUrl" placeholder="https://proxypanel.io/r/..." />
+        </div>
+        <div class="form-field full">
           <label for="adCity">Ciudad del anuncio</label>
           <input id="adCity" name="adCity" placeholder="Montreal" />
         </div>
@@ -1986,6 +1990,14 @@
                       </select>
                     </div>
                   </div>
+                  <div style="grid-column: 1 / -1;">
+                    <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">ENLACE DE CAMBIO DE IP (ProxyPanel) — al pulsar "Cambiar IP" se pide una IP nueva</label>
+                    <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
+                      <input type="text" id="rotateUrl-${profile.id}" placeholder="https://proxypanel.io/r/..." value="${profile.rotateUrl || ''}" style="flex:1; min-width:200px; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
+                      <button type="button" class="small-btn blue" data-action="rotate-ip" data-id="${profile.id}">🔄 Cambiar IP</button>
+                      <span id="rotateStatus-${profile.id}" style="font-size: 10px; color: #888;"></span>
+                    </div>
+                  </div>
                   <div>
                     <label style="font-size: 10px; color: #888; display: block; margin-bottom: 3px;">API KEY 2CAPTCHA</label>
                     <input type="text" id="cap-${profile.id}" placeholder="Tu clave API" value="${profile.apiKey2Captcha || ''}" style="width: 100%; background: #1a1a2e; border: 1px solid #333; color: #fff; padding: 6px; border-radius: 4px; font-size: 11px;">
@@ -2178,6 +2190,28 @@
             const minutes = Number(minutesInput && minutesInput.value) || 360;
             socket.emit('update-repost-interval', { id, minutes: Math.max(1, minutes) });
           }
+          if (action === 'rotate-ip') {
+            const statusEl = document.getElementById(`rotateStatus-${id}`);
+            const url = String(document.getElementById(`rotateUrl-${id}`)?.value || '').trim();
+            if (statusEl) { statusEl.textContent = 'Solicitando IP nueva...'; statusEl.style.color = '#f39c12'; }
+            button.disabled = true;
+            try {
+              // Guarda el enlace primero por si lo acaban de escribir.
+              await fetch(`/api/profiles/${encodeURIComponent(id)}/settings`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ rotateUrl: url })
+              });
+              const resp = await fetch(`/api/profiles/${encodeURIComponent(id)}/rotate-ip`, { method: 'POST' });
+              const data = await resp.json().catch(() => ({}));
+              if (!resp.ok || !data.success) throw new Error(data.error || `Error ${resp.status}`);
+              if (statusEl) { statusEl.textContent = `✅ ${data.message || 'IP cambiada'}`; statusEl.style.color = '#2ecc71'; }
+            } catch (error) {
+              if (statusEl) { statusEl.textContent = `❌ ${error.message}`; statusEl.style.color = '#e74c3c'; }
+            } finally {
+              button.disabled = false;
+            }
+          }
         });
       });
 
@@ -2343,6 +2377,7 @@
           type: document.getElementById(`proxyType-${profileId}`)?.value || 'http'
         } : null,
         apiKey2Captcha: document.getElementById(`cap-${profileId}`).value,
+        rotateUrl: String(document.getElementById(`rotateUrl-${profileId}`)?.value || '').trim(),
         supportEmail: document.getElementById(`supportEmail-${profileId}`).value,
         limits: {
           dailyLimit: Number(document.getElementById(`dailyLimit-${profileId}`)?.value) || 0,
@@ -2713,6 +2748,14 @@
       }
     });
 
+    socket.on('profile-rotate', (data) => {
+      if (!data || !data.id) return;
+      const el = document.getElementById(`rotateStatus-${data.id}`);
+      if (el) { el.textContent = `🔄 ${data.message || 'IP cambiada'}`; el.style.color = '#2ecc71'; }
+      const safetyEl = document.querySelector(`[data-safety-id="${data.id}"]`);
+      if (safetyEl) { safetyEl.textContent = '🔄 Cambiando IP... (hasta ~90s)'; safetyEl.style.color = '#f39c12'; }
+    });
+
     addProfileForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       formError.textContent = '';
@@ -2725,6 +2768,7 @@
         bumpMaxMinutes: Number(form.get('bumpMaxMinutes')),
         url: form.get('url'),
         device: form.get('device'),
+        rotateUrl: String(form.get('rotateUrl') || '').trim(),
         adDetails: {
           city: form.get('adCity'),
           age: form.get('adAge'),

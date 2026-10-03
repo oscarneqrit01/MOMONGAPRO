@@ -40,3 +40,10 @@ Desktop.ini
 # Editor
 .vscode/
 .idea/
+
+# Binarios/portables y credenciales del tunel (NO subir)
+node/
+cloudflared.exe
+.cloudflared/
+_cf.err.txt
+_cf.out.txt

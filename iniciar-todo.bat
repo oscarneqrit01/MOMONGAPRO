@@ -2,6 +2,8 @@
 title MOMONGA PRO + Renta - Arranque
 setlocal
 cd /d "%~dp0"
+rem Usa el Node.js de ESTA carpeta (portable), asi no depende de C:
+if exist "%~dp0node\node.exe" set "PATH=%~dp0node;%PATH%"
 
 echo ==========================================
 echo   MOMONGA PRO  +  Panel de Renta
@@ -32,7 +34,7 @@ rem 3) Backend del SaaS (puerto 4000)
 netstat -ano | findstr ":4000" | findstr LISTENING >nul
 if errorlevel 1 (
   echo [3/5] Iniciando backend del SaaS (puerto 4000)...
-  start "Renta Backend" /min /D "%~dp0renta\backend" cmd /k node server.js
+  start "Renta Backend" /min /D "%~dp0renta\backend" cmd /k node supervisor.js
   timeout /t 4 /nobreak >nul
 ) else (
   echo [3/5] Backend ya esta corriendo.
@@ -48,19 +50,18 @@ if errorlevel 1 (
   echo [4/5] Frontend ya esta corriendo.
 )
 
-rem 5) Tunel Cloudflare (mimomonga.uk -> panel en 4000)
-set "CF=C:\Program Files (x86)\cloudflared\cloudflared.exe"
-if exist "%CF%" (
+rem 5) Tunel Cloudflare (mimomonga.uk -> panel en 4000) - usa el cloudflared y config de ESTA carpeta
+if exist "%~dp0cloudflared.exe" (
   tasklist /fi "imagename eq cloudflared.exe" | findstr /i cloudflared >nul
   if errorlevel 1 (
     echo [5/5] Iniciando tunel Cloudflare ^(mimomonga.uk^)...
-    start "Cloudflare Tunnel" /min "%CF%" tunnel run momonga
-    timeout /t 3 /nobreak >nul
+    start "Cloudflare Tunnel" /min "%~dp0tunel.bat"
+    timeout /t 4 /nobreak >nul
   ) else (
     echo [5/5] Tunel Cloudflare ya esta corriendo.
   )
 ) else (
-  echo [5/5] cloudflared no instalado; el dominio publico no arrancara.
+  echo [5/5] cloudflared no esta en la carpeta; el dominio publico no arrancara.
 )
 
 echo.
