@@ -834,7 +834,7 @@ app.get('/api/control/profiles/:id/diagnose', requireControlKey, async (req, res
     const info = await page.evaluate(() => {
       const t = document.body ? document.body.innerText : '';
       return {
-        bot: (t.match(/Bot Detection:?\s*([A-Za-z ]{2,20})/i) || [])[1] || null,
+        bot: /No Detection/i.test(t) ? 'No Detection' : (/\bBot Detection:?\s*Yes/i.test(t) ? 'Yes' : null),
         score: (t.match(/(\d{1,3})\s*%/) || [])[1] || null,
         penalties: (t.match(/[A-Z][A-Za-z ]{2,28}\s*[-\u2212]\d{1,2}%/g) || []),
         text: t.slice(0, 4000),
@@ -1091,9 +1091,12 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
       })();
     }
     else if (action === 'verify' || action === 'verificar') {
+      // Primero el chequeo de los 4 enlaces (abre el navegador si hace falta) y luego el rápido.
+      let external = null;
+      try { external = await runExternalCheck(controller); } catch (_) {}
       const check = await runSafetyCheck(controller).catch(() => null);
       if (check) reportSafetyCheck(controller, check);
-      return res.json({ ok: Boolean(check && check.ok), result: check || null, profile: controlProfileState(controller) });
+      return res.json({ ok: Boolean(check && check.ok), result: check || null, external, profile: controlProfileState(controller) });
     } else {
       return res.status(400).json({ ok: false, error: `Acción desconocida: ${action}` });
     }
@@ -2746,7 +2749,7 @@ async function runExternalCheck(controller) {
     // 5) browserscan -> deteccion de bot + score
     const bs = await grab('https://www.browserscan.net/', 15000);
     out.results.browserscan = {
-      bot: one(/Bot Detection:?\s*([A-Za-z ]{2,20})/i, bs),
+      bot: /No Detection/i.test(bs) ? 'No Detection' : (/\bBot Detection:?\s*Yes/i.test(bs) ? 'Yes' : null),
       score: one(/\b(\d{1,3})\s*%/, bs),
     };
 
