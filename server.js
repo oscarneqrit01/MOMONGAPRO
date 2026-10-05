@@ -259,6 +259,45 @@ function requireControlKey(req, res, next) {
   next();
 }
 
+const APP_VERSION = 18; // version de esta app (debe coincidir con el instalador MOMONGA-MEGA-Setup-N)
+let versionDisponible = null; // { version, url } si el servidor tiene una mas nueva
+
+// --- Licencia (para bots instalados en la PC del cliente) ---
+const LICENSE_PATH = path.join(__dirname, '.license.json');
+const DEFAULT_CLOUD = String(process.env.CLOUD_URL || 'https://mimomonga.uk').replace(/\/+$/, '');
+let licencia = { cloudUrl: DEFAULT_CLOUD, token: '', data: null, checkedAt: 0 };
+try { if (fs.existsSync(LICENSE_PATH)) { licencia = { ...licencia, ...JSON.parse(fs.readFileSync(LICENSE_PATH, 'utf8')) }; } } catch (_) {}
+const guardarLicencia = () => { try { fs.writeFileSync(LICENSE_PATH, JSON.stringify(licencia, null, 2)); } catch (_) {} };
+const licenciaRequerida = () => process.env.REQUIRE_LICENSE === '1' || Boolean(licencia.token);
+const licenciaVigente = () => {
+  if (!licenciaRequerida()) return true;
+  const d = licencia.data;
+  if (!d || d.vigente === false) return false;
+  if (d.vence && new Date(d.vence).getTime() < Date.now()) return false;
+  return true;
+};
+const limitePerfiles = () => (licencia.data && Number(licencia.data.perfiles)) || 0;
+const puedeCrearPerfil = () => {
+  if (!licenciaRequerida()) return true;
+  if (!licenciaVigente()) return false;
+  return controllers.size < limitePerfiles();
+};
+async function heartbeatLicencia() {
+  if (!licencia.token) return;
+  try {
+    const r = await undiciFetch(`${licencia.cloudUrl || DEFAULT_CLOUD}/api/license/status`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: licencia.token }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (data && data.licencia) { licencia.data = data.licencia; licencia.checkedAt = Date.now(); guardarLicencia(); }
+    else if (r.status === 401) { licencia.token = ''; licencia.data = null; guardarLicencia(); }
+  } catch (_) {}
+}
+if (licencia.token) {
+  heartbeatLicencia().catch(() => {});
+  setInterval(() => { heartbeatLicencia().catch(() => {}); }, 5 * 60 * 1000);
+}
+
 function photosDirDe(c) {
   const pp = c.cfg && c.cfg.adDetails && c.cfg.adDetails.photosPath;
   if (!pp) return null;
@@ -302,6 +341,10 @@ function controlProfileState(c) {
     nextBumpAt: c._nextBumpAt || 0,
     lastError: c.lastError || null,
     blocked: Boolean(c.blocked),
+    bumpMinMinutes: c.cfg?.bumpMinMinutes || c.cfg?.intervalMinutes || 16,
+    bumpMaxMinutes: c.cfg?.bumpMaxMinutes || c.cfg?.bumpMinMinutes || c.cfg?.intervalMinutes || 16,
+    postsARotar: Math.max(0, Math.floor(Number(c.cfg?.postsARotar) || 0)),
+    rotateAds: Boolean(c.cfg?.settings?.rotateAds),
     headline: (c.cfg?.adDetails?.headline || '').slice(0, 80),
     photos: contarFotos(c),
     thumb: thumbDe(c)
@@ -474,9 +517,17 @@ app.post('/login', (req, res) => {
   res.status(401).type('html').send(LOGIN_PAGE.replace('<!--ERROR-->', '<p style="color:#e74c3c;margin:0 0 12px;font-size:12px;">Contraseña incorrecta.</p>'));
 });
 
+// Modo cliente: el bot se instala en la PC del cliente; el login es la LICENCIA (no la contrasena local).
+const CLIENT_MODE = process.env.REQUIRE_LICENSE === '1';
+
 app.use((req, res, next) => {
   if (req.path === '/login' || req.path === '/favicon.ico') return next();
+  if (req.path === '/cliente') return next(); // panel del cliente (lo protege la licencia)
+  if (/\.(png|jpe?g|gif|ico|svg|webp)$/i.test(req.path)) return next(); // imagenes/iconos (favicon, fondo)
   if (req.path.startsWith('/api/control/')) return next(); // API de control (se valida con API key)
+  if (req.path.startsWith('/api/license/')) return next(); // Licencia del cliente (login propio)
+  if (req.path.startsWith('/api/cliente/')) return next(); // Datos del panel del cliente
+  if (CLIENT_MODE) return next(); // La licencia es el login; el cupo se valida en el servidor.
   if (isAuthed(req)) return next();
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'No autorizado. Inicia sesión en el panel.' });
   return res.redirect('/login');
@@ -506,8 +557,115 @@ app.get('/api/control/profiles', requireControlKey, (req, res) => {
 });
 
 // Crear un perfil nuevo en el bot (desde el SaaS).
+// --- API de licencia (para el panel del cliente) ---
+app.get('/api/license/status', (req, res) => {
+  res.json({
+    ok: true,
+    required: licenciaRequerida(),
+    clientMode: CLIENT_MODE,
+    cloudUrl: licencia.cloudUrl || DEFAULT_CLOUD,
+    licencia: licencia.data,
+    vigente: licenciaVigente(),
+    perfilesActuales: controllers.size,
+    perfilesPermitidos: limitePerfiles(),
+    appVersion: APP_VERSION,
+    versionDisponible: versionDisponible || null,
+  });
+});
+app.post('/api/license/login', async (req, res) => {
+  const { email, password, cloudUrl } = req.body || {};
+  const base = String(cloudUrl || licencia.cloudUrl || DEFAULT_CLOUD).replace(/\/+$/, '');
+  if (!email || !password) return res.status(400).json({ ok: false, mensaje: 'Escribe usuario y contrasena.' });
+  try {
+    const r = await undiciFetch(`${base}/api/license/validate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.ok) return res.status(401).json({ ok: false, mensaje: (data && data.mensaje) || 'Credenciales invalidas.' });
+    licencia = { cloudUrl: base, token: data.token, data: data.licencia, checkedAt: Date.now() };
+    guardarLicencia();
+    res.json({ ok: true, licencia: data.licencia });
+  } catch (e) { res.status(502).json({ ok: false, mensaje: 'No se pudo conectar con la nube: ' + e.message }); }
+});
+app.post('/api/license/logout', (req, res) => { licencia.token = ''; licencia.data = null; guardarLicencia(); res.json({ ok: true }); });
+
+// --- Panel ligero del cliente (tarjetas de perfiles, bloqueadas, correos) ---
+app.get('/api/cliente/profiles', (req, res) => {
+  try { res.json({ profiles: [...controllers.values()].map(controlProfileState) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+const CORREOS_PATH = path.join(__dirname, '.correos.json');
+const leerCorreos = () => { try { if (fs.existsSync(CORREOS_PATH)) return JSON.parse(fs.readFileSync(CORREOS_PATH, 'utf8')); } catch (_) {} return []; };
+app.get('/api/cliente/correos', (req, res) => res.json({ correos: leerCorreos() }));
+app.post('/api/cliente/correos', (req, res) => {
+  const lista = Array.isArray(req.body && req.body.correos) ? req.body.correos.map((x) => String(x || '').trim()).filter(Boolean) : [];
+  try { fs.writeFileSync(CORREOS_PATH, JSON.stringify(lista, null, 2)); } catch (_) {}
+  res.json({ ok: true, correos: lista });
+});
+app.post('/api/cliente/update', async (req, res) => {
+  try { res.json(await aplicarActualizacion()); }
+  catch (e) { res.status(500).json({ ok: false, mensaje: e.message }); }
+});
+app.get('/api/cliente/devices', (req, res) => {
+  const base = [
+    { key: 'iphone', label: 'iPhone (Safari)' },
+    { key: 'android', label: 'Android (genérico)' },
+    { key: 'pixel', label: 'Pixel (genérico)' },
+    { key: 'pixel_pro', label: 'Pixel Pro (genérico)' },
+    { key: 'samsung', label: 'Samsung (genérico)' },
+    { key: 'samsung_ultra', label: 'Samsung Ultra (genérico)' },
+  ];
+  let modern = [];
+  try { modern = (typeof MODERN_ANDROID !== 'undefined' && Array.isArray(MODERN_ANDROID)) ? MODERN_ANDROID.map((d) => ({ key: d.key, label: d.label || d.key })) : []; } catch (_) {}
+  res.json({ devices: [...base, ...modern] });
+});
+app.post('/api/cliente/mail/open', async (req, res) => {
+  try { res.json(await openMailBrowser(String((req.body && req.body.id) || '').trim(), String((req.body && req.body.url) || '').trim())); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/cliente/mail/close', async (req, res) => {
+  try { res.json(await closeMailBrowser(String((req.body && req.body.id) || '').trim())); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/cliente/profile/:id/:action', async (req, res) => {
+  const controller = controllers.get(req.params.id);
+  if (!controller) return res.status(404).json({ error: 'Perfil no encontrado.' });
+  const a = req.params.action;
+  try {
+    if (a === 'open') await controller.open();
+    else if (a === 'start') controller.start();
+    else if (a === 'pause') { if (controller.paused) controller.resume(); else controller.pause(); }
+    else if (a === 'stop') controller.stop();
+    else if (a === 'publish') controller.publishNow();
+    else return res.status(400).json({ error: 'Accion invalida.' });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/cliente/all/:action', (req, res) => {
+  const a = req.params.action;
+  try {
+    for (const c of controllers.values()) {
+      if (a === 'open') c.open();
+      else if (a === 'start') c.start();
+      else if (a === 'pause') c.pause();
+      else if (a === 'resume') c.resume();
+      else if (a === 'publish') c.publishNow();
+    }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/cliente', (req, res) => {
+  const f = path.join(__dirname, 'public', 'cliente.html');
+  if (fs.existsSync(f)) return res.sendFile(f);
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 app.post('/api/control/profiles', requireControlKey, (req, res) => {
   try {
+    if (!puedeCrearPerfil()) {
+      const msg = !licenciaVigente()
+        ? 'Tu licencia no esta vigente. Renueva para crear perfiles.'
+        : `Alcanzaste el limite de ${limitePerfiles()} perfil(es) de tu licencia.`;
+      return res.status(403).json({ ok: false, error: msg });
+    }
     const body = req.body || {};
     const cleanId = String(body.id || '').trim();
     if (!cleanId) return res.status(400).json({ ok: false, error: 'Falta el nombre del perfil.' });
@@ -1024,7 +1182,7 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
         try {
           if (!controller.page) await controller.open();
           if (controller.page) {
-            controller._operationPromise = editExistingPost(controller.page, controller);
+            controller._operationPromise = editExistingPost(controller.page, controller, { strict: true });
             await controller._operationPromise.catch(() => {});
             controller._operationPromise = null;
           }
@@ -1061,6 +1219,12 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
       saveState();
       controller.log('✅ Perfil desmarcado como bloqueado. Ya se puede Iniciar de nuevo.');
       notify(`✅ La cuenta "${controller.id}" se desmarcó como bloqueada (lista para reintentar).`);
+    }
+    else if (action === 'block' || action === 'bloquear' || action === 'marcar-bloqueada') {
+      controller.blocked = true;
+      saveState();
+      controller.log('🚫 Perfil marcado como BLOQUEADO (a petición del panel).');
+      notify(`🚫 La cuenta "${controller.id}" se marcó como bloqueada (por reusar foto/número).`);
     }
     else if (action === 'appeal' || action === 'apelar') {
       (async () => {
@@ -2339,6 +2503,8 @@ async function solveImageCaptcha(apiKey, page, controller) {
       if (!filled) {
         throw new Error('2Captcha resolvió el código, pero no se pudo escribir en el campo del captcha.');
       }
+      // Pausa "humana" tras resolver el captcha (como si lo leyeras) antes de enviar.
+      await humanPause(1200, 3200);
       return code;
     } catch (error) {
       lastError = error;
@@ -3529,29 +3695,97 @@ async function fillFieldByLabel(page, labelRegexSource, value) {
   }, labelRegexSource, value);
 }
 
-async function fillPhone(page, value) {
+// Escribe un campo con TECLADO REAL (como humano) para no delatar el llenado instantaneo.
+// Devuelve true si quedo escrito; si no, el caller usa el setter JS de respaldo.
+async function typeLikeHuman(page, value, finder = {}) {
+  if (value === undefined || value === null || String(value) === '') return false;
+  const str = String(value);
+  let handle = null;
+  try {
+    if (finder.selector) handle = await page.$(finder.selector);
+    if (!handle && finder.label) {
+      const marked = await page.evaluate((re) => {
+        const rx = new RegExp(re, 'i');
+        const nodes = Array.from(document.querySelectorAll('label, b, strong, span, td, th, p, div, legend'));
+        for (const el of nodes) {
+          const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+          if (!t || t.length > 40 || !rx.test(t)) continue;
+          const scope = el.parentElement || el;
+          const f = scope.querySelector('input:not([type="hidden"]), textarea, select');
+          if (f && f.offsetParent !== null && !f.disabled && !f.readOnly) { f.setAttribute('data-momonga-fill', '1'); return true; }
+        }
+        return false;
+      }, finder.label).catch(() => false);
+      if (marked) handle = await page.$('[data-momonga-fill="1"]');
+    }
+    if (!handle) return false;
+    const tag = await handle.evaluate((n) => n.tagName.toLowerCase()).catch(() => '');
+    if (tag === 'select') {
+      await handle.evaluate((n, v) => {
+        const w = String(v).trim().toLowerCase();
+        const opt = Array.from(n.options).find((o) => (o.textContent || '').trim().toLowerCase() === w) || Array.from(n.options).find((o) => String(o.value) === String(v));
+        if (opt) { n.value = opt.value; n.dispatchEvent(new Event('change', { bubbles: true })); }
+      }, str).catch(() => {});
+    } else {
+      await handle.evaluate((n) => { try { n.scrollIntoView({ block: 'center' }); } catch (_) {} n.focus(); }).catch(() => {});
+      await handle.click({ clickCount: 3 }).catch(() => {});
+      await page.keyboard.down('Control').catch(() => {});
+      await page.keyboard.press('KeyA').catch(() => {});
+      await page.keyboard.up('Control').catch(() => {});
+      await page.keyboard.press('Backspace').catch(() => {});
+      const delay = 22 + Math.floor(Math.random() * 60); // 22-82 ms por tecla (ritmo humano)
+      await handle.type(str, { delay }).catch(() => {});
+    }
+    const got = await handle.evaluate((n) => String(n.value || '')).catch(() => '');
+    await handle.evaluate((n) => n.removeAttribute('data-momonga-fill')).catch(() => {});
+    const a = got.replace(/\s+/g, ' ').trim().toLowerCase();
+    const b = str.replace(/\s+/g, ' ').trim().toLowerCase();
+    return a === b && a.length > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+// Llena un campo de texto escribiendo como humano; si falla, cae al setter JS (respaldo).
+async function fillText(page, value, finder = {}, controller) {
+  if (value === undefined || value === null || String(value) === '') return false;
+  if (await typeLikeHuman(page, value, finder)) return true;
+  if (finder.selector && await fillExactField(page, finder.selector, value)) return true;
+  if (finder.label && await fillFieldByLabel(page, finder.label, value)) return true;
+  return false;
+}
+
+async function fillPhone(page, value, controller) {
   if (!value) return false;
 
-  return page.evaluate((val) => {
+  const debug = await page.evaluate((val) => {
     const raw = String(val).trim();
     const digits = raw.replace(/\D/g, '');
     const normalized = digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : raw.replace(/[\s().-]+/g, '');
+    const info = { normalized, matched: null, cloned: false, after: null };
 
     const setVal = (f) => {
       if (!f || !('value' in f)) return false;
-      const setter = Object.getOwnPropertyDescriptor(f.__proto__, 'value')?.set;
-      if (setter) setter.call(f, normalized);
-      else f.value = normalized;
-      f.dispatchEvent(new Event('input', { bubbles: true }));
-      f.dispatchEvent(new Event('change', { bubbles: true }));
-      f.dispatchEvent(new Event('blur', { bubbles: true }));
-      return true;
+      info.matched = f.id || f.name || f.type || f.className;
+      if (String(f.value || '').replace(/\D/g, '') === String(normalized).replace(/\D/g, '')) { info.after = f.value; return true; }
+      // MegaPersonals BORRA el teléfono con handlers de 'input'/'blur' (bloqueo "1 cambio/día").
+      // Clonamos el nodo: eso elimina todos los listeners, así el número queda FIJO en el campo.
+      let target = f;
+      try {
+        const clone = f.cloneNode(true);
+        if (f.parentNode) { f.parentNode.replaceChild(clone, f); target = clone; info.cloned = true; }
+      } catch (_) { target = f; }
+      const setter = Object.getOwnPropertyDescriptor(target.__proto__, 'value')?.set;
+      try { if (setter) setter.call(target, normalized); else target.value = normalized; } catch (_) { target.value = normalized; }
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+      info.after = target.value;
+      return String(target.value || '').replace(/\D/g, '').length >= 7;
     };
 
-    const direct = document.querySelector(
-      'input[type="tel"], input[name*="phone" i], input[id*="phone" i], input[autocomplete="tel"], input[name*="cell" i], input[id*="cell" i], input[name*="mobile" i], input[id*="mobile" i]'
-    );
-    if (setVal(direct)) return true;
+    // Priorizar SIEMPRE el campo real #phonenumber (hay otro input "phone" oculto que ganaba en querySelector).
+    const direct = document.getElementById('phonenumber')
+      || document.querySelector('input[type="tel"], input[name*="phone" i], input[id*="phone" i], input[autocomplete="tel"], input[name*="cell" i], input[id*="cell" i], input[name*="mobile" i], input[id*="mobile" i]');
+    if (setVal(direct)) { info.ok = true; return info; }
 
     // Si hay un selector de país (+1) junto a un input, ese input es el teléfono.
     const countrySelects = Array.from(document.querySelectorAll('select')).filter((s) =>
@@ -3561,7 +3795,7 @@ async function fillPhone(page, value) {
       const wrap = s.parentElement;
       if (!wrap) continue;
       const input = Array.from(wrap.querySelectorAll('input:not([type="hidden"])')).find((i) => i.type !== 'checkbox' && i.type !== 'radio');
-      if (setVal(input)) return true;
+      if (setVal(input)) { info.ok = true; return info; }
     }
 
     const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
@@ -3571,10 +3805,14 @@ async function fillPhone(page, value) {
       if (!t || t.length > 30 || !/^\s*phone/i.test(t)) continue;
       const scope = el.parentElement || el;
       const num = Array.from(scope.querySelectorAll('input:not([type="hidden"])')).find((i) => i.type !== 'checkbox');
-      if (setVal(num)) return true;
+      if (setVal(num)) { info.ok = true; return info; }
     }
-    return false;
-  }, value);
+    info.ok = false;
+    return info;
+  }, value).catch((e) => ({ err: String(e && e.message) }));
+
+  if (controller) controller.log(`📞 debug teléfono: ${JSON.stringify(debug)}`);
+  return Boolean(debug && debug.ok);
 }
 
 // Selecciona las categorías obligatorias "I AM" / "I SEE" (si no, el sitio rechaza el anuncio).
@@ -3620,9 +3858,40 @@ async function selectIamAndIsee(page, details = {}) {
       }
     }
 
+    // I SEE en MegaPersonals es un multiselect jQuery (#iseeCategories_multiSelect):
+    // hay que clicar el CHECKBOX REAL del widget; marcar la <select> oculta no basta.
     let iseeDone = false;
-    const iseeLabel = labels.find((el) => /^i\s*see/i.test(clean(el.textContent)));
-    if (iseeLabel) {
+    const iseeWidget = document.getElementById('iseeCategories_multiSelect');
+    const nativeIsee = document.getElementById('iseeCategories');
+    const queridosIsee = iseeWanted.length ? iseeWanted : ['Men'];
+    if (iseeWidget) {
+      const boxes = Array.from(iseeWidget.querySelectorAll('input.multiselect-checkbox'));
+      const matchBox = (wanted) => {
+        const w = norm(wanted);
+        return boxes.find((b) => {
+          const val = norm(b.getAttribute('data-val') || '');
+          const txt = norm(b.closest('label') ? b.closest('label').textContent : '');
+          return (val && val === w) || (txt && txt === w) || (val && w && (val.includes(w) || w.includes(val))) || (txt && w && (txt.includes(w) || w.includes(txt)));
+        });
+      };
+      for (const wanted of queridosIsee) {
+        const box = matchBox(wanted);
+        if (box) { if (!box.checked) box.click(); iseeDone = true; }
+      }
+      if (!iseeDone) {
+        const first = boxes.find((b) => (b.getAttribute('data-val') || '') !== '-1' && !b.disabled);
+        if (first) { if (!first.checked) first.click(); iseeDone = true; }
+      }
+      if (nativeIsee) {
+        for (const wanted of queridosIsee) {
+          const opt = Array.from(nativeIsee.options).find((o) => optionMatch(o, wanted));
+          if (opt) opt.selected = true;
+        }
+        fire(nativeIsee);
+      }
+    } else {
+      const iseeLabel = labels.find((el) => /^i\s*see/i.test(clean(el.textContent)));
+      if (iseeLabel) {
       const scope = iseeLabel.parentElement || iseeLabel;
       const multi = scope.querySelector('select') || (iseeLabel.nextElementSibling && iseeLabel.nextElementSibling.querySelector && iseeLabel.nextElementSibling.querySelector('select'));
       const select = multi && multi.tagName === 'SELECT' ? multi : (multi && multi.closest ? multi.closest('select') : null);
@@ -3652,10 +3921,24 @@ async function selectIamAndIsee(page, details = {}) {
           if (!iseeDone && boxes[0] && !boxes[0].checked) { boxes[0].click(); iseeDone = true; }
         }
       }
+      }
     }
 
     return { iamDone, iseeDone };
   }, iam, isee, Boolean(iamForzado), iseeForzado.length > 0).catch(() => ({ iamDone: false, iseeDone: false }));
+}
+
+// Detecta el aviso "You can only change your phone number once per day" y pulsa OK.
+async function dismissPhoneLimitPopup(page) {
+  return page.evaluate(() => {
+    const text = (document.body && document.body.innerText) || '';
+    if (!/once per day|come back tomorrow|only change your phone/i.test(text)) return false;
+    const btns = Array.from(document.querySelectorAll('button, a, input[type="button"], input[type="submit"], span, div'))
+      .filter((el) => el.offsetParent !== null);
+    const ok = btns.find((el) => /^(ok|okay|aceptar|continuar|close|cerrar)$/i.test((el.innerText || el.value || '').trim()));
+    if (ok) { try { ok.click(); } catch (_) {} }
+    return true;
+  }).catch(() => false);
 }
 
 // Detecta errores de validación del formulario (categorías/teléfono) que impiden avanzar.
@@ -3924,6 +4207,8 @@ async function waitForManualCaptcha(page, controller) {
   if (!solved) {
     controller.setCycleStage('error', 'Tiempo agotado esperando CAPTCHA.');
     controller.log('❌ Tiempo agotado esperando el CAPTCHA manual.');
+    controller.lastError = 'CAPTCHA no resuelto (se agotó el tiempo de espera manual).';
+    notify(`❌ No se pudo publicar/editar "${controller.id}": el CAPTCHA no se resolvió (imagen no cargó o no se introdujo a tiempo).`).catch(() => {});
   }
   return solved;
 }
@@ -3960,10 +4245,20 @@ async function dismissOkModal(page) {
 // Página de imágenes pendientes (/users/pendingImages/...): hay que pulsar el botón OK
 async function clickPendingImagesOk(page) {
   return await trustedClick(page, () => {
-    const ok = document.getElementById('success-ok')
-      || Array.from(document.querySelectorAll('img, button, a, div'))
-        .find((el) => el.offsetParent !== null && /buttonok|success-ok/i.test(`${el.id || ''} ${el.getAttribute('src') || ''}`));
-    return ok || null;
+    const byId = document.getElementById('success-ok');
+    if (byId && byId.offsetParent !== null) return byId;
+    const byAttr = Array.from(document.querySelectorAll('img, button, a, div, input'))
+      .find((el) => el.offsetParent !== null && /buttonok|success-ok|ok\.png/i.test(`${el.id || ''} ${el.getAttribute('src') || ''}`));
+    if (byAttr) return byAttr;
+    // Fallback: cualquier botón/enlace/imagen de OK visible (el sitio cambio el boton).
+    const candidatos = Array.from(document.querySelectorAll('button, a, input[type="submit"], input[type="button"], img'));
+    return candidatos.find((el) => {
+      if (el.offsetParent === null) return false;
+      if (el.disabled) return false;
+      const t = `${el.innerText || ''} ${el.value || ''} ${el.id || ''} ${el.getAttribute('alt') || ''} ${el.getAttribute('title') || ''}`.trim();
+      return /^(ok|okay|continue|accept|aceptar|continuar|done|listo|cerrar|close)$/i.test(t)
+        || /\b(ok|okay|continue|aceptar|continuar)\b/i.test(t);
+    }) || null;
   });
 }
 
@@ -4054,19 +4349,18 @@ async function deleteAndRepost(page, controller, options = {}) {
     await humanPause(500, 1200);
     await selectIamAndIsee(page, details);
     await humanPause(600, 1500);
-    await fillExactField(page, '#name', details.name) || await fillFieldByLabel(page, '^\\s*name', details.name);
+    /* Nombre/Alias del anuncio: NO se llena (se deja vacio) */
     await humanPause(700, 1800);
-    await fillFieldByLabel(page, '^\\s*headline', headlineToUse);
+    await fillText(page, headlineToUse, { label: '^\\s*headline' });
     await humanPause(800, 2000);
     await fillExactField(page, '#age', details.age) || await fillFieldByLabel(page, '^\\s*age', details.age);
     await humanPause(1200, 2800);
-    await fillFieldByLabel(page, '^\\s*body', textToUse);
+    await fillText(page, textToUse, { selector: '#body', label: '^\\s*body' });
     await humanPause(700, 1700);
     controller.setCycleStage('city', `Seleccionando ciudad: ${details.city}.`);
     if (!(await selectCity(page, details.city, controller))) return false;
     await humanPause(700, 1600);
-    const locationFilled = await fillExactField(page, '#location', details.location)
-      || await fillFieldByLabel(page, '^\\s*location', details.location);
+    const locationFilled = await fillText(page, details.location, { selector: '#location', label: '^\\s*location' });
     if (details.location && !locationFilled) {
       controller.setCycleStage('error', `No se pudo escribir la ubicación: ${details.location}.`);
       controller.log(`❌ No se pudo llenar Location/Area con "${details.location}".`);
@@ -4074,7 +4368,14 @@ async function deleteAndRepost(page, controller, options = {}) {
     }
     if (locationFilled) controller.log(`📍 Location/Area escrito: ${details.location}.`);
     await humanPause(600, 1400);
-    await fillPhone(page, details.phone);
+    await fillPhone(page, details.phone, controller);
+    const telAfter = await page.evaluate(() => (document.getElementById('phonenumber') || {}).value).catch(() => '(err)');
+    controller.log(`📞 Teléfono: quería "${details.phone}" ; el campo quedó "${telAfter}"`);
+    if (await dismissPhoneLimitPopup(page)) {
+      controller.log('⚠️ El sitio NO permitió cambiar el teléfono (solo 1 cambio por día).');
+      controller.lastError = 'El sitio no permitió cambiar el teléfono (solo 1 cambio por día).';
+      notify(`⚠️ No se pudo cambiar el teléfono en "${controller.id}": MegaPersonals solo permite 1 cambio por día.`).catch(() => {});
+    }
     await humanPause(1200, 2600);
 
     if (!(await clickNextStep(page, controller))) return false;
@@ -4373,7 +4674,7 @@ function contactoApelacion() {
 const mailBrowsers = new Map();
 const mailIdDe = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9@._-]/g, '_').slice(0, 80) || 'correo';
 
-async function openMailBrowser(id) {
+async function openMailBrowser(id, url) {
   const key = mailIdDe(id);
   const ya = mailBrowsers.get(key);
   if (ya && ya.browser && ya.browser.connected) {
@@ -4394,7 +4695,8 @@ async function openMailBrowser(id) {
   browser.on('disconnected', () => { const m = mailBrowsers.get(key); if (m && m.browser === browser) mailBrowsers.delete(key); });
   const pages = await browser.pages();
   const page = pages[0] || await browser.newPage();
-  await page.goto('https://outlook.live.com/mail/0/', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+  const destino = String(url || '').trim() || 'https://outlook.live.com/mail/0/';
+  await page.goto(destino, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
   return { ok: true, abierto: true };
 }
 
@@ -4800,20 +5102,27 @@ async function editExistingPost(page, controller, options = {}) {
     await humanPause(500, 1200);
     await selectIamAndIsee(page, details);
     await humanPause(600, 1500);
-    await fillExactField(page, '#name', details.name) || await fillFieldByLabel(page, '^\\s*name', details.name);
+    /* Nombre/Alias del anuncio: NO se llena (se deja vacio) */
     await humanPause(700, 1800);
-    await fillFieldByLabel(page, '^\\s*headline', headlineToUse);
+    await fillText(page, headlineToUse, { label: '^\\s*headline' });
     await humanPause(800, 2000);
     await fillExactField(page, '#age', details.age) || await fillFieldByLabel(page, '^\\s*age', details.age);
     await humanPause(1200, 2800);
-    await fillFieldByLabel(page, '^\\s*body', textToUse);
+    await fillText(page, textToUse, { selector: '#body', label: '^\\s*body' });
     await humanPause(700, 1800);
     controller.setCycleStage('city', `Seleccionando ciudad: ${details.city}.`);
     const okCity = await selectCity(page, details.city, controller);
     await humanPause(700, 1600);
-    await fillExactField(page, '#location', details.location) || await fillFieldByLabel(page, '^\\s*location', details.location);
+    await fillText(page, details.location, { selector: '#location', label: '^\\s*location' });
     await humanPause(600, 1500);
-    await fillPhone(page, details.phone);
+    await fillPhone(page, details.phone, controller);
+    const telAfter = await page.evaluate(() => (document.getElementById('phonenumber') || {}).value).catch(() => '(err)');
+    controller.log(`📞 Teléfono: quería "${details.phone}" ; el campo quedó "${telAfter}"`);
+    if (await dismissPhoneLimitPopup(page)) {
+      controller.log('⚠️ El sitio NO permitió cambiar el teléfono (solo 1 cambio por día).');
+      controller.lastError = 'El sitio no permitió cambiar el teléfono (solo 1 cambio por día).';
+      notify(`⚠️ No se pudo cambiar el teléfono en "${controller.id}": MegaPersonals solo permite 1 cambio por día.`).catch(() => {});
+    }
     await humanPause(900, 2200);
     return okCity;
   };
@@ -4935,7 +5244,9 @@ async function editExistingPost(page, controller, options = {}) {
 
   try {
     let modo = 'edit';
-    let yaEnCreate = page.url().includes('/users/posts/create');
+    // En modo "strict" (edicion pedida desde el panel/SaaS) NUNCA asumimos crear por estar
+    // en /users/posts/create: siempre vamos a Manage Posts y pulsamos Edit Post.
+    let yaEnCreate = !options.strict && page.url().includes('/users/posts/create');
 
     if (options.forceCreate) {
       modo = 'create';
@@ -5781,6 +6092,10 @@ emitActive() {
       this.log('Chrome del sistema no encontrado; usando el navegador de Puppeteer.');
     }
 
+    // Antes de abrir, cierra cualquier Chrome viejo que siga usando este perfil.
+    // Si no, Chrome abre una pestaña en blanco en la instancia anterior y Puppeteer no la controla.
+    await closeStaleChrome(profileDir, this.cfg.port, (message) => this.log(message)).catch(() => {});
+
     const launch = () => puppeteer.launch({
       headless: false,
       ...(executablePath ? { executablePath } : {}),
@@ -6130,10 +6445,28 @@ emitActive() {
       this.log('Navegador abierto.');
       const urls = siteUrls(this);
       this.log(`Conectando a ${urls.manage}...`);
-      await page.goto(urls.manage, {
-        waitUntil: 'networkidle2',
-        timeout: 90000
-      });
+      // Navegacion robusta: si el sitio mantiene conexiones vivas (websockets/polling),
+      // 'networkidle2' no termina y la ventana se queda en blanco. Reintenta y cae a
+      // 'domcontentloaded'. Si aun asi sigue en about:blank, avisa y cierra.
+      let navego = false;
+      for (let intento = 1; intento <= 2 && !navego; intento++) {
+        try {
+          await page.goto(urls.manage, { waitUntil: 'networkidle2', timeout: 35000 });
+        } catch (_) {
+          try { await page.goto(urls.manage, { waitUntil: 'domcontentloaded', timeout: 45000 }); } catch (_) {}
+        }
+        let actual = '';
+        try { actual = page.url(); } catch (_) {}
+        navego = Boolean(actual) && !/^about:blank/i.test(actual);
+        if (!navego && intento < 2) this.log('La pagina no cargo; reintentando...');
+      }
+      if (!navego) {
+        this.setCycleStage('error', 'No se pudo cargar MegaPersonals. Revisa el proxy o inicia sesion.');
+        this.log('❌ No se pudo cargar la pagina (proxy/sesion). Se cierra el navegador.');
+        notify(`❌ "${this.id}": no se pudo cargar MegaPersonals (revisa el proxy o la sesion).`);
+        await this.stop();
+        return false;
+      }
       this.log('¡Página cargada con éxito!');
 
       // Fuerza el zoom de la página a 100% (por si quedó con zoom de una sesión anterior)
@@ -6171,6 +6504,7 @@ emitActive() {
       return true;
     } catch (error) {
       this.log(`Error crítico: ${error.message}`);
+      this.setCycleStage('error', `No se pudo abrir: ${String(error.message || '').slice(0, 160)}`);
       notify(`❌ Error crítico en "${this.id}": ${error.message}`);
       await this.stop();
       return false;
@@ -6614,7 +6948,7 @@ emitActive() {
     if (this._pendingEdit) {
       this._pendingEdit = false;
       this.log('✏️ Aplicando cambios pendientes del anuncio (edicion diferida)...');
-      await editExistingPost(this.page, this);
+      await editExistingPost(this.page, this, { strict: true });
     } else if (this.settings.rotateAds) {
       await bumpAllAdsOneByOne(this.page, this);
     } else {
@@ -6820,7 +7154,13 @@ app.post('/api/profiles/import', (req, res) => {
 
 app.post('/api/profiles', (req, res) => {
   try {
-    const { id, port, intervalMinutes, bumpMinMinutes, bumpMaxMinutes, url, email, password, supportEmail, supportUrl, proxy, adDetails, limits, device, rotateUrl } = req.body || {};
+    if (!puedeCrearPerfil()) {
+      const msg = !licenciaVigente()
+        ? 'Tu licencia no esta vigente. Renueva para crear perfiles.'
+        : `Alcanzaste el limite de ${limitePerfiles()} perfil(es) de tu plan.`;
+      return res.status(403).json({ error: msg });
+    }
+    const { id, port, intervalMinutes, bumpMinMinutes, bumpMaxMinutes, url, email, password, supportEmail, supportUrl, proxy, adDetails, limits, device, rotateUrl, settings, postsARotar } = req.body || {};
     const cleanId = String(id || '').trim();
     const numericPort = Number(port);
     let minVal = Number(bumpMinMinutes);
@@ -6873,7 +7213,13 @@ app.post('/api/profiles', (req, res) => {
       limits: {
         dailyLimit: Math.max(0, Math.round(Number(limits?.dailyLimit) || 0)),
         conservativeMode: Boolean(limits?.conservativeMode)
-      }
+      },
+      settings: {
+        rotateAds: Boolean(settings && settings.rotateAds),
+        randomizedDelay: settings && 'randomizedDelay' in settings ? Boolean(settings.randomizedDelay) : true,
+        publishOnStart: Boolean(settings && settings.publishOnStart)
+      },
+      postsARotar: Math.max(0, Math.floor(Number(postsARotar) || 0))
     };
 
     if (proxy && proxy.host) {
@@ -6910,6 +7256,21 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
         randomizedDelay: 'randomizedDelay' in body ? Boolean(body.randomizedDelay) : Boolean(profile.settings?.randomizedDelay),
         publishOnStart: 'publishOnStart' in body ? Boolean(body.publishOnStart) : Boolean(profile.settings?.publishOnStart)
       };
+    }
+
+    if ('bumpMinMinutes' in body || 'bumpMaxMinutes' in body || 'intervalMinutes' in body) {
+      let min = Math.max(1, Math.round(Number(body.bumpMinMinutes) || Number(body.intervalMinutes) || profile.bumpMinMinutes || profile.intervalMinutes || 16));
+      let max = Math.max(min, Math.round(Number(body.bumpMaxMinutes) || min));
+      profile.bumpMinMinutes = min; profile.bumpMaxMinutes = max; profile.intervalMinutes = min;
+      const ctrl = controllers.get(profile.id);
+      if (ctrl) { ctrl.cfg.bumpMinMinutes = min; ctrl.cfg.bumpMaxMinutes = max; ctrl.cfg.intervalMinutes = min; if (ctrl.started && !ctrl.paused) ctrl.scheduleNext(); }
+    }
+
+    if ('postsARotar' in body) {
+      const n = Math.max(0, Math.floor(Number(body.postsARotar) || 0));
+      profile.postsARotar = n;
+      const ctrl = controllers.get(profile.id);
+      if (ctrl) ctrl.cfg.postsARotar = n;
     }
 
     if ('apiKey2Captcha' in body) {
@@ -7481,6 +7842,70 @@ async function checkProxiesHealth() {
   }
 }
 
+// --- Control remoto desde la web: la app reporta su estado y ejecuta ordenes ---
+async function ejecutarComandoRemoto(cmd) {
+  const action = cmd && cmd.action;
+  const id = cmd && cmd.profileId;
+  if (action === 'update') { await aplicarActualizacion().catch(() => {}); return; }
+  const aplicar = (c) => {
+    if (action === 'start') c.start();
+    else if (action === 'pause') c.pause();
+    else if (action === 'resume') c.resume();
+    else if (action === 'stop') c.stop();
+    else if (action === 'bump') c.publishNow();
+  };
+  if (id) {
+    const c = controllers.get(id);
+    if (c) await Promise.resolve(aplicar(c));
+  } else {
+    for (const c of controllers.values()) { try { await Promise.resolve(aplicar(c)); } catch (_) {} }
+  }
+}
+
+let autoUpdateAplicado = false;
+async function aplicarActualizacion() {
+  if (!versionDisponible || !versionDisponible.url) return { ok: false, mensaje: 'No hay actualizacion disponible.' };
+  const base = String(licencia.cloudUrl || DEFAULT_CLOUD).replace(/\/+$/, '');
+  const full = base + versionDisponible.url;
+  const tmp = path.join(os.tmpdir(), `MOMONGA-MEGA-Setup-${versionDisponible.version}.exe`);
+  const r = await undiciFetch(full, { signal: AbortSignal.timeout(300000) });
+  if (!r.ok) throw new Error('No se pudo descargar la actualizacion (HTTP ' + r.status + ').');
+  const buf = Buffer.from(await r.arrayBuffer());
+  fs.writeFileSync(tmp, buf);
+  require('child_process').spawn(tmp, ['/SILENT', '/CLOSEAPPLICATIONS', '/NORESTART'], { detached: true, stdio: 'ignore' }).unref();
+  return { ok: true, mensaje: 'Descargada. Instalando actualizacion...' };
+}
+
+async function syncConServidor() {
+  if (!licencia.token) return;
+  try {
+    const profiles = [...controllers.values()].map((c) => { const s = controlProfileState(c); delete s.thumb; return s; });
+    const r = await undiciFetch(`${licencia.cloudUrl || DEFAULT_CLOUD}/api/app/sync`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: licencia.token, hostname: os.hostname(), version: String(APP_VERSION), profiles }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (data && Array.isArray(data.commands)) {
+      for (const cmd of data.commands) { try { await ejecutarComandoRemoto(cmd); } catch (_) {} }
+    }
+    // Auto-actualizacion: si el servidor tiene una version mas nueva.
+    if (data && Number(data.appVersion) > APP_VERSION && data.appUrl) {
+      const antes = versionDisponible && versionDisponible.version;
+      versionDisponible = { version: Number(data.appVersion), url: data.appUrl };
+      if (antes !== versionDisponible.version) {
+        console.log(`🔄 Actualizacion disponible: v${versionDisponible.version}`);
+        notify(`🔄 Hay una NUEVA VERSION de MOMONGA MEGA (v${versionDisponible.version}).`).catch(() => {});
+      }
+      // Actualizacion SILENCIOSA: se descarga e instala sola (una vez por version).
+      if (data.autoUpdate !== false && !autoUpdateAplicado) {
+        autoUpdateAplicado = true;
+        setTimeout(() => { aplicarActualizacion().catch(() => {}); }, 45000);
+        console.log(`⏳ Actualizacion automatica programada (v${versionDisponible.version}) en 45s.`);
+      }
+    }
+  } catch (_) {}
+}
+
 server.listen(PORT, () => {
   pruneLogs();
   console.log(`🚀 Servidor en http://localhost:${PORT}`);
@@ -7495,6 +7920,10 @@ server.listen(PORT, () => {
   setInterval(refreshTwoCaptchaBalance, 30 * 60 * 1000).unref();
   setInterval(checkProxiesHealth, 10 * 60 * 1000).unref();
   startTelegramBot();
+
+  // Control remoto desde la web: reporta estado y ejecuta ordenes del cliente.
+  syncConServidor().catch(() => {});
+  setInterval(() => { syncConServidor().catch(() => {}); }, 5000).unref();
 
   // Horario de trabajo por perfil: pausa/reanuda segun la hora configurada.
   setInterval(() => {

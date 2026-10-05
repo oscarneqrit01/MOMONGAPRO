@@ -12,6 +12,9 @@ notifications.json
 .secrets-key
 .machine-id
 .control-key
+.license.json
+.correos.json
+VPS
 
 # SaaS de renta (proyecto aparte)
 renta/
@@ -40,6 +43,11 @@ Desktop.ini
 # Editor
 .vscode/
 .idea/
+
+# Artefactos del instalador (se generan con build.bat)
+instalador/build/
+instalador/dist/
+instalador/tools/
 
 # Binarios/portables y credenciales del tunel (NO subir)
 node/

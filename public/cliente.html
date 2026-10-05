@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MOMONGA MEGA</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23a21caf'/%3E%3Ctext x='32' y='46' font-size='42' font-weight='bold' text-anchor='middle' fill='%23fff' font-family='Arial'%3EM%3C/text%3E%3C/svg%3E" />
+<script src="/socket.io/socket.io.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, "Segoe UI", Arial, sans-serif; background: #f7f8fb; color: #1f2937; }
+  body::before { content: ''; position: fixed; inset: 0; background: url('/actualiza-post.jpg') no-repeat center 90px; background-size: min(560px, 82vw) auto; opacity: .12; pointer-events: none; z-index: 0; }
+  .wrap { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; }
+  header.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+  .brand { font-weight: 900; letter-spacing: .5px; font-size: 20px; }
+  .brand span { color: #a21caf; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 10px; font-size: 12px; font-weight: 700; }
+  .count { background: #ede9fe; color: #6d28d9; }
+  h2 { font-size: 16px; margin: 26px 0 12px; display: flex; align-items: center; gap: 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+  .card { background: #fff; border: 1px solid #ece9f3; border-radius: 16px; padding: 14px; box-shadow: 0 6px 20px rgba(80,40,120,.06); }
+  .card.blocked { border-color: #fecdd3; }
+  .row { display: flex; gap: 12px; align-items: center; }
+  .thumb { width: 52px; height: 52px; border-radius: 12px; object-fit: cover; background: #f1f0f6; flex-shrink: 0; }
+  .name { font-weight: 800; font-size: 15px; }
+  .sub { font-size: 11px; color: #9aa1ad; word-break: break-all; }
+  .state { margin-left: auto; }
+  .s-running { background: #dcfce7; color: #15803d; }
+  .s-paused { background: #fef3c7; color: #b45309; }
+  .s-stopped { background: #eef1f5; color: #64748b; }
+  .s-blocked { background: #fee2e2; color: #b91c1c; }
+  .meta { margin-top: 10px; font-size: 12px; color: #6b7280; line-height: 1.6; }
+  .meta b { color: #374151; }
+  .btns { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+  .btn {
+    border: 0; border-radius: 10px; padding: 8px 15px; font-size: 12.5px; font-weight: 700; letter-spacing: .01em;
+    color: #fff; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+    background: linear-gradient(180deg, #64748b, #475569);
+    box-shadow: 0 1px 2px rgba(16,24,40,.10), inset 0 1px 0 rgba(255,255,255,.18);
+    transition: transform .12s ease, box-shadow .12s ease, filter .12s ease;
+  }
+  .btn:hover { transform: translateY(-1px); box-shadow: 0 5px 14px rgba(16,24,40,.18), inset 0 1px 0 rgba(255,255,255,.22); filter: brightness(1.04); }
+  .btn:active { transform: translateY(0); box-shadow: 0 1px 2px rgba(16,24,40,.12); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; transform: none; box-shadow: none; filter: none; }
+  .b-open { background: linear-gradient(180deg, #4f8cff, #2563eb); }
+  .b-start { background: linear-gradient(180deg, #34d07a, #16a34a); }
+  .b-pause { background: linear-gradient(180deg, #f7b23b, #d97706); }
+  .b-bump { background: linear-gradient(180deg, #a072f0, #7c3aed); }
+  .b-danger { background: linear-gradient(180deg, #f56a6a, #dc2626); }
+  .empty { background: #fff; border: 1px dashed #ddd6fe; border-radius: 16px; padding: 28px; text-align: center; color: #9aa1ad; }
+  .correos { background: #fff; border: 1px solid #ece9f3; border-radius: 16px; padding: 14px; }
+  .correos .item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: 10px; background: #f8f7fc; margin-bottom: 8px; font-size: 13px; }
+  .correos input { flex: 1; border: 1px solid #ddd; border-radius: 10px; padding: 9px 12px; font-size: 13px; }
+  .correos .add { background: #6d28d9; color: #fff; border: 0; border-radius: 10px; padding: 9px 14px; font-weight: 700; cursor: pointer; }
+  .x { background: #fee2e2; color: #b91c1c; border: 0; border-radius: 8px; padding: 5px 9px; cursor: pointer; font-weight: 700; }
+  .correos .abrir { background: #2563eb; color: #fff; border: 0; border-radius: 8px; padding: 5px 10px; cursor: pointer; font-weight: 700; font-size: 12px; }
+  .toggle-title { cursor: pointer; user-select: none; }
+  /* overlay licencia */
+  #lic-overlay { display: none; position: fixed; inset: 0; z-index: 9999; background: #0b0612; color: #fff; align-items: center; justify-content: center; }
+  #lic-overlay .box { max-width: 380px; width: 100%; margin: 16px; padding: 24px; background: #170b24; border: 1px solid #a21caf66; border-radius: 16px; }
+  #lic-overlay h2 { color: #fff; margin: 0 0 4px; }
+  #lic-overlay p { color: #c4b5fd; font-size: 12px; margin: 0 0 16px; }
+  #lic-overlay input { width: 100%; margin-bottom: 8px; padding: 11px; border-radius: 10px; border: 1px solid #ffffff22; background: #ffffff0d; color: #fff; }
+  #lic-overlay button.go { width: 100%; padding: 12px; border: 0; border-radius: 10px; background: linear-gradient(90deg, #d946ef, #a21caf); color: #fff; font-weight: 700; cursor: pointer; }
+  .err { color: #f87171 !important; font-size: 12px; min-height: 14px; }
+
+  /* ==== TEMA OSCURO PROFESIONAL ==== */
+  body { background: radial-gradient(1000px 560px at 50% -12%, #241447 0%, #0b0a12 55%, #060609 100%) !important; color: #e6e8ef; min-height: 100vh; -webkit-font-smoothing: antialiased; }
+  body::before { display: none !important; }
+  .brand { color: #fff; } .brand span { color: #c084fc; }
+  .count { background: rgba(139,92,246,.18) !important; color: #c4b5fd !important; border: 1px solid rgba(139,92,246,.3); }
+  #licencia { background: rgba(139,92,246,.18) !important; color: #c4b5fd !important; }
+  #promo { background: rgba(245,158,11,.16) !important; color: #fcd34d !important; }
+  h2 { color: #f1f2f6; font-weight: 800; }
+  .card { background: linear-gradient(180deg, rgba(255,255,255,.055), rgba(255,255,255,.02)) !important; border: 1px solid rgba(255,255,255,.09) !important; box-shadow: 0 10px 30px rgba(0,0,0,.35) !important; }
+  .card.blocked { border-color: rgba(239,68,68,.42) !important; }
+  .thumb { background: rgba(255,255,255,.06); }
+  .name { color: #fff; } .sub { color: #8b90a0; }
+  .s-running { background: rgba(34,197,94,.16) !important; color: #6ee7a0 !important; }
+  .s-paused { background: rgba(245,158,11,.16) !important; color: #fcd34d !important; }
+  .s-stopped { background: rgba(148,163,184,.14) !important; color: #cbd5e1 !important; }
+  .s-blocked { background: rgba(239,68,68,.16) !important; color: #fca5a5 !important; }
+  .meta { color: #9aa1b0; } .meta b { color: #e6e8ef; }
+  .empty { background: rgba(255,255,255,.03); border: 1px dashed rgba(139,92,246,.35); color: #8b90a0; }
+  .correos { background: rgba(255,255,255,.035); border: 1px solid rgba(255,255,255,.09); }
+  .correos .item { background: rgba(255,255,255,.04); color: #dfe2ea; }
+  .correos input { background: rgba(0,0,0,.3); color: #fff; border: 1px solid rgba(255,255,255,.14); }
+  .btn { border: 1px solid rgba(255,255,255,.12) !important; color: #e6e8ef !important; background: rgba(255,255,255,.06) !important; border-radius: 10px; padding: 8px 14px; box-shadow: none !important; font-weight: 700; }
+  .btn:hover { background: rgba(255,255,255,.12) !important; border-color: rgba(255,255,255,.22) !important; transform: none; filter: none; }
+  .b-open { color: #dbeafe !important; border-color: rgba(59,130,246,.45) !important; background: rgba(59,130,246,.14) !important; }
+  .b-open:hover { background: rgba(59,130,246,.24) !important; }
+  .b-start { color: #bbf7d0 !important; border-color: rgba(34,197,94,.45) !important; background: rgba(34,197,94,.14) !important; }
+  .b-start:hover { background: rgba(34,197,94,.24) !important; }
+  .b-pause { color: #fde68a !important; border-color: rgba(245,158,11,.45) !important; background: rgba(245,158,11,.14) !important; }
+  .b-pause:hover { background: rgba(245,158,11,.24) !important; }
+  .b-bump { color: #ddd6fe !important; border-color: rgba(139,92,246,.5) !important; background: rgba(139,92,246,.16) !important; }
+  .b-bump:hover { background: rgba(139,92,246,.28) !important; }
+  .b-danger { color: #fca5a5 !important; border-color: rgba(239,68,68,.45) !important; background: rgba(239,68,68,.14) !important; }
+  .b-danger:hover { background: rgba(239,68,68,.24) !important; }
+  .correos .add { background: linear-gradient(180deg,#8b5cf6,#7c3aed); }
+  .correos .abrir { background: linear-gradient(180deg,#3b82f6,#2563eb); }
+  .x { background: rgba(239,68,68,.18); color: #fca5a5; }
+  #modalPerfil > div, #modalConfig > div { background: #12121a !important; border: 1px solid rgba(255,255,255,.1); box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  #modalPerfil h3, #modalConfig h3 { color: #fff; }
+  #modalPerfil label, #modalConfig label { color: #9aa1b0 !important; }
+  #modalPerfil input, #modalPerfil select, #modalConfig input { background: #0c0c14 !important; color: #fff !important; border: 1px solid rgba(255,255,255,.15) !important; }
+  #updateBanner { background: rgba(34,197,94,.12) !important; border-color: rgba(34,197,94,.4) !important; color: #bbf7d0 !important; }
+  #updateBanner button { color: #bbf7d0 !important; }
+</style>
+</head>
+<body>
+<div id="lic-overlay">
+  <div class="box">
+    <h2>Activar licencia</h2>
+    <p>Entra con tu cuenta de MOMONGARENTA para usar este bot.</p>
+    <input id="lic-email" placeholder="Tu email" autocomplete="username" />
+    <input id="lic-pass" type="password" placeholder="Tu contrasena" autocomplete="current-password" />
+    <input id="lic-cloud" placeholder="https://mimomonga.uk" />
+    <button class="go" id="lic-btn">Entrar</button>
+    <p class="err" id="lic-msg"></p>
+    <p class="err" id="lic-info" style="color:#a1a1aa!important"></p>
+    <a href="https://mimomonga.uk/renovar" target="_blank" style="display:block;text-align:center;margin-top:10px;color:#e879f9;font-size:12px;text-decoration:none">¿Necesitas renovar? Renovar mi plan →</a>
+  </div>
+</div>
+
+<div class="wrap">
+  <div id="updateBanner" style="display:none;margin:0 0 12px;padding:10px 14px;border-radius:12px;background:#ecfdf5;border:1px solid #6ee7b7;color:#065f46;font-size:13px;align-items:center;gap:8px;justify-content:space-between">
+    <span>🔄 Hay una <b>nueva versión</b> de MOMONGA MEGA.</span>
+    <button class="btn b-start" id="updateBtn">Actualizar ahora</button>
+  </div>
+  <header class="top">
+    <div class="brand">MOMONGA <span>MEGA</span></div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span class="pill" id="licencia" style="background:#ede9fe;color:#6d28d9">Licencia: —</span>
+      <span class="pill" id="promo" title="Comparte tu código y gana días gratis" style="display:none;background:#fef3c7;color:#92400e;cursor:pointer">🎁 —</span>
+      <span class="pill count" id="cnt">0 perfiles</span>
+      <button class="btn b-start" id="startAll">Iniciar todos</button>
+      <button class="btn b-pause" id="pauseAll">Pausar todos</button>
+      <button class="btn b-open" id="refresh">Actualizar</button>
+      <button class="btn b-bump" id="renovar">Renovar</button>
+      <button class="btn b-open" id="logout">Cerrar sesión</button>
+    </div>
+  </header>
+
+  <h2><span class="toggle-title" data-target="perfiles">🖥️ Mis perfiles ▾</span> <button id="nuevoPerfil" class="btn b-start" style="margin-left:auto">+ Nuevo perfil</button></h2>
+  <div class="grid" id="perfiles"></div>
+
+  <h2><span class="toggle-title" data-target="bloqueadas">🔒 Cuentas bloqueadas ▾</span></h2>
+  <div class="grid" id="bloqueadas"></div>
+
+  <h2><span class="toggle-title" data-target="correosSec">✉️ Correos de mis cuentas ▾</span></h2>
+  <div class="correos" id="correosSec">
+    <div id="correosLista"></div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <input id="correoNuevo" type="email" placeholder="tu-correo@outlook.com o @gmail.com" />
+      <button class="add" id="correoAdd">Agregar</button>
+    </div>
+    <p style="font-size:11px;color:#9aa1ad;margin:8px 0 0">Agrega los correos de tus cuentas (los usa el sistema para la apelación).</p>
+  </div>
+</div>
+
+<div id="modalPerfil" style="display:none;position:fixed;inset:0;background:rgba(20,10,30,.5);z-index:60;align-items:center;justify-content:center;padding:16px">
+  <div style="background:#fff;border-radius:16px;max-width:540px;width:100%;max-height:90vh;overflow:auto;padding:18px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 style="margin:0;font-size:17px">Nuevo perfil</h3>
+      <button class="x" id="cerrarModal">✕</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <label style="grid-column:1/3;font-size:12px;color:#6b7280">Nombre *<br><input id="pfNombre" placeholder="Ej: Mega Ana" style="width:100%;margin-top:4px;padding:9px 12px;border:1px solid #ddd;border-radius:10px" /></label>
+      <label style="font-size:12px;color:#6b7280">Puerto (opcional)<br><input id="pfPuerto" type="number" placeholder="auto" style="width:100%;margin-top:4px;padding:9px 12px;border:1px solid #ddd;border-radius:10px" /></label>
+      <label style="font-size:12px;color:#6b7280">Dispositivo<br>
+        <select id="pfDevice" style="width:100%;margin-top:4px;padding:9px 12px;border:1px solid #ddd;border-radius:10px">
+          <option value="iphone">iPhone (Safari)</option>
+          <option value="android">Android - Pixel 9 (Chrome)</option>
+          <option value="pixel">Android - Pixel 10 (Chrome)</option>
+          <option value="pixel_pro">Android - Pixel 10 Pro (Chrome)</option>
+          <option value="samsung">Android - Samsung S25 (Chrome)</option>
+          <option value="samsung_ultra">Android - Samsung S25 Ultra (Chrome)</option>
+        </select>
+      </label>
+      <label style="font-size:12px;color:#6b7280">Bump mín (min)<br><input id="pfMin" type="number" value="16" style="width:100%;margin-top:4px;padding:9px 12px;border:1px solid #ddd;border-radius:10px" /></label>
+      <label style="font-size:12px;color:#6b7280">Bump máx (min)<br><input id="pfMax" type="number" value="16" style="width:100%;margin-top:4px;padding:9px 12px;border:1px solid #ddd;border-radius:10px" /></label>
+      <label style="grid-column:1/3;font-size:13px;color:#374151;display:flex;align-items:center;gap:8px"><input type="checkbox" id="pfRotar" /> Publicar todos los anuncios (hacer bump a cada uno)</label>
+      <label style="grid-column:1/3;font-size:12px;color:#6b7280">Posts a publicar (0 = todos)<br><input id="pfPosts" type="number" value="0" style="width:100%;margin-top:4px;padding:9px 12px;border:1px solid #ddd;border-radius:10px" /></label>
+      <label style="grid-column:1/3;font-size:12px;color:#6b7280">Proxy — IP / Host<br><input id="pfHost" placeholder="Ej: 154.198.32.95" style="width:100%;margin-top:4px;padding:9px 12px;border:1px solid #ddd;border-radius:10px" /></label>
+      <label style="font-size:12px;color:#6b7280">Puerto proxy<br><input id="pfPport" type="number" placeholder="9093" style="width:100%;margin-top:4px;padding:9px 12px;border:1px solid #ddd;border-radius:10px" /></label>
+      <label style="font-size:12px;color:#6b7280">Tipo<br><select id="pfPtype" style="width:100%;margin-top:4px;padding:9px 12px;border:1px solid #ddd;border-radius:10px"><option value="http">HTTP</option><option value="socks5">SOCKS5</option><option value="https">HTTPS</option></select></label>
+      <label style="font-size:12px;color:#6b7280">Usuario proxy<br><input id="pfPuser" style="width:100%;margin-top:4px;padding:9px 12px;border:1px solid #ddd;border-radius:10px" /></label>
+      <label style="font-size:12px;color:#6b7280">Contraseña proxy<br><input id="pfPpass" style="width:100%;margin-top:4px;padding:9px 12px;border:1px solid #ddd;border-radius:10px" /></label>
+    </div>
+    <p id="pfMsg" style="color:#dc2626;font-size:12px;min-height:14px;margin:10px 0 0"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+      <button class="btn b-open" id="pfCancelar">Cancelar</button>
+      <button class="btn b-start" id="pfCrear">Crear perfil</button>
+    </div>
+  </div>
+</div>
+
+<div id="modalConfig" style="display:none;position:fixed;inset:0;background:rgba(20,10,30,.5);z-index:60;align-items:center;justify-content:center;padding:16px">
+  <div style="background:#fff;border-radius:16px;max-width:460px;width:100%;padding:18px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 style="margin:0;font-size:17px">Configurar: <span id="cfgNombre"></span></h3>
+      <button class="x" id="cfgCerrar">✕</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <label style="font-size:12px;color:#6b7280">Bump mín (min)<br><input id="cfgMin" type="number" value="16" style="width:100%;margin-top:4px;padding:9px 12px;border:1px solid #ddd;border-radius:10px" /></label>
+      <label style="font-size:12px;color:#6b7280">Bump máx (min)<br><input id="cfgMax" type="number" value="16" style="width:100%;margin-top:4px;padding:9px 12px;border:1px solid #ddd;border-radius:10px" /></label>
+      <label style="grid-column:1/3;font-size:13px;color:#374151;display:flex;align-items:center;gap:8px"><input type="checkbox" id="cfgRotar" /> Publicar todos los anuncios (hacer bump a cada uno)</label>
+      <label style="grid-column:1/3;font-size:12px;color:#6b7280">Posts a publicar (0 = todos)<br><input id="cfgPosts" type="number" value="0" style="width:100%;margin-top:4px;padding:9px 12px;border:1px solid #ddd;border-radius:10px" /></label>
+    </div>
+    <p id="cfgMsg" style="color:#dc2626;font-size:12px;min-height:14px;margin:10px 0 0"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+      <button class="btn b-open" id="cfgCancelar">Cancelar</button>
+      <button class="btn b-start" id="cfgGuardar">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  // ---- Licencia ----
+  var overlay = document.getElementById('lic-overlay');
+  var msg = document.getElementById('lic-msg');
+  var info = document.getElementById('lic-info');
+  var licCloud = 'https://mimomonga.uk', licEmail = '', licCodigo = '';
+  function checkLic() {
+    fetch('/api/license/status').then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.cloudUrl) licCloud = d.cloudUrl;
+      var lic = d && d.licencia;
+      licEmail = (lic && lic.email) || '';
+      licCodigo = (lic && lic.codigo_promo) || '';
+      var promo = document.getElementById('promo');
+      if (licCodigo) {
+        promo.style.display = '';
+        promo.textContent = '🎁 Código: ' + licCodigo + (lic.referidos ? ' · ' + lic.referidos + ' ref.' : '');
+      } else { promo.style.display = 'none'; }
+      var ub = document.getElementById('updateBanner');
+      if (ub) {
+        if (d && d.versionDisponible && Number(d.versionDisponible.version) > Number(d.appVersion || 0)) ub.style.display = 'flex';
+        else ub.style.display = 'none';
+      }
+      var badge = document.getElementById('licencia');
+      if (lic) {
+        var vence = lic.vence ? new Date(lic.vence) : null;
+        var dias = vence ? Math.ceil((vence.getTime() - Date.now()) / 86400000) : null;
+        var vig = d.vigente;
+        badge.textContent = 'Licencia: ' + (vig ? (dias != null ? dias + ' días' : 'activa') : 'VENCIDA');
+        badge.style.background = vig ? '#ede9fe' : '#fee2e2';
+        badge.style.color = vig ? '#6d28d9' : '#b91c1c';
+      } else {
+        badge.textContent = 'Licencia: —';
+      }
+      if (d && d.required && !d.vigente) {
+        overlay.style.display = 'flex';
+        if (d.cloudUrl) document.getElementById('lic-cloud').value = d.cloudUrl;
+        if (lic && lic.email) document.getElementById('lic-email').value = lic.email;
+        info.textContent = lic ? 'Tu licencia no esta vigente. Renueva para continuar.' : 'Ingresa para activar el bot en esta PC.';
+      } else {
+        overlay.style.display = 'none';
+      }
+    }).catch(function () {});
+  }
+  document.getElementById('lic-btn').addEventListener('click', function () {
+    var b = this; msg.textContent = ''; b.disabled = true; b.textContent = 'Entrando...';
+    fetch('/api/license/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: document.getElementById('lic-email').value.trim(), password: document.getElementById('lic-pass').value, cloudUrl: document.getElementById('lic-cloud').value.trim() })
+    }).then(function (r) { return r.json().then(function (d) { return d; }); }).then(function (d) {
+      if (d && d.ok) location.reload();
+      else { msg.textContent = (d && d.mensaje) || 'Error al entrar.'; b.disabled = false; b.textContent = 'Entrar'; }
+    }).catch(function () { msg.textContent = 'No se pudo conectar.'; b.disabled = false; b.textContent = 'Entrar'; });
+  });
+  checkLic();
+  setInterval(checkLic, 60000);
+  document.getElementById('renovar').addEventListener('click', function () {
+    var base = String(licCloud || 'https://mimomonga.uk').replace(/\/+$/, '');
+    window.open(base + '/renovar' + (licEmail ? ('?email=' + encodeURIComponent(licEmail)) : ''), '_blank');
+  });
+  document.getElementById('updateBtn').addEventListener('click', function () {
+    if (!confirm('Descargar e instalar la actualizacion? La app se reiniciara.')) return;
+    var b = this; b.disabled = true; b.textContent = 'Actualizando...';
+    fetch('/api/cliente/update', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (d) {
+      alert((d && d.mensaje) || 'Listo');
+    }).catch(function () { alert('No se pudo actualizar.'); b.disabled = false; b.textContent = 'Actualizar ahora'; });
+  });
+  document.getElementById('promo').addEventListener('click', function () {
+    if (!licCodigo) return;
+    try { navigator.clipboard.writeText(licCodigo); } catch (e) {}
+    this.textContent = '✅ Copiado: ' + licCodigo;
+    var self = this;
+    setTimeout(function () { self.textContent = '🎁 Código: ' + licCodigo; }, 1500);
+  });
+  document.getElementById('logout').addEventListener('click', function () {
+    if (!confirm('Cerrar sesion? Tendras que volver a entrar con tu cuenta.')) return;
+    fetch('/api/license/logout', { method: 'POST' }).then(function () { location.reload(); });
+  });
+  document.getElementById('startAll').addEventListener('click', function () { fetch('/api/cliente/all/start', { method: 'POST' }).then(function () { setTimeout(cargar, 2000); }); });
+  document.getElementById('pauseAll').addEventListener('click', function () { fetch('/api/cliente/all/pause', { method: 'POST' }).then(function () { setTimeout(cargar, 1500); }); });
+
+  // ---- Crear perfil ----
+  var pfModal = document.getElementById('modalPerfil');
+  function nextPort() { var max = 9333; perfiles.forEach(function (p) { if (Number(p.port) > max) max = Number(p.port); }); return max + 1; }
+  document.getElementById('nuevoPerfil').addEventListener('click', function () { document.getElementById('pfMsg').textContent = ''; pfModal.style.display = 'flex'; });
+  document.getElementById('cerrarModal').addEventListener('click', function () { pfModal.style.display = 'none'; });
+  document.getElementById('pfCancelar').addEventListener('click', function () { pfModal.style.display = 'none'; });
+  document.getElementById('pfCrear').addEventListener('click', async function () {
+    var msg = document.getElementById('pfMsg'); msg.textContent = '';
+    var nombre = document.getElementById('pfNombre').value.trim();
+    if (!nombre) { msg.textContent = 'Ponle un nombre al perfil.'; return; }
+    var payload = {
+      id: nombre,
+      port: Number(document.getElementById('pfPuerto').value) || nextPort(),
+      bumpMinMinutes: Number(document.getElementById('pfMin').value) || 16,
+      bumpMaxMinutes: Number(document.getElementById('pfMax').value) || 16,
+      device: document.getElementById('pfDevice').value,
+      settings: { rotateAds: document.getElementById('pfRotar').checked },
+      postsARotar: Number(document.getElementById('pfPosts').value) || 0
+    };
+    var host = document.getElementById('pfHost').value.trim();
+    if (host) payload.proxy = { host: host, port: Number(document.getElementById('pfPport').value) || 0, type: document.getElementById('pfPtype').value, username: document.getElementById('pfPuser').value.trim(), password: document.getElementById('pfPpass').value };
+    try {
+      var r = await fetch('/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      var d = await r.json().catch(function () { return {}; });
+      if (r.ok) { pfModal.style.display = 'none'; document.getElementById('pfNombre').value = ''; cargar(); }
+      else msg.textContent = (d && d.error) || 'Error al crear el perfil.';
+    } catch (e) { msg.textContent = 'No se pudo conectar con el bot.'; }
+  });
+
+  // ---- Datos ----
+  var socket = (typeof io === 'function') ? io() : null;
+  var perfiles = [];
+  var now = Date.now();
+  function tick() {
+    now = Date.now();
+    document.querySelectorAll('.tick').forEach(function (el) {
+      var p = perfiles.filter(function (x) { return x.id === el.getAttribute('data-id'); })[0];
+      if (!p) return;
+      var next = p.nextBumpAt ? (p.nextBumpAt - now) : null;
+      var t = p.state === 'running' ? ('Próxima actualización: <b>' + fmt(next) + '</b>') : (p.blocked ? 'Cuenta bloqueada' : 'Detenido');
+      if (el.innerHTML !== t) el.innerHTML = t;
+    });
+  }
+  setInterval(tick, 1000);
+
+  function estadoClass(s) {
+    if (s === 'running') return 's-running';
+    if (s === 'paused') return 's-paused';
+    return 's-stopped';
+  }
+  function fmt(ms) {
+    if (ms === null || ms === undefined) return '---';
+    if (ms <= 0) return 'Listo';
+    var s = Math.floor(ms / 1000);
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+    return (h ? h + 'h ' : '') + m + 'm ' + ss + 's';
+  }
+  function cardHTML(p) {
+    var blocked = Boolean(p.blocked);
+    var running = p.state === 'running';
+    var stLabel = blocked ? 'BLOQUEADA' : (p.state === 'running' ? 'ACTIVO' : p.state === 'paused' ? 'PAUSADO' : 'DETENIDO');
+    var stClass = blocked ? 's-blocked' : estadoClass(p.state);
+    var next = p.nextBumpAt ? (p.nextBumpAt - now) : null;
+    var img = p.thumb ? '<img class="thumb" src="' + p.thumb + '" alt="" />' : '<div class="thumb"></div>';
+    return '' +
+      '<div class="card ' + (blocked ? 'blocked' : '') + '">' +
+        '<div class="row">' + img +
+          '<div><div class="name">' + (p.id || '') + '</div><div class="sub">' + (p.headline || '') + '</div>' +
+          '<div class="sub">' + (p.proxy || 'Sin proxy') + ' · ' + (p.device || '') + '</div></div>' +
+          '<span class="pill state ' + stClass + '">' + stLabel + '</span>' +
+        '</div>' +
+        '<div class="meta">Bumps hoy: <b>' + (p.bumpsToday || 0) + '</b> · Total: <b>' + (p.totalBumps || 0) + '</b><br>' +
+          '<span class="tick" data-id="' + p.id + '">' + (running ? 'Próxima actualización: <b>' + fmt(next) + '</b>' : (blocked ? 'Cuenta bloqueada' : 'Detenido')) + '</span>' +
+          (p.lastError ? '<br><span style="color:#dc2626">' + (p.lastError.message || p.lastError) + '</span>' : '') +
+        '</div>' +
+        '<div class="btns">' +
+          '<button class="btn b-open" data-a="open" data-id="' + p.id + '">Abrir</button>' +
+          '<button class="btn b-start" data-a="start" data-id="' + p.id + '" ' + (running ? 'disabled' : '') + '>Iniciar</button>' +
+          '<button class="btn b-pause" data-a="pause" data-id="' + p.id + '" ' + (running ? '' : 'disabled') + '>Pausar</button>' +
+          '<button class="btn b-bump" data-a="publish" data-id="' + p.id + '" ' + (blocked ? 'disabled' : '') + '>Bump</button>' +
+          '<button class="btn b-open" data-a="rename" data-id="' + p.id + '" title="Renombrar perfil">✏️</button>' +
+          '<button class="btn b-open" data-a="config" data-id="' + p.id + '" title="Intervalos / publicacion">⚙️</button>' +
+          '<button class="btn b-danger" data-a="delete" data-id="' + p.id + '" title="Eliminar perfil">🗑️</button>' +
+        '</div>' +
+      '</div>';
+  }
+  function render() {
+    var activos = perfiles.filter(function (p) { return !p.blocked; });
+    var bloqueados = perfiles.filter(function (p) { return p.blocked; });
+    document.getElementById('cnt').textContent = perfiles.length + ' perfil' + (perfiles.length === 1 ? '' : 'es');
+    var cont = document.getElementById('perfiles');
+    cont.innerHTML = activos.length ? activos.map(cardHTML).join('') : '<div class="empty">No tienes perfiles todavía. Crea uno en tu bot.</div>';
+    var bcont = document.getElementById('bloqueadas');
+    bcont.innerHTML = bloqueados.length ? bloqueados.map(cardHTML).join('') : '<div class="empty" style="border-color:#fecdd3;color:#f87171">No hay cuentas bloqueadas 🎉</div>';
+  }
+
+  var lastSig = '';
+  function sig(list) { return JSON.stringify((list || []).map(function (p) { return [p.id, p.state, p.blocked, p.bumpsToday, p.totalBumps, p.proxy, p.device, p.headline, p.lastError && (p.lastError.message || p.lastError), p.bumpMinMinutes, p.bumpMaxMinutes, p.postsARotar, p.rotateAds]; })); }
+  async function cargar() {
+    try {
+      var r = await fetch('/api/cliente/profiles'); var d = await r.json();
+      perfiles = d.profiles || [];
+      var s = sig(perfiles);
+      if (s !== lastSig) { lastSig = s; render(); }
+    } catch (e) {}
+  }
+  document.getElementById('refresh').addEventListener('click', cargar);
+  cargar();
+  setInterval(cargar, 5000);
+  if (socket) { socket.on('profiles-updated', cargar); socket.on('profile-state', cargar); socket.on('stats', cargar); socket.on('active-count', cargar); }
+
+  var configId = null;
+  function configProfile(id) {
+    var p = (perfiles.filter(function (x) { return x.id === id; })[0]) || {};
+    configId = id;
+    document.getElementById('cfgNombre').textContent = id;
+    document.getElementById('cfgMin').value = p.bumpMinMinutes || 16;
+    document.getElementById('cfgMax').value = p.bumpMaxMinutes || 16;
+    document.getElementById('cfgRotar').checked = Boolean(p.rotateAds);
+    document.getElementById('cfgPosts').value = p.postsARotar || 0;
+    document.getElementById('cfgMsg').textContent = '';
+    document.getElementById('modalConfig').style.display = 'flex';
+  }
+  function deleteProfile(id) {
+    if (!confirm('¿Eliminar el perfil "' + id + '"? No se puede deshacer.')) return;
+    fetch('/api/profiles/' + encodeURIComponent(id), { method: 'DELETE' }).then(function () { setTimeout(cargar, 900); }).catch(function () {});
+  }
+  function renameProfile(id) {
+    var nuevo = prompt('Nuevo nombre para el perfil:', id);
+    if (nuevo === null) return;
+    nuevo = nuevo.trim();
+    if (!nuevo || nuevo === id) return;
+    fetch('/api/profiles/' + encodeURIComponent(id) + '/rename', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ newId: nuevo })
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (x) { if (x.ok && x.d && x.d.success !== false) { setTimeout(cargar, 1200); } else { alert((x.d && x.d.error) || 'No se pudo renombrar.'); } })
+      .catch(function () { alert('No se pudo renombrar.'); });
+  }
+  document.getElementById('cfgGuardar').addEventListener('click', function () {
+    if (!configId) return;
+    var min = Number(document.getElementById('cfgMin').value) || 16;
+    var max = Number(document.getElementById('cfgMax').value) || 16;
+    fetch('/api/profiles/' + encodeURIComponent(configId) + '/settings', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bumpMinMinutes: min, bumpMaxMinutes: max, rotateAds: document.getElementById('cfgRotar').checked, postsARotar: Number(document.getElementById('cfgPosts').value) || 0 })
+    }).then(function () { document.getElementById('modalConfig').style.display = 'none'; setTimeout(cargar, 800); }).catch(function () {});
+  });
+  document.getElementById('cfgCerrar').addEventListener('click', function () { document.getElementById('modalConfig').style.display = 'none'; });
+  document.getElementById('cfgCancelar').addEventListener('click', function () { document.getElementById('modalConfig').style.display = 'none'; });
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-a]');
+    if (!b) return;
+    var id = b.getAttribute('data-id'); var a = b.getAttribute('data-a');
+    if (a === 'config') { configProfile(id); return; }
+    if (a === 'rename') { renameProfile(id); return; }
+    if (a === 'delete') { deleteProfile(id); return; }
+    fetch('/api/cliente/profile/' + encodeURIComponent(id) + '/' + a, { method: 'POST' })
+      .then(function () { setTimeout(cargar, 1500); })
+      .catch(function () {});
+  });
+
+  // ---- Correos ----
+  var correos = [];
+  function mailEsGmail(email) {
+    var d = String(email || '').toLowerCase().split('@')[1] || '';
+    return d.indexOf('gmail') === 0 || d.indexOf('googlemail') === 0;
+  }
+  function mailUrl(email) {
+    var d = String(email || '').toLowerCase().split('@')[1] || '';
+    if (mailEsGmail(email)) return 'https://mail.google.com';
+    if (d.indexOf('yahoo') === 0) return 'https://mail.yahoo.com';
+    return 'https://outlook.live.com/mail/0/';
+  }
+  function renderCorreos() {
+    var box = document.getElementById('correosLista');
+    box.innerHTML = correos.length ? correos.map(function (c, i) {
+      return '<div class="item"><span>' + c + '</span><span><button class="abrir" data-mail="' + c + '">' + (mailEsGmail(c) ? 'Abrir Gmail' : 'Abrir correo') + '</button> <button class="x" data-i="' + i + '">✕</button></span></div>';
+    }).join('') : '<p style="font-size:12px;color:#9aa1ad;margin:0 0 6px">No has agregado correos.</p>';
+  }
+  async function cargarCorreos() {
+    try { var r = await fetch('/api/cliente/correos'); var d = await r.json(); correos = d.correos || []; renderCorreos(); } catch (e) {}
+  }
+  async function guardarCorreos() {
+    try { await fetch('/api/cliente/correos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ correos: correos }) }); } catch (e) {}
+  }
+  document.getElementById('correoAdd').addEventListener('click', function () {
+    var inp = document.getElementById('correoNuevo'); var v = inp.value.trim();
+    if (!v) return; if (correos.indexOf(v) >= 0) { inp.value = ''; return; }
+    correos.push(v); inp.value = ''; renderCorreos(); guardarCorreos();
+  });
+  document.getElementById('correosLista').addEventListener('click', function (e) {
+    var m = e.target.closest('button[data-mail]');
+    if (m) { var mail = m.getAttribute('data-mail'); fetch('/api/cliente/mail/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: mail, url: mailUrl(mail) }) }); return; }
+    var b = e.target.closest('button[data-i]'); if (!b) return;
+    correos.splice(Number(b.getAttribute('data-i')), 1); renderCorreos(); guardarCorreos();
+  });
+  cargarCorreos();
+
+  // ---- Dispositivos (lista completa) + secciones plegables ----
+  fetch('/api/cliente/devices').then(function (r) { return r.json(); }).then(function (d) {
+    var sel = document.getElementById('pfDevice');
+    if (d && Array.isArray(d.devices) && d.devices.length) {
+      sel.innerHTML = d.devices.map(function (x) { return '<option value="' + x.key + '">' + x.label + '</option>'; }).join('');
+    }
+  }).catch(function () {});
+  document.querySelectorAll('.toggle-title').forEach(function (el) {
+    el.addEventListener('click', function () {
+      var t = document.getElementById(el.getAttribute('data-target')); if (!t) return;
+      var hide = t.style.display !== 'none';
+      t.style.display = hide ? 'none' : '';
+      el.textContent = el.textContent.replace(hide ? '▾' : '▸', hide ? '▸' : '▾');
+    });
+  });
+})();
+</script>
+</body>
+</html>

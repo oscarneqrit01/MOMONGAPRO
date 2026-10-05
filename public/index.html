@@ -1161,6 +1161,57 @@
   </style>
 </head>
 <body>
+<div id="lic-overlay" style="display:none;position:fixed;inset:0;z-index:99999;background:#0b0612;color:#fff;align-items:center;justify-content:center;font-family:system-ui,Segoe UI,Arial,sans-serif">
+  <div style="max-width:380px;width:100%;margin:16px;padding:24px;background:#170b24;border:1px solid #a21caf66;border-radius:16px;box-shadow:0 20px 60px #0008">
+    <h2 style="margin:0 0 4px;font-size:19px">Activar licencia</h2>
+    <p style="margin:0 0 16px;font-size:12px;color:#c4b5fd">Entra con tu cuenta de MOMONGARENTA para usar este bot.</p>
+    <input id="lic-email" placeholder="Tu email" autocomplete="username" style="width:100%;margin-bottom:8px;padding:11px;border-radius:10px;border:1px solid #ffffff22;background:#ffffff0d;color:#fff;box-sizing:border-box" />
+    <input id="lic-pass" type="password" placeholder="Tu contrasena" autocomplete="current-password" style="width:100%;margin-bottom:8px;padding:11px;border-radius:10px;border:1px solid #ffffff22;background:#ffffff0d;color:#fff;box-sizing:border-box" />
+    <input id="lic-cloud" placeholder="https://mimomonga.uk" style="width:100%;margin-bottom:12px;padding:11px;border-radius:10px;border:1px solid #ffffff22;background:#ffffff0d;color:#fff;box-sizing:border-box;font-size:12px" />
+    <button id="lic-btn" style="width:100%;padding:12px;border:0;border-radius:10px;background:linear-gradient(90deg,#d946ef,#a21caf);color:#fff;font-weight:700;cursor:pointer">Entrar</button>
+    <p id="lic-msg" style="color:#f87171;font-size:12px;margin:10px 0 0;min-height:14px"></p>
+    <p id="lic-info" style="color:#a1a1aa;font-size:11px;margin:6px 0 0"></p>
+  </div>
+</div>
+<script>
+(function () {
+  var overlay = document.getElementById('lic-overlay');
+  var msg = document.getElementById('lic-msg');
+  var info = document.getElementById('lic-info');
+  var btn = document.getElementById('lic-btn');
+  var cloudInput = document.getElementById('lic-cloud');
+  function check() {
+    fetch('/api/license/status').then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.clientMode) {
+        document.body.classList.add('client-mode');
+        ['exportLogsBtn', 'exportProfilesBtn', 'importProfilesBtn', 'healthBtn', 'changePasswordBtn'].forEach(function (id) { var el = document.getElementById(id); if (el) el.style.display = 'none'; });
+        var t = document.querySelector('.title'); if (t) t.innerHTML = '<span class="muted">MOMONGA</span> <span class="accent">BOT</span>';
+      }
+      if (d && d.required && !d.vigente) {
+        overlay.style.display = 'flex';
+        if (d.cloudUrl) cloudInput.value = d.cloudUrl;
+        if (d.licencia && d.licencia.email) document.getElementById('lic-email').value = d.licencia.email;
+        info.textContent = d.licencia ? 'Tu licencia no esta vigente. Renueva para continuar.' : 'Ingresa para activar el bot en esta PC.';
+      } else {
+        overlay.style.display = 'none';
+      }
+    }).catch(function () {});
+  }
+  btn.addEventListener('click', function () {
+    msg.textContent = '';
+    btn.disabled = true; btn.textContent = 'Entrando...';
+    fetch('/api/license/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: document.getElementById('lic-email').value.trim(), password: document.getElementById('lic-pass').value, cloudUrl: cloudInput.value.trim() })
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); }).then(function (res) {
+      if (res.d && res.d.ok) { location.reload(); }
+      else { msg.textContent = (res.d && res.d.mensaje) || 'Error al entrar.'; btn.disabled = false; btn.textContent = 'Entrar'; }
+    }).catch(function (e) { msg.textContent = 'No se pudo conectar.'; btn.disabled = false; btn.textContent = 'Entrar'; });
+  });
+  check();
+  setInterval(check, 60000);
+})();
+</script>
   <div class="phone-shell">
     <div class="screen">
       <div class="statusbar">
