@@ -3745,7 +3745,13 @@ async function typeLikeHuman(page, value, finder = {}) {
       await page.keyboard.up('Control').catch(() => {});
       await page.keyboard.press('Backspace').catch(() => {});
       const delay = 22 + Math.floor(Math.random() * 60); // 22-82 ms por tecla (ritmo humano)
-      await handle.type(str, { delay }).catch(() => {});
+      // Escribir LINEA por linea y pulsar Enter entre ellas, para que se conserve
+      // el formato (MegaPersonals corta el texto por lineas; si no, sale todo junto).
+      const lineas = str.split('\n');
+      for (let li = 0; li < lineas.length; li++) {
+        if (lineas[li]) await handle.type(lineas[li], { delay }).catch(() => {});
+        if (li < lineas.length - 1) { await handle.press('Enter').catch(() => {}); await sleep(70 + Math.floor(Math.random() * 130)); }
+      }
     }
     const got = await handle.evaluate((n) => String(n.value || '')).catch(() => '');
     await handle.evaluate((n) => n.removeAttribute('data-momonga-fill')).catch(() => {});
