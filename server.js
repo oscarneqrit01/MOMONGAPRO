@@ -646,7 +646,7 @@ app.post('/api/cliente/all/:action', (req, res) => {
       if (a === 'open') c.open();
       else if (a === 'start') c.start();
       else if (a === 'pause') c.pause();
-      else if (a === 'resume') c.resume();
+      else if (a === 'resume') { if (c.started) c.resume(); else c.start(); }
       else if (a === 'publish') c.publishNow();
     }
     res.json({ ok: true });
@@ -1040,7 +1040,7 @@ app.post('/api/control/all/:action', requireControlKey, async (req, res) => {
   for (const c of controllers.values()) {
     try {
       if (action === 'start' || action === 'iniciar') await c.start();
-      else if (action === 'resume' || action === 'reanudar') c.resume();
+      else if (action === 'resume' || action === 'reanudar') { if (c.started) c.resume(); else await c.start(); }
       else if (action === 'pause' || action === 'pausar') c.pause();
       else if (action === 'stop' || action === 'detener') await c.stop();
       else return res.status(400).json({ ok: false, error: `Acción desconocida: ${action}` });
@@ -1141,7 +1141,7 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
   try {
     if (action === 'start' || action === 'iniciar') controller.start();
     else if (action === 'pause' || action === 'pausar') controller.pause();
-    else if (action === 'resume' || action === 'reanudar') controller.resume();
+    else if (action === 'resume' || action === 'reanudar') { if (controller.started) controller.resume(); else controller.start(); }
     else if (action === 'stop' || action === 'detener') controller.stop();
     else if (action === 'publish' || action === 'publicar') {
       const force = req.query.force === '1' || (req.body && req.body.force === true);
@@ -7869,7 +7869,7 @@ async function ejecutarComandoRemoto(cmd) {
   const aplicar = (c) => {
     if (action === 'start') c.start();
     else if (action === 'pause') c.pause();
-    else if (action === 'resume') c.resume();
+    else if (action === 'resume') { if (c.started) c.resume(); else c.start(); }
     else if (action === 'stop') c.stop();
     else if (action === 'bump') c.publishNow();
   };
