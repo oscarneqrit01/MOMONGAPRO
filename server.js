@@ -28,6 +28,17 @@ const STATE_PATH = process.env.STATE_PATH || path.join(__dirname, 'state.json');
 const PORT = process.env.PORT || 3000;
 const DEFAULT_URL = 'https://megapersonals.eu/';
 
+// MegaPersonals bloquea/castiga los anuncios con EMOJIS. Los quitamos siempre
+// antes de escribir el titulo/texto en la plataforma (aunque vengan guardados).
+function sinEmojis(s) {
+  return String(s || '')
+    .replace(/[\u{1F000}-\u{1FAFF}\u{1F1E6}-\u{1F1FF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{2122}\u{2139}\u{3030}\u{303D}\u{00A9}\u{00AE}]/gu, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/ +([,.;:!?])/g, '$1')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim();
+}
+
 // Dispositivos disponibles por perfil (User-Agent + pantalla, coherentes entre si).
 const MODERN_ANDROID = [
   { key: 'pixel_9', label: 'Google Pixel 9', model: 'Pixel 9', androidVersion: '16.0.0', dsf: 2.625 },
@@ -4441,8 +4452,8 @@ async function deleteAndRepost(page, controller, options = {}) {
 
     if (await checkForBlock(page, controller)) return false;
 
-    const headlineToUse = pickVariant(controller, 'headline');
-    const textToUse = pickVariant(controller, 'text');
+    const headlineToUse = sinEmojis(pickVariant(controller, 'headline'));
+    const textToUse = sinEmojis(pickVariant(controller, 'text'));
     if (headlineToUse && headlineToUse !== details.headline) controller.log(`🔤 Usando variante de título.`);
     if (textToUse && textToUse !== details.text) controller.log(`🔤 Usando variante de texto.`);
     await humanPause(500, 1200);
@@ -5198,8 +5209,8 @@ async function editExistingPost(page, controller, options = {}) {
   const details = controller.cfg.adDetails || {};
 
   const fillForm = async () => {
-    const headlineToUse = pickVariant(controller, 'headline');
-    const textToUse = pickVariant(controller, 'text');
+    const headlineToUse = sinEmojis(pickVariant(controller, 'headline'));
+    const textToUse = sinEmojis(pickVariant(controller, 'text'));
     await humanPause(500, 1200);
     await selectIamAndIsee(page, details);
     await humanPause(600, 1500);
@@ -7427,15 +7438,15 @@ app.patch('/api/profiles/:id/settings', (req, res) => {
         return Array.isArray(fallback) ? fallback : [];
       };
       profile.adDetails = {
-        name: String(body.adDetails.name || '').trim(),
-        headline: String(body.adDetails.headline || '').trim(),
+        name: sinEmojis(String(body.adDetails.name || '').trim()),
+        headline: sinEmojis(String(body.adDetails.headline || '').trim()),
         city: String(body.adDetails.city || '').trim(),
         age: String(body.adDetails.age || '').trim(),
         location: String(body.adDetails.location || '').trim(),
         phone: String(body.adDetails.phone || '').trim(),
-        text: String(body.adDetails.text || ''),
-        textVariants: normVariants(body.adDetails.textVariants, profile.adDetails?.textVariants),
-        headlineVariants: normVariants(body.adDetails.headlineVariants, profile.adDetails?.headlineVariants),
+        text: sinEmojis(String(body.adDetails.text || '')),
+        textVariants: normVariants(body.adDetails.textVariants, profile.adDetails?.textVariants).map(sinEmojis),
+        headlineVariants: normVariants(body.adDetails.headlineVariants, profile.adDetails?.headlineVariants).map(sinEmojis),
         photosPath: String(body.adDetails.photosPath || '').trim()
       };
     }
