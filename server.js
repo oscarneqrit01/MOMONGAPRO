@@ -3869,12 +3869,19 @@ async function typeLikeHuman(page, value, finder = {}) {
         if (opt) { n.value = opt.value; n.dispatchEvent(new Event('change', { bubbles: true })); }
       }, str).catch(() => {});
     } else {
-      await handle.evaluate((n) => { try { n.scrollIntoView({ block: 'center' }); } catch (_) {} n.focus(); }).catch(() => {});
-      await handle.click({ clickCount: 3 }).catch(() => {});
-      await page.keyboard.down('Control').catch(() => {});
-      await page.keyboard.press('KeyA').catch(() => {});
-      await page.keyboard.up('Control').catch(() => {});
-      await page.keyboard.press('Backspace').catch(() => {});
+      // Enfoca el campo y selecciona SOLO su contenido. Antes usaba Ctrl+A de la
+      // PAGINA, que seleccionaba TODO el texto de la pagina (título, body, enlaces…).
+      await handle.evaluate((n) => {
+        try { n.scrollIntoView({ block: 'center' }); } catch (_) {}
+        try { n.focus(); } catch (_) {}
+        try {
+          if (typeof n.value === 'string') n.setSelectionRange(0, n.value.length);
+          else if (n.select) n.select();
+        } catch (_) {
+          try { if (n.select) n.select(); } catch (_) {}
+        }
+      }).catch(() => {});
+      await handle.press('Backspace').catch(() => {});
       const delay = 22 + Math.floor(Math.random() * 60); // 22-82 ms por tecla (ritmo humano)
       // Escribir LINEA por linea y pulsar Enter entre ellas, para que se conserve
       // el formato (MegaPersonals corta el texto por lineas; si no, sale todo junto).
