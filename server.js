@@ -39,6 +39,20 @@ function sinEmojis(s) {
     .trim();
 }
 
+// Alto util de la pantalla (para que la ventana del bot NUNCA sea mas alta que la
+// pantalla del cliente, que suele ser laptop). Se cachea. Fallback 740.
+let _screenWorkH = null;
+function screenWorkHeight() {
+  if (_screenWorkH) return _screenWorkH;
+  try {
+    const out = require('child_process').execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height'], { timeout: 5000, windowsHide: true }).toString().trim();
+    const h = parseInt(out, 10);
+    if (h > 0) _screenWorkH = h;
+  } catch (_) {}
+  if (!_screenWorkH) _screenWorkH = 740;
+  return _screenWorkH;
+}
+
 // Dispositivos disponibles por perfil (User-Agent + pantalla, coherentes entre si).
 const MODERN_ANDROID = [
   { key: 'pixel_9', label: 'Google Pixel 9', model: 'Pixel 9', androidVersion: '16.0.0', dsf: 2.625 },
@@ -116,6 +130,27 @@ const MODERN_ANDROID = [
   { key: 'sharp_aquos_r9', label: 'Sharp Aquos R9', model: 'SH-51E', androidVersion: '14.0.0', dsf: 2.625 }
 ];
 
+// iPhone / iOS elegibles por perfil (Safari). iOS en formato UA (18_6) + pantalla real.
+const IPHONE_DEVICES = [
+  { key: 'iphone_16_pro_max', label: 'iPhone 16 Pro Max (Safari)', ios: '18_6', w: 440, h: 956, dsf: 3 },
+  { key: 'iphone_16_pro', label: 'iPhone 16 Pro (Safari)', ios: '18_6', w: 402, h: 874, dsf: 3 },
+  { key: 'iphone_16_plus', label: 'iPhone 16 Plus (Safari)', ios: '18_6', w: 430, h: 932, dsf: 3 },
+  { key: 'iphone_16', label: 'iPhone 16 (Safari)', ios: '18_6', w: 393, h: 852, dsf: 3 },
+  { key: 'iphone_15_pro_max', label: 'iPhone 15 Pro Max (Safari)', ios: '18_5', w: 430, h: 932, dsf: 3 },
+  { key: 'iphone_15_pro', label: 'iPhone 15 Pro (Safari)', ios: '18_5', w: 393, h: 852, dsf: 3 },
+  { key: 'iphone_15', label: 'iPhone 15 (Safari)', ios: '18_5', w: 393, h: 852, dsf: 3 },
+  { key: 'iphone_14_pro_max', label: 'iPhone 14 Pro Max (Safari)', ios: '18_3', w: 430, h: 932, dsf: 3 },
+  { key: 'iphone_14_pro', label: 'iPhone 14 Pro (Safari)', ios: '18_3', w: 393, h: 852, dsf: 3 },
+  { key: 'iphone_14', label: 'iPhone 14 (Safari)', ios: '18_3', w: 390, h: 844, dsf: 3 },
+  { key: 'iphone_13_pro_max', label: 'iPhone 13 Pro Max (Safari)', ios: '17_7', w: 428, h: 926, dsf: 3 },
+  { key: 'iphone_13', label: 'iPhone 13 (Safari)', ios: '17_7', w: 390, h: 844, dsf: 3 },
+  { key: 'iphone_13_mini', label: 'iPhone 13 mini (Safari)', ios: '17_7', w: 375, h: 812, dsf: 3 },
+  { key: 'iphone_12', label: 'iPhone 12 (Safari)', ios: '17_6', w: 390, h: 844, dsf: 3 },
+  { key: 'iphone_11', label: 'iPhone 11 (Safari)', ios: '17_6', w: 414, h: 896, dsf: 2 },
+  { key: 'iphone_xr', label: 'iPhone XR (Safari)', ios: '17_5', w: 414, h: 896, dsf: 2 },
+  { key: 'iphone_se3', label: 'iPhone SE 3 (Safari)', ios: '17_5', w: 375, h: 667, dsf: 2 }
+];
+
 function androidUserAgent(model, major, androidVersion) {
   return `Mozilla/5.0 (Linux; Android ${androidVersion.split('.')[0]}; ${model}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`;
 }
@@ -155,10 +190,20 @@ function devicePreset(name, chromeMajor) {
     }
   };
 
+  // iPhone / iPad elegibles individualmente (Safari).
+  const iphoneFromList = IPHONE_DEVICES.find((d) => d.key === name);
+  if (iphoneFromList) {
+    const ios = iphoneFromList.ios;
+    return {
+      userAgent: `Mozilla/5.0 (iPhone; CPU iPhone OS ${ios} like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/${ios.replace(/_/g, '.')} Mobile/15E148 Safari/604.1`,
+      viewport: { width: iphoneFromList.w, height: iphoneFromList.h, deviceScaleFactor: iphoneFromList.dsf, isMobile: true, hasTouch: true },
+      kind: 'iphone', platform: 'iOS', model: iphoneFromList.label, iosVersion: ios, androidVersion: ''
+    };
+  }
+
   // Dispositivos modernos elegibles individualmente por perfil (User-Agent + pantalla coherentes).
   const fromList = MODERN_ANDROID.find((d) => d.key === name);
-  if (fromList) {
-    return {
+  if (fromList) {    return {
       userAgent: androidUserAgent(fromList.model, major, fromList.androidVersion),
       viewport: { width: 412, height: 915, deviceScaleFactor: fromList.dsf, isMobile: true, hasTouch: true },
       kind: 'android', platform: 'Android', model: fromList.model,
@@ -173,6 +218,7 @@ function devicePreset(name, chromeMajor) {
 function isValidDevice(name) {
   return ['iphone', 'android', 'pixel', 'pixel_pro', 'samsung', 'samsung_ultra']
     .concat(MODERN_ANDROID.map((d) => d.key))
+    .concat(IPHONE_DEVICES.map((d) => d.key))
     .includes(name);
 }
 
@@ -194,7 +240,7 @@ function chHeadersFor(device, chromeMajor) {
     'Sec-CH-UA': `"Chromium";v="${major}", "Not?A_Brand";v="24"`,
     'Sec-CH-UA-Mobile': '?1',
     'Sec-CH-UA-Platform': '"iOS"',
-    'Sec-CH-UA-Platform-Version': '"18.0.0"'
+    'Sec-CH-UA-Platform-Version': `"${device && device.iosVersion ? device.iosVersion.replace(/_/g, '.') + '.0' : '18.0.0'}"`
   });
 }
 
@@ -235,6 +281,48 @@ async function applyUaOverride(cdp, device, chromeMajor) {
   });
 }
 
+// Toque de telefono: muestra un circulo que aparece donde se toca/cLIcke y hace
+// un "tap" (sin flecha de mouse, porque el bot es un movil). Solo en MegaPersonals
+// (no se inyecta en paginas de escaneo para no ensuciar la anti-deteccion).
+function cursorFn() {
+  try {
+    const host = String(location.hostname || '').toLowerCase();
+    if (!host.includes('megapersonals') && !host.includes('kingcalfire')) return;
+
+    // Evitar pestanas nuevas: una pestana nueva NO hereda la emulacion de movil
+    // (se veria "modo PC") y el sitio pediria codigo/re-login. Forzamos misma pestana.
+    try { window.open = function (url) { try { if (url) location.href = url; } catch (_) {} return null; }; } catch (_) {}
+    const mmSameTab = (e) => { try { const t = e.target; const a = t && t.closest ? t.closest('a[target]') : null; if (a && /_blank|_new|_top/i.test(a.getAttribute('target') || '')) a.setAttribute('target', '_self'); } catch (_) {} };
+    document.addEventListener('click', mmSameTab, true);
+    document.addEventListener('auxclick', (e) => { try { if (e.button !== 1) return; const t = e.target; const a = t && t.closest ? t.closest('a[href]') : null; if (a) { e.preventDefault(); location.href = a.href; } } catch (_) {} }, true);
+    document.addEventListener('submit', (e) => { try { const f = e.target; if (f && f.getAttribute && /_blank|_new/i.test(f.getAttribute('target') || '')) f.setAttribute('target', '_self'); } catch (_) {} }, true);
+
+    if (window.__mmTap) return;
+    window.__mmTap = true;
+    const setup = () => {
+      if (!document.body) { setTimeout(setup, 60); return; }
+      if (document.getElementById('mm-tap')) return;
+      const st = document.createElement('style');
+      st.textContent = '#mm-tap{position:fixed;z-index:2147483647;left:-80px;top:-80px;width:44px;height:44px;margin:-22px 0 0 -22px;border-radius:50%;pointer-events:none;opacity:0;background:radial-gradient(circle, rgba(255,60,120,.40) 0%, rgba(255,60,120,.16) 45%, rgba(255,60,120,0) 72%);border:2px solid rgba(255,60,120,.75)}@keyframes mmtap{0%{transform:scale(.35);opacity:.95}65%{opacity:.55}100%{transform:scale(2.1);opacity:0}}';
+      (document.head || document.documentElement).appendChild(st);
+      const tap = document.createElement('div');
+      tap.id = 'mm-tap';
+      document.body.appendChild(tap);
+      document.addEventListener('click', (e) => {
+        let x = e.clientX, y = e.clientY;
+        const t = e.target;
+        if (!x && !y && t && t.getBoundingClientRect) {
+          const r = t.getBoundingClientRect();
+          x = r.left + r.width / 2; y = r.top + r.height / 2;
+        }
+        tap.style.left = x + 'px'; tap.style.top = y + 'px';
+        tap.style.animation = 'none'; void tap.offsetWidth; tap.style.animation = 'mmtap .5s ease-out';
+      }, true);
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', setup); else setup();
+  } catch (_) {}
+}
+
 const DEFAULT_SUPPORT_EMAIL = 'support@megapersonals.eu';
 
 // Sal por MAQUINA: hace que cada PC genere huellas distintas aunque copien el config.
@@ -270,7 +358,7 @@ function requireControlKey(req, res, next) {
   next();
 }
 
-const APP_VERSION = 18; // version de esta app (debe coincidir con el instalador MOMONGA-MEGA-Setup-N)
+const APP_VERSION = 21; // version de esta app (debe coincidir con el instalador MOMONGA-MEGA-Setup-N)
 let versionDisponible = null; // { version, url } si el servidor tiene una mas nueva
 
 // --- Licencia (para bots instalados en la PC del cliente) ---
@@ -560,7 +648,9 @@ app.get('/api/control/devices', requireControlKey, (req, res) => {
   ];
   let modern = [];
   try { modern = (typeof MODERN_ANDROID !== 'undefined' && Array.isArray(MODERN_ANDROID)) ? MODERN_ANDROID.map((d) => ({ key: d.key, label: d.label || d.key })) : []; } catch (_) {}
-  res.json({ ok: true, devices: [...base, ...modern] });
+  let iphones = [];
+  try { iphones = (typeof IPHONE_DEVICES !== 'undefined' && Array.isArray(IPHONE_DEVICES)) ? IPHONE_DEVICES.map((d) => ({ key: d.key, label: d.label || d.key })) : []; } catch (_) {}
+  res.json({ ok: true, devices: [...base, ...iphones, ...modern] });
 });
 
 app.get('/api/control/profiles', requireControlKey, (req, res) => {
@@ -626,7 +716,9 @@ app.get('/api/cliente/devices', (req, res) => {
   ];
   let modern = [];
   try { modern = (typeof MODERN_ANDROID !== 'undefined' && Array.isArray(MODERN_ANDROID)) ? MODERN_ANDROID.map((d) => ({ key: d.key, label: d.label || d.key })) : []; } catch (_) {}
-  res.json({ devices: [...base, ...modern] });
+  let iphones = [];
+  try { iphones = (typeof IPHONE_DEVICES !== 'undefined' && Array.isArray(IPHONE_DEVICES)) ? IPHONE_DEVICES.map((d) => ({ key: d.key, label: d.label || d.key })) : []; } catch (_) {}
+  res.json({ devices: [...base, ...iphones, ...modern] });
 });
 app.post('/api/cliente/mail/open', async (req, res) => {
   try { res.json(await openMailBrowser(String((req.body && req.body.id) || '').trim(), String((req.body && req.body.url) || '').trim())); }
@@ -636,6 +728,32 @@ app.post('/api/cliente/mail/close', async (req, res) => {
   try { res.json(await closeMailBrowser(String((req.body && req.body.id) || '').trim())); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
+// Chequeo de varios perfiles: detecta choques (mismo proxy/IP, email o puerto)
+// para que cada perfil sea independiente y puedan publicar sin pisarse.
+app.get('/api/cliente/health', (req, res) => {
+  try {
+    const lista = [...controllers.values()].map((c) => ({
+      id: c.id,
+      port: c.cfg && c.cfg.port ? Number(c.cfg.port) : null,
+      proxy: c.cfg && c.cfg.proxy ? `${c.cfg.proxy.host}:${c.cfg.proxy.port}` : '',
+      email: String((c.cfg && c.cfg.email) || '').trim().toLowerCase(),
+      state: !c.started ? 'stopped' : (c.paused ? 'paused' : 'running'),
+      blocked: Boolean(c.blocked),
+    }));
+    const conflictos = [];
+    const dup = (campo, tipo) => {
+      const map = {};
+      for (const p of lista) { const v = p[campo]; if (!v) continue; (map[v] = map[v] || []).push(p.id); }
+      Object.keys(map).forEach((v) => { if (map[v].length > 1) conflictos.push({ tipo, valor: v, perfiles: map[v] }); });
+    };
+    // NOTA: la misma IP compartida entre perfiles NO se avisa (hay clientes que
+    // usan un proxy panel con la misma IP en todas las cuentas a proposito).
+    dup('email', 'email');
+    dup('port', 'puerto');
+    res.json({ ok: true, total: lista.length, conflictos, perfiles: lista });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.post('/api/cliente/profile/:id/:action', async (req, res) => {
   const controller = controllers.get(req.params.id);
   if (!controller) return res.status(404).json({ error: 'Perfil no encontrado.' });
@@ -664,6 +782,8 @@ app.post('/api/cliente/all/:action', (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.get('/cliente', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
   const f = path.join(__dirname, 'public', 'cliente.html');
   if (fs.existsSync(f)) return res.sendFile(f);
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -1282,7 +1402,7 @@ app.post('/api/control/profiles/:id/:action', requireControlKey, async (req, res
   }
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), { setHeaders: (res) => { res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate'); } }));
 
 app.post('/api/security/password', (req, res) => {
   try {
@@ -3768,6 +3888,9 @@ async function typeLikeHuman(page, value, finder = {}) {
     await handle.evaluate((n) => n.removeAttribute('data-momonga-fill')).catch(() => {});
     const a = got.replace(/\s+/g, ' ').trim().toLowerCase();
     const b = str.replace(/\s+/g, ' ').trim().toLowerCase();
+    // Acepta si se escribio (aunque el sitio ajuste espacios/saltos) para NO caer
+    // al respaldo que "pega" todo el valor de golpe.
+    if (a.length > 2 && (a === b || a.startsWith(b.slice(0, Math.min(12, b.length))) || b.startsWith(a.slice(0, Math.min(12, a.length))))) return true;
     return a === b && a.length > 0;
   } catch (_) {
     return false;
@@ -5209,32 +5332,85 @@ async function editExistingPost(page, controller, options = {}) {
   const details = controller.cfg.adDetails || {};
 
   const fillForm = async () => {
-    const headlineToUse = sinEmojis(pickVariant(controller, 'headline'));
-    const textToUse = sinEmojis(pickVariant(controller, 'text'));
+    const headlineToUse = sinEmojis(details.headline || pickVariant(controller, 'headline') || '');
+    const textToUse = sinEmojis(details.text || pickVariant(controller, 'text') || '');
+
+    // Lee lo que YA tiene el anuncio en Mega, para tocar SOLO lo que cambio.
+    const actual = await page.evaluate(() => {
+      const val = (sel) => { const el = document.querySelector(sel); return el ? String(el.value || '') : null; };
+      const byLabel = (re) => {
+        const l = Array.from(document.querySelectorAll('label')).find((x) => re.test(String(x.textContent || '').trim()));
+        if (!l) return null;
+        let f = l.querySelector('input, textarea');
+        if (!f && l.htmlFor) f = document.getElementById(l.htmlFor);
+        if (!f && l.parentElement) f = l.parentElement.querySelector('input, textarea');
+        return f ? String(f.value || '') : null;
+      };
+      return {
+        headline: val('#headline') ?? byLabel(/^headline/i),
+        body: val('#body') ?? byLabel(/^body/i),
+        age: val('#age'),
+        city: val('#cityName'),
+        location: val('#location'),
+        phone: (document.getElementById('phonenumber') || {}).value || '',
+      };
+    }).catch(() => ({}));
+
+    const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
+    const igual = (a, b) => norm(a) === norm(b);
+    const mismoTel = (a, b) => String(a || '').replace(/\D/g, '') === String(b || '').replace(/\D/g, '');
+    const cambiados = [];
+
     await humanPause(500, 1200);
     await selectIamAndIsee(page, details);
     await humanPause(600, 1500);
-    /* Nombre/Alias del anuncio: NO se llena (se deja vacio) */
-    await humanPause(700, 1800);
-    await fillText(page, headlineToUse, { label: '^\\s*headline' });
-    await humanPause(800, 2000);
-    await fillExactField(page, '#age', details.age) || await fillFieldByLabel(page, '^\\s*age', details.age);
-    await humanPause(1200, 2800);
-    await fillText(page, textToUse, { selector: '#body', label: '^\\s*body' });
-    await humanPause(700, 1800);
-    controller.setCycleStage('city', `Seleccionando ciudad: ${details.city}.`);
-    const okCity = await selectCity(page, details.city, controller);
-    await humanPause(700, 1600);
-    await fillText(page, details.location, { selector: '#location', label: '^\\s*location' });
-    await humanPause(600, 1500);
-    await fillPhone(page, details.phone, controller);
-    const telAfter = await page.evaluate(() => (document.getElementById('phonenumber') || {}).value).catch(() => '(err)');
-    controller.log(`📞 Teléfono: quería "${details.phone}" ; el campo quedó "${telAfter}"`);
-    if (await dismissPhoneLimitPopup(page)) {
-      controller.log('⚠️ El sitio NO permitió cambiar el teléfono (solo 1 cambio por día).');
-      controller.lastError = 'El sitio no permitió cambiar el teléfono (solo 1 cambio por día).';
-      notify(`⚠️ No se pudo cambiar el teléfono en "${controller.id}": MegaPersonals solo permite 1 cambio por día.`).catch(() => {});
+
+    if (headlineToUse && !igual(headlineToUse, actual.headline)) {
+      await fillText(page, headlineToUse, { label: '^\\s*headline' });
+      cambiados.push('headline');
+      await humanPause(700, 1700);
     }
+    if (details.age && !igual(details.age, actual.age)) {
+      await fillExactField(page, '#age', details.age) || await fillFieldByLabel(page, '^\\s*age', details.age);
+      cambiados.push('edad');
+      await humanPause(800, 1900);
+    }
+    if (textToUse && !igual(textToUse, actual.body)) {
+      await fillText(page, textToUse, { selector: '#body', label: '^\\s*body' });
+      cambiados.push('body');
+      await humanPause(700, 1800);
+    }
+
+    controller.setCycleStage('city', `Ciudad: ${details.city}.`);
+    let okCity = true;
+    if (details.city && !igual(details.city, actual.city)) {
+      okCity = await selectCity(page, details.city, controller);
+      cambiados.push('ciudad');
+      await humanPause(700, 1600);
+    }
+    if (details.location && !igual(details.location, actual.location)) {
+      await fillText(page, details.location, { selector: '#location', label: '^\\s*location' });
+      cambiados.push('zona');
+      await humanPause(600, 1500);
+    }
+
+    // TELEFONO: SOLO si de verdad cambio. Asi NO salta "solo 1 cambio por dia".
+    if (details.phone && !mismoTel(details.phone, actual.phone)) {
+      await fillPhone(page, details.phone, controller);
+      cambiados.push('telefono');
+      const telAfter = await page.evaluate(() => (document.getElementById('phonenumber') || {}).value).catch(() => '(err)');
+      controller.log(`📞 Teléfono: quería "${details.phone}" ; el campo quedó "${telAfter}"`);
+      if (await dismissPhoneLimitPopup(page)) {
+        controller.log('⚠️ El sitio NO permitió cambiar el teléfono (solo 1 cambio por día).');
+        controller.lastError = 'El sitio no permitió cambiar el teléfono (solo 1 cambio por día).';
+        notify(`⚠️ No se pudo cambiar el teléfono en "${controller.id}": MegaPersonals solo permite 1 cambio por día.`).catch(() => {});
+      }
+      await humanPause(600, 1500);
+    } else {
+      controller.log('📞 Teléfono sin cambios: se deja igual (no se toca).');
+    }
+
+    controller.log(`✏️ Campos que se cambiaron: ${cambiados.length ? cambiados.join(', ') : 'ninguno (todo igual)'}.`);
     await humanPause(900, 2200);
     return okCity;
   };
@@ -6167,11 +6343,23 @@ emitActive() {
     const profileDir = path.join(__dirname, 'profiles', `perfil_${this.id}`);
     fs.mkdirSync(profileDir, { recursive: true });
 
+    // Necesitamos el dispositivo ANTES de lanzar Chrome: ponemos el UA/tamano a
+    // nivel de TODO el navegador (asi CUALQUIER pestana/ventana queda en modo movil).
+    const executablePath = detectChromeExecutable();
+    let launchMajor = '140';
+    if (executablePath) { const m = String(executablePath).match(/[\\/](\d{2,3})\.\d+\.\d+\.\d+[\\/]/); if (m) launchMajor = m[1]; }
+    const launchDevice = devicePreset(this.cfg.device, launchMajor);
+    // Que la ventana NUNCA sea mas alta que la pantalla (laptops): asi se alcanza a ver/desplazar hasta abajo.
+    const fitH = Math.max(520, Math.min(launchDevice.viewport.height, screenWorkHeight() - 90));
+    const launchViewport = { width: launchDevice.viewport.width, height: fitH, deviceScaleFactor: launchDevice.viewport.deviceScaleFactor, isMobile: true, hasTouch: true };
+
     const args = [
       `--remote-debugging-port=${this.cfg.port}`,
       `--user-data-dir=${profileDir}`,
       '--disable-blink-features=AutomationControlled',
-      '--window-size=390,844',
+      `--user-agent=${launchDevice.userAgent}`,
+      '--touch-events=enabled',
+      `--window-size=${launchViewport.width},${launchViewport.height}`,
       '--lang=en-US',
       '--hide-crash-restore-bubble',
       '--no-first-run',
@@ -6202,7 +6390,6 @@ emitActive() {
       }
     }
 
-    const executablePath = detectChromeExecutable();
     if (executablePath) {
       this.log(`Chrome detectado: ${executablePath}`);
     } else {
@@ -6217,6 +6404,7 @@ emitActive() {
       headless: false,
       ...(executablePath ? { executablePath } : {}),
       ignoreDefaultArgs: ['--enable-automation'],
+      defaultViewport: launchViewport,
       args
     });
 
@@ -6295,7 +6483,7 @@ emitActive() {
     await page.setExtraHTTPHeaders(chHeadersFor(device, chromeMajor));
     await page.emulate({
       userAgent: device.userAgent,
-      viewport: device.viewport
+      viewport: launchViewport
     });
 
     // Plataforma / idioma / userAgentData a NIVEL CDP (NO con getters JS: los detectan
@@ -6457,6 +6645,7 @@ emitActive() {
       } catch (_) {}
     };
     await page.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height);
+    try { await page.evaluateOnNewDocument(cursorFn); } catch (_) {}
 
     // Aplica el MISMO disfraz (emulacion + anti-deteccion) a CADA pestaña nueva
     // (browserleaks, pixelscan, apelacion, chequeo, etc.). Devuelve una promesa
@@ -6465,7 +6654,7 @@ emitActive() {
       if (!p) return Promise.resolve();
       if (!p.__momongaApplyPromise) {
         p.__momongaApplyPromise = (async () => {
-          try { await p.emulate({ userAgent: device.userAgent, viewport: device.viewport }); } catch (_) {}
+          try { await p.emulate({ userAgent: device.userAgent, viewport: launchViewport }); } catch (_) {}
           try { await p.setExtraHTTPHeaders(chHeadersFor(device, chromeMajor)); } catch (_) {}
           try { await p.setGeolocation({ latitude, longitude, accuracy: 100 }); } catch (_) {}
           try { await p.setBypassCSP(true); } catch (_) {}
@@ -6479,6 +6668,7 @@ emitActive() {
             await applyUaOverride(cdp, device, chromeMajor);
           } catch (_) {}
           try { await p.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height); } catch (_) {}
+          try { await p.evaluateOnNewDocument(cursorFn); } catch (_) {}
         })().catch(() => {});
       }
       return p.__momongaApplyPromise;
@@ -8013,12 +8203,8 @@ async function syncConServidor() {
         console.log(`🔄 Actualizacion disponible: v${versionDisponible.version}`);
         notify(`🔄 Hay una NUEVA VERSION de MOMONGA MEGA (v${versionDisponible.version}).`).catch(() => {});
       }
-      // Actualizacion SILENCIOSA: se descarga e instala sola (una vez por version).
-      if (data.autoUpdate !== false && !autoUpdateAplicado) {
-        autoUpdateAplicado = true;
-        setTimeout(() => { aplicarActualizacion().catch(() => {}); }, 45000);
-        console.log(`⏳ Actualizacion automatica programada (v${versionDisponible.version}) en 45s.`);
-      }
+      // NO se instala sola: solo se AVISA (banner "Actualizar ahora" en la app
+      // del cliente). El cliente decide cuando, para no interrumpir su trabajo.
     }
   } catch (_) {}
 }
