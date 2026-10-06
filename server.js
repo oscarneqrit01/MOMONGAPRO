@@ -3311,7 +3311,9 @@ async function trustedClick(page, target, ...args) {
     await el.click(opts);
     return true;
   } catch (_) {
-    try { await el.click(); return true; } catch (_) { return false; }
+    // NO reintentar el clic: si el clic navego y luego lanzo error, reintentar
+    // pulsaria DOS veces el mismo boton (MegaPersonals lo ve como robot).
+    return false;
   } finally {
     try { if (el.dispose) await el.dispose(); } catch (_) {}
   }
@@ -3325,9 +3327,13 @@ async function clickBumpButton(page) {
     const controls = Array.from(document.querySelectorAll('a, button'));
     return controls.find((e) => visible(e) && /bump\s*to\s*top|bump|boost|subir/i.test(`${e.innerText || ''} ${e.value || ''} ${e.id || ''} ${e.getAttribute('href') || ''}`)) || null;
   };
+  // Espera a que el boton aparezca y pulsa UN SOLO clic (sin reintentar al instante).
   const deadline = Date.now() + 8000;
   while (Date.now() < deadline) {
-    if (await trustedClick(page, findBump)) return true;
+    const h = await page.evaluateHandle(findBump).catch(() => null);
+    const el = h && h.asElement ? h.asElement() : null;
+    if (h && h.dispose) await h.dispose().catch(() => {});
+    if (el) return await trustedClick(page, findBump);
     await sleep(500);
   }
   return false;
