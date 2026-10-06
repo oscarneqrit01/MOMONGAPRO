@@ -4266,6 +4266,52 @@ async function waitForManualCaptcha(page, controller) {
   return solved;
 }
 
+// MegaPersonals pide un codigo de 4 digitos (enviado por SMS al telefono del
+// anuncio) cuando se CAMBIA el numero. Detecta ese cuadro.
+async function detectPhoneCodeModal(page) {
+  return page.evaluate(() => {
+    const txt = (document.body && document.body.innerText) || '';
+    const re = /te\s+pedimos\s+tu\s+c[oó]digo|hemos\s+enviado\s+un\s+c[oó]digo|ingresa\s+el\s+c[oó]digo|no\s+he\s+recibido|enviar\s+c[oó]digo|we\s+(just\s+)?sent|enter\s+the\s+(verification\s+)?code|didn'?t\s+receive|send\s+code/i;
+    if (!re.test(txt)) return null;
+    const inputs = Array.from(document.querySelectorAll('input')).filter((i) => {
+      if (i.offsetParent === null) return false;
+      const t = (i.type || 'text').toLowerCase();
+      return !['hidden', 'submit', 'button', 'checkbox', 'radio', 'file', 'image'].includes(t);
+    });
+    const tel = (txt.match(/\+?\d[\d\s().-]{6,}\d/) || [])[0] || '';
+    return { ok: true, inputs: inputs.length, tel: tel.trim() };
+  }).catch(() => null);
+}
+
+async function waitForPhoneCode(page, controller, timeoutMs = 10 * 60 * 1000) {
+  const modal = await detectPhoneCodeModal(page);
+  if (!modal) return true;
+
+  try { fs.writeFileSync(path.join(LOGS_DIR, `dump-phonecode-${controller.id}.html`), await page.content(), 'utf8'); } catch (_) {}
+
+  controller.setCycleStage('phone_code', 'Mega pide el codigo de 4 digitos (revisa el telefono).');
+  controller.lastError = 'Mega pide el codigo de 4 digitos. Escribelo en el navegador del bot.';
+  controller.log(`📵 Mega pidio el CODIGO de 4 digitos${modal.tel ? ` (tel ${modal.tel})` : ''}. Escribelo en el navegador del bot: espero hasta 10 min.`);
+  notify(`📵 "${controller.id}": Mega pide el CODIGO de 4 digitos${modal.tel ? ` (tel ${modal.tel})` : ''}. Escribelo en el navegador del bot (tienes 10 min).`).catch(() => {});
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(3000);
+    const still = await detectPhoneCodeModal(page);
+    if (!still) {
+      controller.log('✅ Codigo de telefono aceptado; continuo.');
+      controller.lastError = null;
+      controller.setCycleStage('running', 'Codigo aceptado.');
+      notify(`✅ "${controller.id}": codigo de 4 digitos aceptado; sigo.`).catch(() => {});
+      return true;
+    }
+  }
+  controller.setCycleStage('error', 'Tiempo agotado esperando el codigo de 4 digitos.');
+  controller.lastError = 'Tiempo agotado esperando el codigo de 4 digitos.';
+  notify(`❌ "${controller.id}": no se ingreso el codigo de 4 digitos a tiempo.`).catch(() => {});
+  return false;
+}
+
 // Popup de ciudad de pago: hay que confirmarlo para que se envíe el formulario
 async function confirmTokenPopup(page) {
   const ready = await page.evaluate(() => {
@@ -5287,6 +5333,9 @@ async function editExistingPost(page, controller, options = {}) {
         return true;
       }
 
+      // Si Mega pide el codigo de 4 digitos al guardar, avisar y esperar.
+      if (await detectPhoneCodeModal(page)) { if (!(await waitForPhoneCode(page, controller))) return false; continue; }
+
       await confirmTokenPopup(page).catch(() => {});
       if (await detectCaptchaRejected(page)) { await reloadImageCaptcha(page).catch(() => {}); await waitForManualCaptcha(page, controller).catch(() => {}); }
       if (await detectFormValidationError(page)) { controller.log('⚠️ El sitio rechazo el guardado (validacion de categorias/telefono).'); return false; }
@@ -5351,6 +5400,8 @@ async function editExistingPost(page, controller, options = {}) {
     if (!okCity) return false;
     // Paso 1 -> Paso 2 (fotos + captcha). Igual que el flujo de crear/remover.
     if (!(await clickNextStep(page, controller))) return false;
+    // Si cambio el numero, Mega pide el codigo de 4 digitos aqui.
+    if (!(await waitForPhoneCode(page, controller))) return false;
     const currentHash = hashPhotoSet(details.photosPath);
     if (modo === 'create') {
       await uploadPhotos();
