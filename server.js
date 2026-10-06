@@ -2383,35 +2383,36 @@ async function fillCaptchaInput(page, code, controller) {
     if (!handle) handle = await frame.$(selector).catch(() => null);
     if (!handle) continue;
 
-    const checkValue = () => handle.evaluate((el, val) => String(el.value || '').trim() === val, code).catch(() => false);
+    // OJO: comparamos SIN importar MAYUS/minus y sin espacios (el campo suele
+    // poner el codigo en MAYUSCULAS; si lo comparabamos igual, creia que fallo).
+    const checkValue = () => handle.evaluate((el, val) => {
+      const a = String(el.value || '').trim().toUpperCase().replace(/\s+/g, '');
+      const b = String(val || '').trim().toUpperCase().replace(/\s+/g, '');
+      return a === b;
+    }, code).catch(() => false);
 
-    // 1) Igual que el otro proyecto que funciona: teclado real (clear + send_keys).
+    // 1) Teclado real EN EL PROPIO elemento (sirve aunque este en un iframe).
     try {
       await handle.evaluate((el) => { try { el.scrollIntoView({ block: 'center' }); } catch (_) {} el.focus(); }).catch(() => {});
       await handle.click({ clickCount: 3 }).catch(() => {});
-      await page.keyboard.down('Control').catch(() => {});
-      await page.keyboard.press('KeyA').catch(() => {});
-      await page.keyboard.up('Control').catch(() => {});
-      await page.keyboard.press('Backspace').catch(() => {});
-      await handle.type(code, { delay: 60 }).catch(() => {});
+      await handle.press('Backspace').catch(() => {});
+      await handle.type(code, { delay: 70 }).catch(() => {});
+      await handle.evaluate((el) => { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }).catch(() => {});
       await sleep(300);
       if (await checkValue()) return true;
     } catch (_) {
       // seguir con el respaldo
     }
 
-    // 2) Respaldo: asignar el valor directamente.
+    // 2) Respaldo: setter nativo + eventos (sin 'blur' que podia borrarlo).
     const set = await frame.evaluate((sel, val) => {
       const input = document.querySelector(sel);
       if (!input) return false;
       input.focus();
-      const setter = Object.getOwnPropertyDescriptor(input.__proto__, 'value')?.set;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
       if (setter) setter.call(input, val); else input.value = val;
-      input.setAttribute('value', val);
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
-      input.dispatchEvent(new Event('blur', { bubbles: true }));
       return true;
     }, selector, code).catch(() => false);
 
@@ -2419,6 +2420,10 @@ async function fillCaptchaInput(page, code, controller) {
       await sleep(300);
       if (await checkValue()) return true;
     }
+
+    // Deja en el log que quedo en el campo (para diagnosticar).
+    const quedo = await handle.evaluate((el) => String(el.value || '')).catch(() => '?');
+    log(`🧩 Captcha: quería "${code}" ; el campo quedó "${quedo}"`);
   }
 
   log('⚠️ No se encontró o no quedó escrito el campo del captcha.');
