@@ -4866,7 +4866,9 @@ async function appealContactUsOnce(email, apiKey, proxy) {
     const page = await browser.newPage();
     // La apelación usa navegador de ESCRITORIO (pasa Cloudflare mejor que el móvil).
     await page.evaluateOnNewDocument(() => {
-      try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch (_) {}
+      // NO parcheamos navigator.webdriver por JS (es detectable por los scanners).
+      // Se limpia nativamente con --disable-blink-features=AutomationControlled y
+      // quitando --enable-automation (asi el navegador no queda "marcado").
       try {
         const orig = navigator.permissions && navigator.permissions.query;
         if (orig) navigator.permissions.query = (p) => (p && p.name === 'notifications' ? Promise.resolve({ state: Notification.permission }) : orig.call(navigator.permissions, p));
