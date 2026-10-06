@@ -4053,6 +4053,42 @@ async function selectCity(page, value, controller) {
   }
   controller.log(`📍 Abriendo selector de ubicación para ${value}.`);
 
+  // En MegaPersonals las ciudades son <a data-short-name="NC"> dentro del popup.
+  // Varias ciudades comparten nombre (p.ej. "Wilmington" existe en Delaware y en
+  // North Carolina), asi que elegimos la que coincide EXACTAMENTE con el codigo de
+  // estado del cliente (data-short-name). Si no, se escogia el estado equivocado.
+  const clickedCityAnchor = await page.evaluate(({ city, code }) => {
+    const norm = (t) => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const target = norm(city);
+    const wanted = norm(code);
+    const anchors = Array.from(document.querySelectorAll('.ac-sub-text p a, article.ac-sub-text a'));
+    if (!anchors.length) return false;
+    let lista = anchors.filter((a) => norm(a.textContent) === target);
+    if (!lista.length) lista = anchors.filter((a) => norm(a.textContent).includes(target) && target);
+    if (wanted) {
+      const conEstado = lista.filter((a) => norm(a.getAttribute('data-short-name')) === wanted);
+      if (conEstado.length) lista = conEstado;
+    }
+    const elegido = lista[0];
+    if (!elegido) return false;
+    elegido.click();
+    return true;
+  }, { city: cityName, code: stateCode }).catch(() => false);
+
+  if (clickedCityAnchor) {
+    const verificado = await page.waitForFunction((wantedValue) => {
+      const f = document.querySelector('#cityName');
+      const w = String(wantedValue || '').trim().toLowerCase();
+      const v = f ? String(f.value || '').trim().toLowerCase() : '';
+      return Boolean(f) && (v === w || (w && v.includes(w.split(',')[0].trim())));
+    }, { timeout: 4000 }, value).catch(() => false);
+    if (verificado) {
+      controller.log(`📍 Ciudad seleccionada: ${value}.`);
+      return true;
+    }
+    controller.log(`⚠️ Se hizo clic en "${cityName}" pero el campo no quedo en "${value}"; reintentando por el metodo anterior.`);
+  }
+
   const clickLocationChoice = async (choice, label) => {
     controller.log(`📍 Seleccionando ${label}: ${choice}.`);
     const tryClick = () => page.evaluate((wanted) => {
