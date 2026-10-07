@@ -2167,10 +2167,34 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Pausa "humana": tiempo aleatorio para no parecer un bot (evita bloqueos por automatizacion).
+// Pausa "humana" con distribucion REALISTA (no uniforme): la mayoria cortas,
+// de vez en cuando una larga (se distrae) y rara vez una muy larga.
 async function humanPause(min = 500, max = 1600) {
-  const ms = min + Math.random() * Math.max(0, max - min);
+  const r = Math.random();
+  let ms;
+  if (r < 0.75) {
+    ms = min + Math.random() * Math.max(0, max - min);        // normal (la mayoria)
+  } else if (r < 0.96) {
+    ms = Math.max(min, max) + Math.random() * 4500;           // media (hasta ~5s)
+  } else {
+    ms = 7000 + Math.random() * 20000;                        // larga (7-27s): se distrajo
+  }
   return sleep(Math.round(ms));
+}
+
+// Scroll humano: direccion (arriba/abajo), cantidad y numero de veces ALEATORIOS
+// (no todos suben/bajan igual). Devuelve cuando termina.
+async function humanScroll(page, controller) {
+  try {
+    const veces = 1 + Math.floor(Math.random() * 3);             // 1-3 movimientos
+    for (let i = 0; i < veces; i++) {
+      const dir = Math.random() < 0.5 ? -1 : 1;                  // arriba o abajo
+      const delta = (50 + Math.floor(Math.random() * 300)) * dir; // 50-350 px
+      await page.mouse.wheel({ deltaY: delta }).catch(() => {});
+      if (controller && controller.log) controller.log(`🖱️ Scroll ${dir < 0 ? 'arriba' : 'abajo'} ${Math.abs(delta)}px`);
+      await sleep(200 + Math.floor(Math.random() * 1400));
+    }
+  } catch (_) {}
 }
 
 // ¿Estamos dentro del horario de trabajo? (from/to en "HH:MM"; soporta cruzar medianoche)
@@ -7075,6 +7099,10 @@ emitActive() {
       if (this.started && !this.paused) this.scheduleNext();
       return;
     }
+
+    // Antes de publicar, mira la pantalla un poco (scroll aleatorio: direccion/cantidad variables).
+    await humanScroll(this.page, this);
+    await humanPause(600, 1800);
 
     let ok = false;
     if (this.settings.rotateAds) {
