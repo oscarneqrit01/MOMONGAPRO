@@ -6718,7 +6718,7 @@ emitActive() {
             { vendor: 'Google Inc. (ARM)', renderer: 'ANGLE (ARM, Mali-G77 MP11, OpenGL ES 3.2)' }
           ])
           : { vendor: 'Apple Inc.', renderer: 'Apple GPU' };
-        const GL_EXTRA = { 3379: 16384, 34024: 16384, 34930: 16, 35660: 16, 35661: 32, 36349: 1024, 36347: 1024 };
+        const GL_EXTRA = { 3379: 16384, 34024: 16384, 34076: 16384, 34930: 16, 35660: 16, 35661: 32, 36347: 1024, 36348: 16, 36349: 1024, 34921: 16 };
         const patchGL = (proto) => {
           if (!proto || !proto.getParameter) return;
           const orig = proto.getParameter;
