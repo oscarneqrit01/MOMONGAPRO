@@ -1156,6 +1156,24 @@ app.get('/api/control/profiles/:id/detect', requireControlKey, async (req, res) 
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// (temp) Navega el navegador del perfil a una URL y devuelve lo que muestra la pagina.
+app.get('/api/control/profiles/:id/goto', requireControlKey, async (req, res) => {
+  try {
+    const c = controllers.get(String(req.params.id));
+    if (!c) return res.status(404).json({ ok: false, error: 'Perfil no encontrado.' });
+    const url = String(req.query.url || '').trim();
+    if (!/^https?:\/\//i.test(url)) return res.status(400).json({ ok: false, error: 'url invalida' });
+    if (!c.browser) { try { await c.open(); } catch (_) {} await sleep(5000); }
+    if (!c.browser) return res.status(500).json({ ok: false, error: 'No se pudo abrir el navegador.' });
+    const p = c.page || (await c.browser.newPage());
+    if (typeof c._applyPage === 'function') await c._applyPage(p);
+    await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+    await sleep(5000);
+    const text = await p.evaluate(() => (document.body ? document.body.innerText : '')).catch(() => '');
+    res.json({ ok: true, url: p.url(), text: String(text).slice(0, 7000) });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // IP real de SALIDA del proxy (rápido, sin abrir navegador).
 app.get('/api/control/profiles/:id/exitip', requireControlKey, async (req, res) => {
   try {
@@ -6380,8 +6398,9 @@ emitActive() {
     let launchMajor = '140';
     if (executablePath) { const m = String(executablePath).match(/[\\/](\d{2,3})\.\d+\.\d+\.\d+[\\/]/); if (m) launchMajor = m[1]; }
     const launchDevice = devicePreset(this.cfg.device, launchMajor);
-    // Que la ventana NUNCA sea mas alta que la pantalla (laptops): asi se alcanza a ver/desplazar hasta abajo.
-    const fitH = Math.max(520, Math.min(launchDevice.viewport.height, screenWorkHeight() - 90));
+    // En un telefono REAL la ventana visible es MAS BAJA que la pantalla (barra del navegador).
+    // Restamos ~155px al alto para que screen > window (si no, screen == window = delator).
+    const fitH = Math.max(480, Math.min(launchDevice.viewport.height - 155, screenWorkHeight() - 90));
     const launchViewport = { width: launchDevice.viewport.width, height: fitH, deviceScaleFactor: launchDevice.viewport.deviceScaleFactor, isMobile: true, hasTouch: true };
 
     const args = [
@@ -6521,6 +6540,16 @@ emitActive() {
     // los scanners tipo BrowserScan "Bot Detection"). Así el UA, la plataforma y las
     // Client Hints quedan coherentes sin dejar rastro de sobreescritura por JavaScript.
     try { await applyUaOverride(client, device, chromeMajor); } catch (_) {}
+
+    // Screen MAS GRANDE que la ventana (como un telefono real: la barra del navegador
+    // ocupa alto). Sin esto, screen == window y es una inconsistencia detectable.
+    try {
+      await client.send('Emulation.setDeviceMetricsOverride', {
+        width: launchViewport.width, height: launchViewport.height,
+        deviceScaleFactor: launchViewport.deviceScaleFactor, mobile: true,
+        screenWidth: device.viewport.width, screenHeight: device.viewport.height,
+      });
+    } catch (_) {}
 
     // Anti-deteccion: oculta automatizacion y enmascara la huella por perfil.
     const seed = String(this.id) + '|' + MACHINE_SALT;
@@ -6697,6 +6726,7 @@ emitActive() {
             await cdp.send('Emulation.setTimezoneOverride', { timezoneId: timezone });
             await cdp.send('Emulation.setLocaleOverride', { locale: 'en-US' });
             await applyUaOverride(cdp, device, chromeMajor);
+            try { await cdp.send('Emulation.setDeviceMetricsOverride', { width: launchViewport.width, height: launchViewport.height, deviceScaleFactor: launchViewport.deviceScaleFactor, mobile: true, screenWidth: device.viewport.width, screenHeight: device.viewport.height }); } catch (_) {}
           } catch (_) {}
           try { await p.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height); } catch (_) {}
           try { await p.evaluateOnNewDocument(cursorFn); } catch (_) {}
