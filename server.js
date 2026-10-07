@@ -6630,7 +6630,7 @@ emitActive() {
     // Anti-deteccion: oculta automatizacion y enmascara la huella por perfil.
     const seed = String(this.id) + '|' + MACHINE_SALT;
     const deviceKind = device.kind;
-    const stealthFn = (seedStr, kind, major, model, platformName, androidVersion, proxyIp, screenW, screenH) => {
+    const stealthFn = (seedStr, kind, major, model, platformName, androidVersion, proxyIp, screenW, screenH, noNoise) => {
       let s = 2166136261 >>> 0;
       for (let i = 0; i < seedStr.length; i++) { s ^= seedStr.charCodeAt(i); s = Math.imul(s, 16777619) >>> 0; }
       for (let i = 0; i < 5; i++) s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
@@ -6744,6 +6744,16 @@ emitActive() {
       // el aviso "Touch support exception" (el UA dice móvil pero el equipo no es táctil).
       try { Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5 }); } catch (_) {}
 
+      // Platform + plugins/mimeTypes coherentes con MOVIL (Chrome de PC delata "Win32" y los
+      // plugins de escritorio). Se hace por JS porque Chrome NO deja cambiarlos por CDP.
+      try { Object.defineProperty(navigator, 'platform', { get: () => (kind === 'android' ? 'Linux armv8l' : 'iPhone'), configurable: true }); } catch (_) {}
+      try {
+        const fakePlugins = Object.create(PluginArray.prototype);
+        const fakeMimes = Object.create(MimeTypeArray.prototype);
+        Object.defineProperty(navigator, 'plugins', { get: () => fakePlugins, configurable: true });
+        Object.defineProperty(navigator, 'mimeTypes', { get: () => fakeMimes, configurable: true });
+      } catch (_) {}
+
       // Semilla estable (numérica) para ruido DETERMINISTA: mismo canvas => mismo resultado
       // (así no parece "tampering"), pero distinto entre perfiles.
       let seedInt = 2166136261 >>> 0;
@@ -6751,6 +6761,7 @@ emitActive() {
       seedInt = seedInt >>> 0;
 
       // Canvas: ruido determinista (salvo el canvas del captcha).
+      if (!noNoise) {
       try {
         const origGet = CanvasRenderingContext2D.prototype.getImageData;
         CanvasRenderingContext2D.prototype.getImageData = function () {
@@ -6779,8 +6790,9 @@ emitActive() {
           try { if (array && array.length) array[0] = array[0] + audioOff; } catch (_) {}
         };
       } catch (_) {}
+      }
     };
-    await page.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height);
+    await page.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height, process.env.MOMONGA_NO_NOISE === '1');
     try { await page.evaluateOnNewDocument(cursorFn); } catch (_) {}
 
     // Aplica el MISMO disfraz (emulacion + anti-deteccion) a CADA pestaña nueva
