@@ -151,6 +151,20 @@ const IPHONE_DEVICES = [
   { key: 'iphone_se3', label: 'iPhone SE 3 (Safari)', ios: '17_5', w: 375, h: 667, dsf: 2 }
 ];
 
+// Resolucion REAL (CSS px) + densidad por modelo, para que la pantalla COINCIDA con el
+// telefono (si no, pixelscan lo marca "inconsistent"). w/h = CSS px, dsf = densidad.
+const ANDROID_RES = {
+  // Samsung (FHD+ 1080x2340 @3 -> 360x780 ; Plus/Ultra 1440x3120 @3.5 -> 412x891)
+  "SM-S931B": { w: 360, h: 780, dsf: 3 }, "SM-S936B": { w: 412, h: 891, dsf: 3.5 }, "SM-S938B": { w: 412, h: 891, dsf: 3.5 },
+  "SM-S921B": { w: 360, h: 780, dsf: 3 }, "SM-S928B": { w: 412, h: 891, dsf: 3.5 }, "SM-S711B": { w: 360, h: 780, dsf: 3 },
+  "SM-F956B": { w: 360, h: 780, dsf: 3 }, "SM-F966B": { w: 360, h: 780, dsf: 3 },
+  "SM-F741B": { w: 360, h: 780, dsf: 3 }, "SM-F761B": { w: 360, h: 780, dsf: 3 },
+  "SM-A566B": { w: 360, h: 780, dsf: 3 }, "SM-A366B": { w: 360, h: 780, dsf: 3 },
+  // Pixel (1080x2400 @2.625 -> 412x915)
+  "Pixel 9": { w: 412, h: 915, dsf: 2.625 }, "Pixel 9 Pro": { w: 412, h: 915, dsf: 2.625 }, "Pixel 9 Pro XL": { w: 412, h: 915, dsf: 2.625 },
+  "Pixel 9 Pro Fold": { w: 412, h: 915, dsf: 2.625 }, "Pixel 10": { w: 412, h: 915, dsf: 2.625 }, "Pixel 10 Pro": { w: 412, h: 915, dsf: 2.625 },
+};
+
 function androidUserAgent(model, major, androidVersion) {
   return `Mozilla/5.0 (Linux; Android ${androidVersion.split('.')[0]}; ${model}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`;
 }
@@ -180,12 +194,12 @@ function devicePreset(name, chromeMajor) {
     },
     samsung: {
       userAgent: `Mozilla/5.0 (Linux; Android 16; SM-S931B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
-      viewport: { width: 412, height: 915, deviceScaleFactor: 2.625, isMobile: true, hasTouch: true },
+      viewport: { width: 360, height: 780, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
       kind: 'android', platform: 'Android', model: 'SM-S931B', androidVersion: '16.0.0'
     },
     samsung_ultra: {
       userAgent: `Mozilla/5.0 (Linux; Android 16; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
-      viewport: { width: 412, height: 915, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
+      viewport: { width: 412, height: 891, deviceScaleFactor: 3.5, isMobile: true, hasTouch: true },
       kind: 'android', platform: 'Android', model: 'SM-S938B', androidVersion: '16.0.0'
     }
   };
@@ -203,9 +217,11 @@ function devicePreset(name, chromeMajor) {
 
   // Dispositivos modernos elegibles individualmente por perfil (User-Agent + pantalla coherentes).
   const fromList = MODERN_ANDROID.find((d) => d.key === name);
-  if (fromList) {    return {
+  if (fromList) {
+    const res = ANDROID_RES[fromList.model] || { w: 412, h: 915, dsf: fromList.dsf };
+    return {
       userAgent: androidUserAgent(fromList.model, major, fromList.androidVersion),
-      viewport: { width: 412, height: 915, deviceScaleFactor: fromList.dsf, isMobile: true, hasTouch: true },
+      viewport: { width: res.w, height: res.h, deviceScaleFactor: res.dsf || fromList.dsf, isMobile: true, hasTouch: true },
       kind: 'android', platform: 'Android', model: fromList.model,
       androidVersion: fromList.androidVersion
     };
@@ -1191,6 +1207,9 @@ app.get('/api/control/profiles/:id/goto', requireControlKey, async (req, res) =>
     if (typeof c._applyPage === 'function') await c._applyPage(p);
     await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
     await sleep(5000);
+    // Interaccion humana SOSTENIDA (mouse + scroll) para que los detectores vean actividad real.
+    for (let i = 0; i < 4; i++) { await humanMouse(p); await humanScroll(p, null); await sleep(900 + Math.floor(Math.random() * 1400)); }
+    await sleep(2000);
     const text = await p.evaluate(() => (document.body ? document.body.innerText : '')).catch(() => '');
     const nav = await p.evaluate(() => {
       const d = {};
@@ -2240,6 +2259,24 @@ async function humanPause(min = 500, max = 1600) {
     ms = 7000 + Math.random() * 20000;                        // larga (7-27s): se distrajo
   }
   return sleep(Math.round(ms));
+}
+
+// Movimiento de mouse en trayectoria (varios pasos curvos con pausas), como un humano.
+async function humanMouse(page) {
+  try {
+    const ancho = 420, alto = 700;
+    let x = 60 + Math.random() * (ancho - 120);
+    let y = 60 + Math.random() * (alto - 120);
+    const pasos = 6 + Math.floor(Math.random() * 10);
+    for (let i = 0; i < pasos; i++) {
+      x += (Math.random() - 0.5) * 220;
+      y += (Math.random() - 0.5) * 220;
+      x = Math.max(5, Math.min(ancho, x));
+      y = Math.max(5, Math.min(alto, y));
+      await page.mouse.move(x, y, { steps: 2 + Math.floor(Math.random() * 5) }).catch(() => {});
+      await sleep(30 + Math.floor(Math.random() * 220));
+    }
+  } catch (_) {}
 }
 
 // Scroll humano: direccion (arriba/abajo), cantidad y numero de veces ALEATORIOS
@@ -6578,11 +6615,6 @@ emitActive() {
       viewport: launchViewport
     });
 
-    // Plataforma / idioma / userAgentData a NIVEL CDP (NO con getters JS: los detectan
-    // los scanners tipo BrowserScan "Bot Detection"). Así el UA, la plataforma y las
-    // Client Hints quedan coherentes sin dejar rastro de sobreescritura por JavaScript.
-    try { await applyUaOverride(client, device, chromeMajor); } catch (_) {}
-
     // Screen MAS GRANDE que la ventana (como un telefono real: la barra del navegador
     // ocupa alto). Sin esto, screen == window y es una inconsistencia detectable.
     try {
@@ -6592,6 +6624,8 @@ emitActive() {
         screenWidth: device.viewport.width, screenHeight: device.viewport.height,
       });
     } catch (_) {}
+    // Plataforma / idioma / userAgentData a NIVEL CDP (DESPUES de las metricas, para que no lo resetee).
+    try { await applyUaOverride(client, device, chromeMajor); } catch (_) {}
 
     // Anti-deteccion: oculta automatizacion y enmascara la huella por perfil.
     const seed = String(this.id) + '|' + MACHINE_SALT;
@@ -7172,7 +7206,8 @@ emitActive() {
       return;
     }
 
-    // Antes de publicar, mira la pantalla un poco (scroll aleatorio: direccion/cantidad variables).
+    // Antes de publicar, mira la pantalla un poco (mouse + scroll aleatorios).
+    await humanMouse(this.page);
     await humanScroll(this.page, this);
     await humanPause(600, 1800);
 
