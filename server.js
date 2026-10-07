@@ -247,8 +247,30 @@ function chHeadersFor(device, chromeMajor) {
 // Metadatos del navegador (userAgentData) coherentes con el dispositivo. Se aplican
 // por CDP (Emulation.setUserAgentOverride), NO por getters JS (que los detectan).
 function uaMetadataFor(device, chromeMajor) {
-  if (!device || device.kind !== 'android') return undefined;
+  if (!device) return undefined;
   const major = String(chromeMajor || '140');
+  if (device.kind === 'iphone') {
+    return {
+      brands: [
+        { brand: 'Not?A_Brand', version: '24' },
+        { brand: 'Chromium', version: major },
+        { brand: 'Google Chrome', version: major },
+      ],
+      fullVersionList: [
+        { brand: 'Not?A_Brand', version: '24.0.0.0' },
+        { brand: 'Chromium', version: `${major}.0.0.0` },
+        { brand: 'Google Chrome', version: `${major}.0.0.0` },
+      ],
+      mobile: true,
+      platform: 'iOS',
+      platformVersion: device.iosVersion ? device.iosVersion.replace(/_/g, '.') : '18.0',
+      model: device.model || 'iPhone',
+      architecture: '',
+      bitness: '',
+      wow64: false,
+    };
+  }
+  if (device.kind !== 'android') return undefined;
   return {
     brands: [
       { brand: 'Not?A_Brand', version: '24' },
@@ -1170,7 +1192,27 @@ app.get('/api/control/profiles/:id/goto', requireControlKey, async (req, res) =>
     await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
     await sleep(5000);
     const text = await p.evaluate(() => (document.body ? document.body.innerText : '')).catch(() => '');
-    res.json({ ok: true, url: p.url(), text: String(text).slice(0, 7000) });
+    const nav = await p.evaluate(() => {
+      const d = {};
+      try { d.appVersion = navigator.appVersion; } catch (_) {}
+      try { d.platform = navigator.platform; } catch (_) {}
+      try { d.userAgent = navigator.userAgent; } catch (_) {}
+      try { d.userAgentData = navigator.userAgentData ? { platform: navigator.userAgentData.platform, mobile: navigator.userAgentData.mobile } : null; } catch (_) {}
+      try { d.hardwareConcurrency = navigator.hardwareConcurrency; } catch (_) {}
+      try { d.deviceMemory = navigator.deviceMemory; } catch (_) {}
+      try { d.maxTouchPoints = navigator.maxTouchPoints; } catch (_) {}
+      try { d.languages = navigator.languages; } catch (_) {}
+      try { d.plugins = navigator.plugins.length; } catch (_) {}
+      try { d.webdriver = navigator.webdriver; } catch (_) {}
+      try { d.screen = { w: screen.width, h: screen.height, aw: screen.availWidth, ah: screen.availHeight, dpr: window.devicePixelRatio }; } catch (_) {}
+      try { d.win = { innerW: window.innerWidth, innerH: window.innerHeight, outerW: window.outerWidth, outerH: window.outerHeight }; } catch (_) {}
+      try { d.tz = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (_) {}
+      try { d.chrome = typeof window.chrome; } catch (_) {}
+      try { const cs = document.createElement('canvas'); const ctx = cs.getContext('webgl'); const dbg = ctx && ctx.getExtension('WEBGL_debug_renderer_info'); if (dbg) { d.webglVendor = ctx.getParameter(dbg.UNMASKED_VENDOR_WEBGL); d.webglRenderer = ctx.getParameter(dbg.UNMASKED_RENDERER_WEBGL); } } catch (_) {}
+      try { const fs = ['Arial','Calibri','Cambria','Comic Sans MS','Times New Roman','Helvetica','Verdana','Roboto','San Francisco','Segoe UI','Tahoma']; const c = document.createElement('canvas'); const x = c.getContext('2d'); d.fontDetected = fs.filter((f) => { x.font = '72px "' + f + '"'; const w1 = x.measureText('mmmmmmmmmmlli').width; x.font = '72px sans-serif'; const w2 = x.measureText('mmmmmmmmmmlli').width; return w1 !== w2; }); } catch (_) {}
+      return d;
+    }).catch(() => ({}));
+    res.json({ ok: true, url: p.url(), nav, text: String(text).slice(0, 7000) });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
