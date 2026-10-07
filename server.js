@@ -6148,8 +6148,8 @@ function startSocksBridge(proxy) {
 
 const proxyGeoCache = new Map();
 async function resolveProxyGeo(browser, proxy) {
-  if (!proxy || !proxy.host) return null;
-  const key = `${proxy.type || 'http'}://${proxy.host}:${proxy.port}`;
+  const p = proxy || {};
+  const key = `${p.type || 'http'}://${p.host || 'direct'}:${p.port || 0}`;
   const cached = proxyGeoCache.get(key);
   // Solo se reutiliza un resultado VÁLIDO (los fallos NO se cachean, para reintentar).
   if (cached && cached.data && Date.now() - cached.at < 30 * 60 * 1000) return cached.data;
@@ -6166,8 +6166,8 @@ async function resolveProxyGeo(browser, proxy) {
       let tmp;
       try {
         tmp = await browser.newPage();
-        if (proxy.type !== 'socks5' && proxy.username) {
-          await tmp.authenticate({ username: proxy.username, password: proxy.password || '' }).catch(() => {});
+        if (p.host && p.type !== 'socks5' && p.username) {
+          await tmp.authenticate({ username: p.username, password: p.password || '' }).catch(() => {});
         }
         await tmp.goto(ep.url, { waitUntil: 'domcontentloaded', timeout: 12000 });
         const txt = await tmp.evaluate(() => (document.body ? document.body.innerText : ''));
@@ -6588,17 +6588,15 @@ emitActive() {
     const client = await page.target().createCDPSession();
     await client.send('Emulation.setLocaleOverride', { locale: 'en-US' });
 
-    // Ubicacion coherente con el proxy (timezone + geolocalizacion)
+    // Ubicacion coherente con la IP (proxy o real): timezone + geolocalizacion.
     let geo = null;
-    if (proxy && proxy.host) {
-      geo = await resolveProxyGeo(browser, proxy).catch(() => null);
-    }
+    try { geo = await resolveProxyGeo(browser, proxy).catch(() => null); } catch (_) {}
     const timezone = (geo && geo.timezone) || 'America/Toronto';
     const latitude = geo && Number.isFinite(geo.lat) ? geo.lat : 45.5052;
     const longitude = geo && Number.isFinite(geo.lon) ? geo.lon : -73.5557;
     if (geo) this.log(`🌍 Ubicacion del proxy: ${geo.city || '?'}, ${geo.country || '?'} (${timezone})`);
     // IP publica del proxy (para que WebRTC la muestre y no la IP real)
-    const proxyPublicIp = (geo && /^\d{1,3}(\.\d{1,3}){3}$/.test(String(geo.query || ''))) ? geo.query : null;
+    const proxyPublicIp = (proxy && proxy.host && geo && /^\d{1,3}(\.\d{1,3}){3}$/.test(String(geo.query || ''))) ? geo.query : null;
     this._proxyIp = proxyPublicIp || this._proxyIp || null;
     if (proxyPublicIp) this.log(`🛡️ WebRTC mostrara la IP del proxy (${proxyPublicIp}).`);
     await client.send('Emulation.setTimezoneOverride', { timezoneId: timezone });
@@ -6752,6 +6750,32 @@ emitActive() {
         const fakeMimes = Object.create(MimeTypeArray.prototype);
         Object.defineProperty(navigator, 'plugins', { get: () => fakePlugins, configurable: true });
         Object.defineProperty(navigator, 'mimeTypes', { get: () => fakeMimes, configurable: true });
+      } catch (_) {}
+
+      // Idioma (móvil en-US coherente con el UA/Accept-Language).
+      try { Object.defineProperty(navigator, 'language', { get: () => 'en-US', configurable: true }); } catch (_) {}
+      try { Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true }); } catch (_) {}
+
+      // Cámaras/micrófonos tipo teléfono (un PC expone webcams/mics reales).
+      try {
+        if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+          navigator.mediaDevices.enumerateDevices = async () => ([
+            { deviceId: 'default', kind: 'audioinput', label: '', groupId: 'g1' },
+            { deviceId: 'default', kind: 'audiooutput', label: '', groupId: 'g1' },
+            { deviceId: 'cam1', kind: 'videoinput', label: '', groupId: 'g2' },
+            { deviceId: 'cam2', kind: 'videoinput', label: '', groupId: 'g3' },
+          ]);
+        }
+      } catch (_) {}
+
+      // Conexión: un móvil reporta red celular 4G.
+      try {
+        if (navigator.connection) {
+          Object.defineProperty(navigator.connection, 'effectiveType', { get: () => '4g', configurable: true });
+          Object.defineProperty(navigator.connection, 'type', { get: () => 'cellular', configurable: true });
+          Object.defineProperty(navigator.connection, 'rtt', { get: () => pick([50, 100, 150]), configurable: true });
+          Object.defineProperty(navigator.connection, 'downlink', { get: () => pick([6, 8, 10]), configurable: true });
+        }
       } catch (_) {}
 
       // Semilla estable (numérica) para ruido DETERMINISTA: mismo canvas => mismo resultado
