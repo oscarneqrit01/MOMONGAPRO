@@ -1,38 +1,21 @@
 @echo off
-title MOMONGA PRO - Actualizar
+title Actualizar MOMONGA (git)
 cd /d "%~dp0"
 
 echo ============================================
-echo   Actualizando MOMONGA PRO...
+echo   Actualizando a la ULTIMA version
 echo ============================================
 echo.
 
-echo [1/2] Descargando cambios (git pull)...
-git pull
-if errorlevel 1 (
-  echo.
-  echo ERROR: No se pudo actualizar. Verifica que Git este instalado
-  echo y que este repositorio haya sido clonado correctamente.
-  echo.
-  pause
-  exit /b 1
-)
+echo [1/3] Buscando cambios en GitHub...
+git fetch origin
+
+echo [2/3] Poniendo la ultima version (se descartan cambios locales)...
+git reset --hard origin/main
+
+echo [3/3] Reiniciando el bot...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":3100" ^| findstr LISTENING') do taskkill /F /PID %%a >nul 2>&1
 
 echo.
-echo [2/2] Instalando dependencias (npm install)...
-call npm install
-if errorlevel 1 (
-  echo.
-  echo ERROR al instalar las dependencias.
-  echo.
-  pause
-  exit /b 1
-)
-
-echo.
-echo ============================================
-echo   Actualizacion completada con exito.
-echo   Ya puedes iniciar con iniciar.bat
-echo ============================================
-echo.
-pause
+echo Listo. Si el bot no vuelve solo, ejecuta: iniciar-bot-y-tunel.bat
+timeout /t 4 >nul
