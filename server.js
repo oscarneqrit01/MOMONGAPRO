@@ -3631,6 +3631,7 @@ async function bumpAllAdsOneByOne(page, controller) {
     return result;
   }).catch(() => []);
 
+  controller.log(`🔎 Anuncios encontrados en Mis Anuncios: ${ads.length}${ads.length ? ` (IDs: ${ads.map((a) => a.id).join(', ')})` : ''}.`);
   if (ads.length === 0) {
     controller.log('⚠️ No se encontraron anuncios para rotar en Mis Anuncios.');
     return false;
@@ -6196,6 +6197,8 @@ class ProfileController {
     this._stopping = false;
     this._recovering = false;
     this._socksBridge = null;
+    this._userPaused = false;
+    this._userStopped = false;
     this.stats = { totalBumps: 0, bumpsToday: 0, lastBumpAt: 0, date: todayKey() };
     this.health = {
       lastOperation: '',
@@ -6532,11 +6535,42 @@ emitActive() {
         };
       } catch (_) {}
 
-      // WebRTC: NO filtra la IP real y muestra la del proxy.
+      // WebRTC: NO filtra la IP real. Filtramos los candidatos ICE: SOLO dejamos
+      // pasar el del proxy; descartamos los reales (host/srflx) -> el test muestra el proxy.
       try {
         const OrigRTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
         if (OrigRTC) {
           const strip = (cfg) => { try { if (cfg && cfg.iceServers) cfg.iceServers = []; } catch (_) {} return cfg; };
+          const keepCand = (cand) => {
+            const s = String(cand || '');
+            if (!s) return true;
+            if (!proxyIp) return false;
+            return s.includes(String(proxyIp));
+          };
+          const filterPc = (pc) => {
+            if (!pc || pc.__momongaRtc) return;
+            try { pc.__momongaRtc = true; } catch (_) {}
+            try {
+              const origAdd = pc.addEventListener.bind(pc);
+              pc.addEventListener = function (type, listener, ...rest) {
+                if (type === 'icecandidate' && typeof listener === 'function') {
+                  const wrapped = function (e) {
+                    try { const c = e && e.candidate; if (c && !keepCand(c.candidate)) return; } catch (_) {}
+                    return listener.call(this, e);
+                  };
+                  return origAdd(type, wrapped, ...rest);
+                }
+                return origAdd(type, listener, ...rest);
+              };
+            } catch (_) {}
+            try {
+              Object.defineProperty(pc, 'onicecandidate', {
+                configurable: true,
+                set(fn) { if (typeof fn === 'function') pc.addEventListener('icecandidate', fn); },
+                get() { return null; },
+              });
+            } catch (_) {}
+          };
           const fireFake = (pc) => {
             if (!proxyIp || !pc) return;
             try {
@@ -6545,10 +6579,7 @@ emitActive() {
               pc.dispatchEvent(new RTCPeerConnectionIceEvent('icecandidate', { candidate: ice }));
             } catch (_) {}
           };
-          const fake = (pc) => {
-            if (!proxyIp || !pc) return;
-            [60, 300, 900].forEach((d) => setTimeout(() => fireFake(pc), d));
-          };
+          const fake = (pc) => { if (proxyIp && pc) { filterPc(pc); [60, 300, 900].forEach((d) => setTimeout(() => fireFake(pc), d)); } };
           const origSetConfig = OrigRTC.prototype.setConfiguration;
           if (origSetConfig) OrigRTC.prototype.setConfiguration = function (cfg) { return origSetConfig.call(this, strip(cfg)); };
           const wrap = (name) => {
@@ -6559,10 +6590,25 @@ emitActive() {
           wrap('setLocalDescription');
           wrap('createOffer');
           wrap('createAnswer');
-          const Patched = function (config, ...rest) { return new OrigRTC(strip(config), ...rest); };
+          const Patched = function (config, ...rest) { const pc = new OrigRTC(strip(config), ...rest); filterPc(pc); fake(pc); return pc; };
           Patched.prototype = OrigRTC.prototype;
           window.RTCPeerConnection = Patched;
           if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = Patched;
+          // Bloqueo DURO del WebRTC cuando hay proxy: evita CUALQUIER fuga de la IP real
+          // (los navegadores anti-deteccion lo hacen igual; muchos sitios ni lo notan).
+          if (proxyIp) {
+            const noop = () => Promise.resolve();
+            const Stub = function () { try { this.iceGatheringState = 'complete'; this.connectionState = 'new'; this.signalingState = 'stable'; } catch (_) {} };
+            ['setLocalDescription', 'setRemoteDescription', 'addIceCandidate', 'restartIce', 'close'].forEach((n) => { Stub.prototype[n] = function () { return noop(); }; });
+            Stub.prototype._fake = function () { const self = this; [80, 300].forEach((d) => setTimeout(() => { try { const cand = `candidate:1 1 udp 1677729535 ${proxyIp} ${45000 + Math.floor(Math.random() * 1000)} typ srflx raddr 0.0.0.0 rport 0 generation 0 ufrag abcd network-cost 999`; self.dispatchEvent(new RTCPeerConnectionIceEvent('icecandidate', { candidate: new RTCIceCandidate({ candidate: cand, sdpMid: '0', sdpMLineIndex: 0 }) })); } catch (_) {} }, d)); };
+            Stub.prototype.createOffer = function () { this._fake(); return Promise.resolve({ type: 'offer', sdp: 'v=0\r\n' }); };
+            Stub.prototype.createAnswer = function () { this._fake(); return Promise.resolve({ type: 'answer', sdp: 'v=0\r\n' }); };
+            Stub.prototype.getStats = function () { return Promise.resolve(new Map()); };
+            Stub.prototype.addEventListener = function () {};
+            Stub.prototype.removeEventListener = function () {};
+            window.RTCPeerConnection = Stub;
+            if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = Stub;
+          }
         }
       } catch (_) {}
 
@@ -6579,29 +6625,61 @@ emitActive() {
       // userAgentData / hardwareConcurrency / deviceMemory: NO se tocan por JS.
       // userAgentData se fija por CDP (Emulation.setUserAgentOverride + userAgentMetadata).
 
-      // WebGL: GPU MÓVIL variada por perfil. Sin esto, TODAS las cuentas de la misma PC
-      // muestran la GPU real (NVIDIA) y el sitio las vincula. Se prioriza no filtrar
-      // la GPU real (el "WebGL exception" del scanner es solo un -5% de score, no detección).
+      // Semilla estable (numérica) -> mismo perfil = mismo resultado; distinta entre perfiles.
+      let seedInt = 2166136261 >>> 0;
+      for (let i = 0; i < String(seedStr).length; i++) { seedInt ^= String(seedStr).charCodeAt(i); seedInt = Math.imul(seedInt, 16777619) >>> 0; }
+      seedInt = seedInt >>> 0;
+
+      // WebGL: GPU variada por perfil (iPhone TAMBIEN): sin esto TODAS las cuentas de la misma
+      // PC/telefono daban la MISMA GPU -> Mega las vinculaba. Ahora cada perfil saca una distinta
+      // (+ ruido determinista en readPixels -> hash unico por cuenta).
       try {
-        const gpu = kind === 'android'
-          ? pick([
-            { vendor: 'Google Inc. (Qualcomm)', renderer: 'ANGLE (Qualcomm, Adreno (TM) 640, OpenGL ES 3.2)' },
-            { vendor: 'Google Inc. (Qualcomm)', renderer: 'ANGLE (Qualcomm, Adreno (TM) 650, OpenGL ES 3.2)' },
-            { vendor: 'Google Inc. (ARM)', renderer: 'ANGLE (ARM, Mali-G78 MP20, OpenGL ES 3.2)' },
-            { vendor: 'Google Inc. (ARM)', renderer: 'ANGLE (ARM, Mali-G77 MP11, OpenGL ES 3.2)' }
-          ])
-          : { vendor: 'Apple Inc.', renderer: 'Apple GPU' };
-        const GL_EXTRA = { 3379: 16384, 34024: 16384, 34930: 16, 35660: 16, 35661: 32, 36349: 1024, 36347: 1024 };
+        const APPLE_GPUS = [
+          { vendor: 'Apple Inc.', renderer: 'Apple GPU' },
+          { vendor: 'Apple Inc.', renderer: 'Apple A14 GPU' },
+          { vendor: 'Apple Inc.', renderer: 'Apple A15 GPU' },
+          { vendor: 'Apple Inc.', renderer: 'Apple A16 GPU' },
+          { vendor: 'Apple Inc.', renderer: 'Apple A17 Pro GPU' },
+          { vendor: 'Apple Inc.', renderer: 'Apple M1' },
+          { vendor: 'Apple Inc.', renderer: 'Apple M2' }
+        ];
+        const ANDROID_GPUS = [
+          { vendor: 'Google Inc. (Qualcomm)', renderer: 'ANGLE (Qualcomm, Adreno (TM) 640, OpenGL ES 3.2)' },
+          { vendor: 'Google Inc. (Qualcomm)', renderer: 'ANGLE (Qualcomm, Adreno (TM) 650, OpenGL ES 3.2)' },
+          { vendor: 'Google Inc. (Qualcomm)', renderer: 'ANGLE (Qualcomm, Adreno (TM) 660, OpenGL ES 3.2)' },
+          { vendor: 'Google Inc. (Qualcomm)', renderer: 'ANGLE (Qualcomm, Adreno (TM) 730, OpenGL ES 3.2)' },
+          { vendor: 'Google Inc. (ARM)', renderer: 'ANGLE (ARM, Mali-G715-Immortalis MC11, OpenGL ES 3.2)' },
+          { vendor: 'Google Inc. (ARM)', renderer: 'ANGLE (ARM, Mali-G78 MP20, OpenGL ES 3.2)' },
+          { vendor: 'Google Inc. (ARM)', renderer: 'ANGLE (ARM, Mali-G77 MP11, OpenGL ES 3.2)' },
+          { vendor: 'Google Inc. (Imagination)', renderer: 'ANGLE (Imagination Technologies, PowerVR Rogue GM9446, OpenGL ES 3.2)' }
+        ];
+        const gpu = kind === 'android' ? pick(ANDROID_GPUS) : pick(APPLE_GPUS);
+        const glNoise = seedInt & 7;
+        const GL_EXTRA = {
+          3379: pick([8192, 16384, 32768]), 34024: pick([8192, 16384, 32768]),
+          34930: pick([8, 16, 32]), 35660: pick([8, 16, 32]), 35661: pick([16, 32, 64]),
+          36349: pick([1024, 2048, 4096]), 36347: pick([1024, 2048, 4096])
+        };
         const patchGL = (proto) => {
           if (!proto || !proto.getParameter) return;
           const orig = proto.getParameter;
           proto.getParameter = function (p) {
             if (p === 37445) return gpu.vendor;
             if (p === 37446) return gpu.renderer;
-            if (p === 3386) { try { return new Int32Array([16384, 16384]); } catch (_) { return orig.apply(this, arguments); } }
+            if (p === 3386) { try { return new Int32Array([GL_EXTRA[3379] / 2, GL_EXTRA[34024] / 2]); } catch (_) { return orig.apply(this, arguments); } }
             if (Object.prototype.hasOwnProperty.call(GL_EXTRA, p)) return GL_EXTRA[p];
             return orig.apply(this, arguments);
           };
+          const origRead = proto.readPixels;
+          if (origRead) {
+            proto.readPixels = function () {
+              origRead.apply(this, arguments);
+              try {
+                const px = arguments[6];
+                if (px && px.length) { px[0] = (px[0] + 1 + glNoise) % 256; if (px.length > 4) px[4] = (px[4] + glNoise) % 256; }
+              } catch (_) {}
+            };
+          }
         };
         patchGL(window.WebGLRenderingContext && window.WebGLRenderingContext.prototype);
         patchGL(window.WebGL2RenderingContext && window.WebGL2RenderingContext.prototype);
@@ -6615,13 +6693,34 @@ emitActive() {
       // el aviso "Touch support exception" (el UA dice móvil pero el equipo no es táctil).
       try { Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5 }); } catch (_) {}
 
-      // Semilla estable (numérica) para ruido DETERMINISTA: mismo canvas => mismo resultado
-      // (así no parece "tampering"), pero distinto entre perfiles.
-      let seedInt = 2166136261 >>> 0;
-      for (let i = 0; i < String(seedStr).length; i++) { seedInt ^= String(seedStr).charCodeAt(i); seedInt = Math.imul(seedInt, 16777619) >>> 0; }
-      seedInt = seedInt >>> 0;
+      // Workers / SharedWorkers: mismo hardware falso DENTRO de los hilos de fondo.
+      // Sin esto, un Worker ve el hardware REAL (GPU/nucleos/RAM) -> vincularia las cuentas.
+      try {
+        const wkCores = pick([4, 6, 8]);
+        const wkMem = pick([4, 8]);
+        const wkUA = navigator.userAgent;
+        const wkPlat = navigator.platform || (kind === 'iphone' ? 'iPhone' : 'Linux armv8l');
+        const pre = "(function(){var d=function(o,k,v){try{Object.defineProperty(o,k,{get:function(){return v},configurable:true});}catch(e){}};"
+          + "try{d(navigator,'hardwareConcurrency'," + wkCores + ");}catch(e){}"
+          + "try{d(navigator,'deviceMemory'," + wkMem + ");}catch(e){}"
+          + "try{d(navigator,'userAgent'," + JSON.stringify(wkUA) + ");}catch(e){}"
+          + "try{d(navigator,'platform'," + JSON.stringify(wkPlat) + ");}catch(e){}"
+          + "})();";
+        const wrapWorker = (Orig) => function (src, opts) {
+          try {
+            const abs = new URL(String(src), location.href).href;
+            const isModule = opts && opts.type === 'module';
+            const body = isModule
+              ? pre + "import(" + JSON.stringify(abs) + ").catch(function(){});"
+              : pre + "importScripts(" + JSON.stringify(abs) + ");";
+            return new Orig(URL.createObjectURL(new Blob([body], { type: 'application/javascript' })), opts);
+          } catch (_) { return new Orig(src, opts); }
+        };
+        try { if (window.Worker) window.Worker = wrapWorker(window.Worker); } catch (_) {}
+        try { if (window.SharedWorker) window.SharedWorker = wrapWorker(window.SharedWorker); } catch (_) {}
+      } catch (_) {}
 
-      // Canvas: ruido determinista (salvo el canvas del captcha).
+      // Canvas: ruido DETERMINISTA y distinto por perfil en VARIOS pixeles -> hash unico por cuenta.
       try {
         const origGet = CanvasRenderingContext2D.prototype.getImageData;
         CanvasRenderingContext2D.prototype.getImageData = function () {
@@ -6631,20 +6730,24 @@ emitActive() {
             if (cv && cv.getAttribute && cv.getAttribute('data-momonga-skip') === '1') return data;
             const d = data.data;
             if (d.length >= 4) {
+              const total = Math.floor(d.length / 4);
               let h = seedInt >>> 0;
-              for (let i = 0; i < d.length; i += 131) { h ^= d[i]; h = Math.imul(h, 16777619) >>> 0; }
-              const idx = (h % Math.floor(d.length / 4)) * 4;
-              d[idx] = (d[idx] + (h & 3) - 1 + 256) % 256;
+              const n = Math.min(total, 16);
+              for (let k = 0; k < n; k++) {
+                h = (Math.imul(h, 1664525) + 1013904223) >>> 0;
+                const idx = (h % total) * 4;
+                d[idx] = (d[idx] + 1 + (h & 3)) % 256;
+              }
             }
           } catch (_) {}
           return data;
         };
       } catch (_) {}
 
-      // Audio: offset determinista por perfil (no aleatorio) para no parecer manipulado.
+      // Audio: offset determinista DISTINTO por perfil (no aleatorio) para no parecer manipulado.
       try {
         const origGetFloat = AnalyserNode.prototype.getFloatFrequencyData;
-        const audioOff = (seedInt & 7) * 0.0000001;
+        const audioOff = (((seedInt & 0xFF) / 255) - 0.5) * 0.00001;
         AnalyserNode.prototype.getFloatFrequencyData = function (array) {
           origGetFloat.apply(this, arguments);
           try { if (array && array.length) array[0] = array[0] + audioOff; } catch (_) {}
@@ -6854,6 +6957,7 @@ emitActive() {
 
     this.started = true;
     this.paused = false;
+    this._userStopped = false;
 
     // Chequeo de seguridad antes de arrancar (IP/proxy, fraud score, fuga WebRTC).
     const safety = await runSafetyCheck(this).catch(() => null);
@@ -6915,8 +7019,9 @@ emitActive() {
     if (this._safetyWatch.unref) this._safetyWatch.unref();
   }
 
-  pause() {
+  pause(byUser = true) {
     if (!this.started) return;
+    if (byUser) this._userPaused = true;
     this.paused = true;
     if (this._cycleTimer) clearTimeout(this._cycleTimer);
     if (this._countdownTimer) clearInterval(this._countdownTimer);
@@ -6936,6 +7041,7 @@ emitActive() {
 
   resume() {
     if (!this.started || !this.paused) return;
+    this._userPaused = false;
     this.paused = false;
     this.log('▶ Reanudado.');
     this.startCountdown();
@@ -6946,9 +7052,11 @@ emitActive() {
     this.emitState('running');
   }
 
-  async stop() {
+  async stop(byUser = true) {
     this.started = false;
     this.paused = false;
+    if (byUser) this._userStopped = true;
+    this._userPaused = false;
     this._stopping = true;
     if (this._cycleTimer) clearTimeout(this._cycleTimer);
     if (this._countdownTimer) clearInterval(this._countdownTimer);
@@ -8243,11 +8351,11 @@ server.listen(PORT, () => {
       const activo = dentroHorario(s.from, s.to);
       try {
         if (!activo) {
-          if (c.started && !c.paused) { c.log(`⏸️ Fuera de horario (${s.from}–${s.to}): pauso el perfil.`); c.pause(); }
-        } else if (c.paused) {
+          if (c.started && !c.paused) { c.log(`⏸️ Fuera de horario (${s.from}–${s.to}): pauso el perfil.`); c.pause(false); }
+        } else if (c.paused && !c._userPaused) {
           c.log(`▶️ Dentro de horario (${s.from}–${s.to}): reanudo.`);
           c.resume();
-        } else if (!c.started && s.autoStart !== false) {
+        } else if (!c.started && s.autoStart !== false && !c._userStopped) {
           c.log(`▶️ Dentro de horario (${s.from}–${s.to}): inicio el perfil.`);
           Promise.resolve(c.start && c.start()).catch(() => {});
         }
