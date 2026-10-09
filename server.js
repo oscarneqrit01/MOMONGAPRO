@@ -3639,18 +3639,14 @@ async function bumpAllAdsOneByOne(page, controller) {
 
   const limite = Math.max(0, Math.floor(Number(controller.cfg.postsARotar) || 0));
   const lista = limite >= 1 ? ads.slice(0, Math.min(ads.length, limite)) : ads;
-  const currentIds = lista.map((ad) => ad.id);
-  const queue = (Array.isArray(controller.rotateQueue) ? controller.rotateQueue : [])
-    .filter((id) => currentIds.includes(id));
-  for (const id of currentIds) {
-    if (!queue.includes(id)) queue.push(id);
-  }
-  controller.rotateQueue = queue;
-
-  const targetId = queue.shift();
-  queue.push(targetId);
-  const position = currentIds.indexOf(targetId) + 1;
-  const target = lista.find((ad) => ad.id === targetId) || { id: targetId, title: '' };
+  // Igual que la extension MOMONGA PRO que si funciona: indice que avanza 0,1,2.. % total.
+  // (Antes usaba una cola que se reordenaba cuando Mega sube el ultimo bumpeado -> se trababa.)
+  const total = lista.length;
+  const idx = ((Number(controller.rotateIndex) || 0) % total + total) % total;
+  const target = lista[idx] || lista[0];
+  const targetId = target.id;
+  controller.rotateIndex = (idx + 1) % total;
+  const position = idx + 1;
 
   controller.log(`🔄 Anuncio ${position}/${lista.length}${limite >= 1 ? ` (rotando ${limite} de ${ads.length})` : ' (todos)'} (ID ${targetId}${target.title ? ` · ${target.title}` : ''}).`);
 
@@ -6192,6 +6188,7 @@ class ProfileController {
     this.cycleUpdatedAt = 0;
     this.cycleDeleteCompleted = false;
     this.rotateQueue = [];
+    this.rotateIndex = 0;
     this.variantIndex = {};
     this.lastPhotoHash = null;
     this._stopping = false;
