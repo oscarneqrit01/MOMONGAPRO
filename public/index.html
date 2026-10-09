@@ -1284,6 +1284,7 @@
         <div class="form-field">
           <label for="profileDevice">Dispositivo</label>
           <select id="profileDevice" name="device">
+            <option value="windows">Windows (PC real - Chromium parcheado)</option>
             <option value="iphone">iPhone (Safari)</option>
             <option value="android">Android - Pixel 9 (Chrome)</option>
             <option value="pixel">Android - Pixel 10 (Chrome)</option>
@@ -1864,6 +1865,7 @@
           <div class="profile-meta">
             <span>Dispositivo:</span>
             <select data-device-id="${profile.id}" style="background:#1a1a2e;border:1px solid #333;color:#fff;padding:4px;border-radius:4px;font-size:11px;">
+              <option value="windows" ${profile.device === 'windows' ? 'selected' : ''}>Windows (PC real)</option>
               <option value="iphone" ${(profile.device || 'iphone') === 'iphone' ? 'selected' : ''}>iPhone (Safari)</option>
               <option value="android" ${profile.device === 'android' ? 'selected' : ''}>Android - Pixel 9 (Chrome)</option>
               <option value="pixel" ${profile.device === 'pixel' ? 'selected' : ''}>Android - Pixel 10 (Chrome)</option>

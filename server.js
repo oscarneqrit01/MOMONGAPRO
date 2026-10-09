@@ -187,6 +187,11 @@ function devicePreset(name, chromeMajor) {
       userAgent: `Mozilla/5.0 (Linux; Android 16; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`,
       viewport: { width: 412, height: 915, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
       kind: 'android', platform: 'Android', model: 'SM-S938B', androidVersion: '16.0.0'
+    },
+    windows: {
+      userAgent: '',
+      viewport: { width: 1280, height: 800, deviceScaleFactor: 1, isMobile: false, hasTouch: false },
+      kind: 'desktop', platform: '', model: 'Windows', androidVersion: ''
     }
   };
 
@@ -216,7 +221,7 @@ function devicePreset(name, chromeMajor) {
 }
 
 function isValidDevice(name) {
-  return ['iphone', 'android', 'pixel', 'pixel_pro', 'samsung', 'samsung_ultra']
+  return ['iphone', 'android', 'pixel', 'pixel_pro', 'samsung', 'samsung_ultra', 'windows']
     .concat(MODERN_ANDROID.map((d) => d.key))
     .concat(IPHONE_DEVICES.map((d) => d.key))
     .includes(name);
@@ -639,6 +644,7 @@ app.get('/api/control/ping', requireControlKey, (req, res) => {
 
 app.get('/api/control/devices', requireControlKey, (req, res) => {
   const base = [
+    { key: 'windows', label: 'Windows (PC real - Chromium parcheado)' },
     { key: 'iphone', label: 'iPhone (Safari)' },
     { key: 'android', label: 'Android (genérico)' },
     { key: 'pixel', label: 'Pixel (genérico)' },
@@ -6352,20 +6358,27 @@ emitActive() {
 
     // Necesitamos el dispositivo ANTES de lanzar Chrome: ponemos el UA/tamano a
     // nivel de TODO el navegador (asi CUALQUIER pestana/ventana queda en modo movil).
-    const executablePath = detectChromeExecutable();
+    const systemChrome = detectChromeExecutable();
+    // Motor parcheado (fingerprint-chromium): para perfiles Windows -> huella Windows
+    // NATIVA distinta por perfil (pasa las pruebas mejor que la emulacion movil).
+    const engineFpc = path.join(__dirname, 'engine', 'chrome.exe');
     let launchMajor = '140';
-    if (executablePath) { const m = String(executablePath).match(/[\\/](\d{2,3})\.\d+\.\d+\.\d+[\\/]/); if (m) launchMajor = m[1]; }
+    if (systemChrome) { const m = String(systemChrome).match(/[\\/](\d{2,3})\.\d+\.\d+\.\d+[\\/]/); if (m) launchMajor = m[1]; }
     const launchDevice = devicePreset(this.cfg.device, launchMajor);
+    const isDesktop = launchDevice.kind === 'desktop';
+    const useFpc = isDesktop && fs.existsSync(engineFpc);
+    const executablePath = useFpc ? engineFpc : systemChrome;
     // Que la ventana NUNCA sea mas alta que la pantalla (laptops): asi se alcanza a ver/desplazar hasta abajo.
     const fitH = Math.max(520, Math.min(launchDevice.viewport.height, screenWorkHeight() - 90));
-    const launchViewport = { width: launchDevice.viewport.width, height: fitH, deviceScaleFactor: launchDevice.viewport.deviceScaleFactor, isMobile: true, hasTouch: true };
+    const launchViewport = isDesktop
+      ? { width: launchDevice.viewport.width, height: launchDevice.viewport.height, deviceScaleFactor: 1, isMobile: false, hasTouch: false }
+      : { width: launchDevice.viewport.width, height: fitH, deviceScaleFactor: launchDevice.viewport.deviceScaleFactor, isMobile: true, hasTouch: true };
 
     const args = [
       `--remote-debugging-port=${this.cfg.port}`,
       `--user-data-dir=${profileDir}`,
       '--disable-blink-features=AutomationControlled',
-      `--user-agent=${launchDevice.userAgent}`,
-      '--touch-events=enabled',
+      ...(isDesktop ? [] : [`--user-agent=${launchDevice.userAgent}`, '--touch-events=enabled']),
       `--window-size=${launchViewport.width},${launchViewport.height}`,
       '--lang=en-US',
       '--hide-crash-restore-bubble',
@@ -6375,6 +6388,14 @@ emitActive() {
       '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
       '--enforce-webrtc-ip-permission-check'
     ];
+
+    if (useFpc) {
+      let fpSeed = 0;
+      for (let i = 0; i < String(this.id).length; i++) fpSeed = (Math.imul(fpSeed, 31) + String(this.id).charCodeAt(i)) >>> 0;
+      fpSeed = (fpSeed % 1000000000) + 1;
+      args.push(`--fingerprint=${fpSeed}`, '--fingerprint-platform=windows');
+      this.log(`🧩 Motor Chromium parcheado activo (huella Windows distinta, seed=${fpSeed}).`);
+    }
 
     const proxy = this.cfg.proxy;
     if (proxy && proxy.host) {
@@ -6486,17 +6507,19 @@ emitActive() {
     const chromeVersion = await browser.version().catch(() => '');
     const chromeMajor = (String(chromeVersion).match(/(\d+)/) || [])[1] || '140';
     const device = devicePreset(this.cfg.device, chromeMajor);
-    this.log(`Dispositivo: ${device.kind === 'android' ? `${device.model} (Chrome ${chromeMajor})` : 'iPhone (Safari)'}`);
-    await page.setExtraHTTPHeaders(chHeadersFor(device, chromeMajor));
-    await page.emulate({
-      userAgent: device.userAgent,
-      viewport: launchViewport
-    });
+    this.log(`Dispositivo: ${isDesktop ? `Windows real (motor${useFpc ? ' Chromium parcheado' : ''})` : device.kind === 'android' ? `${device.model} (Chrome ${chromeMajor})` : 'iPhone (Safari)'}`);
+    if (!isDesktop) {
+      await page.setExtraHTTPHeaders(chHeadersFor(device, chromeMajor));
+      await page.emulate({
+        userAgent: device.userAgent,
+        viewport: launchViewport
+      });
 
-    // Plataforma / idioma / userAgentData a NIVEL CDP (NO con getters JS: los detectan
-    // los scanners tipo BrowserScan "Bot Detection"). Así el UA, la plataforma y las
-    // Client Hints quedan coherentes sin dejar rastro de sobreescritura por JavaScript.
-    try { await applyUaOverride(client, device, chromeMajor); } catch (_) {}
+      // Plataforma / idioma / userAgentData a NIVEL CDP (NO con getters JS: los detectan
+      // los scanners tipo BrowserScan "Bot Detection"). Así el UA, la plataforma y las
+      // Client Hints quedan coherentes sin dejar rastro de sobreescritura por JavaScript.
+      try { await applyUaOverride(client, device, chromeMajor); } catch (_) {}
+    }
 
     // Anti-deteccion: oculta automatizacion y enmascara la huella por perfil.
     const seed = String(this.id) + '|' + MACHINE_SALT;
@@ -6767,8 +6790,10 @@ emitActive() {
         };
       } catch (_) {}
     };
-    await page.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height);
-    try { await page.evaluateOnNewDocument(cursorFn); } catch (_) {}
+    if (!isDesktop) {
+      await page.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height);
+      try { await page.evaluateOnNewDocument(cursorFn); } catch (_) {}
+    }
 
     // Aplica el MISMO disfraz (emulacion + anti-deteccion) a CADA pestaña nueva
     // (browserleaks, pixelscan, apelacion, chequeo, etc.). Devuelve una promesa
@@ -6777,8 +6802,10 @@ emitActive() {
       if (!p) return Promise.resolve();
       if (!p.__momongaApplyPromise) {
         p.__momongaApplyPromise = (async () => {
-          try { await p.emulate({ userAgent: device.userAgent, viewport: launchViewport }); } catch (_) {}
-          try { await p.setExtraHTTPHeaders(chHeadersFor(device, chromeMajor)); } catch (_) {}
+          if (!isDesktop) {
+            try { await p.emulate({ userAgent: device.userAgent, viewport: launchViewport }); } catch (_) {}
+            try { await p.setExtraHTTPHeaders(chHeadersFor(device, chromeMajor)); } catch (_) {}
+          }
           try { await p.setGeolocation({ latitude, longitude, accuracy: 100 }); } catch (_) {}
           try { await p.setBypassCSP(true); } catch (_) {}
           if (proxy && proxy.host && proxy.type !== 'socks5' && proxy.username !== undefined && proxy.password !== undefined) {
@@ -6788,10 +6815,12 @@ emitActive() {
             const cdp = await p.target().createCDPSession();
             await cdp.send('Emulation.setTimezoneOverride', { timezoneId: timezone });
             await cdp.send('Emulation.setLocaleOverride', { locale: 'en-US' });
-            await applyUaOverride(cdp, device, chromeMajor);
+            if (!isDesktop) { await applyUaOverride(cdp, device, chromeMajor); }
           } catch (_) {}
-          try { await p.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height); } catch (_) {}
-          try { await p.evaluateOnNewDocument(cursorFn); } catch (_) {}
+          if (!isDesktop) {
+            try { await p.evaluateOnNewDocument(stealthFn, seed, deviceKind, chromeMajor, device.model, device.platform, device.androidVersion, proxyPublicIp, device.viewport.width, device.viewport.height); } catch (_) {}
+            try { await p.evaluateOnNewDocument(cursorFn); } catch (_) {}
+          }
         })().catch(() => {});
       }
       return p.__momongaApplyPromise;
