@@ -6400,6 +6400,10 @@ emitActive() {
       for (let i = 0; i < String(this.id).length; i++) fpSeed = (Math.imul(fpSeed, 31) + String(this.id).charCodeAt(i)) >>> 0;
       fpSeed = (fpSeed % 1000000000) + 1;
       args.push(`--fingerprint=${fpSeed}`, '--fingerprint-platform=windows');
+      args.push('--fingerprint-brand=Chrome');
+      // hardwareConcurrency plausible por perfil (evita valores raros como 30) + version Windows.
+      let fpCores = 0; for (let i = 0; i < String(this.id).length; i++) fpCores = (Math.imul(fpCores, 31) + String(this.id).charCodeAt(i)) >>> 0;
+      args.push(`--fingerprint-hardware-concurrency=${[8, 12, 16][fpCores % 3]}`, '--fingerprint-platform-version=10.0.0');
       args.push('--lang=en-US', '--accept-lang=en-US,en');
       if (fpcTimezone) args.push(`--timezone=${fpcTimezone}`);
       this.log(`🧩 Motor Chromium parcheado activo (huella Windows distinta, seed=${fpSeed}${fpcTimezone ? ' · TZ ' + fpcTimezone : ''}).`);
