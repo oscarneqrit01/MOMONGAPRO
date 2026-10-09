@@ -2,7 +2,7 @@
 ; Compilar con Inno Setup 6 (ISCC.exe MOMONGA-BOT.iss)
 
 #define AppName "MOMONGA MEGA"
-#define AppVersion "1.0.0"
+#define AppVersion "22"
 #define AppPublisher "MOMONGA"
 
 [Setup]
@@ -14,7 +14,7 @@ DefaultDirName={localappdata}\MOMONGA MEGA
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=dist
-OutputBaseFilename=MOMONGA-MEGA-Setup-18
+OutputBaseFilename=MOMONGA-MEGA-Setup-22
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

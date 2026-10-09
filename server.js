@@ -358,7 +358,7 @@ function requireControlKey(req, res, next) {
   next();
 }
 
-const APP_VERSION = 21; // version de esta app (debe coincidir con el instalador MOMONGA-MEGA-Setup-N)
+const APP_VERSION = 22; // version de esta app (debe coincidir con el instalador MOMONGA-MEGA-Setup-N)
 let versionDisponible = null; // { version, url } si el servidor tiene una mas nueva
 
 // --- Licencia (para bots instalados en la PC del cliente) ---

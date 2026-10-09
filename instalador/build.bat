@@ -2,7 +2,7 @@
 title Compilar instalador MOMONGA MEGA
 cd /d "%~dp0"
 
-set "VERSION=18"
+set "VERSION=22"
 
 echo == Compilando instalador ==
 set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
