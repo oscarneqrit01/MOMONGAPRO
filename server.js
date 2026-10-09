@@ -6368,6 +6368,12 @@ emitActive() {
     const isDesktop = launchDevice.kind === 'desktop';
     const useFpc = isDesktop && fs.existsSync(engineFpc);
     const executablePath = useFpc ? engineFpc : systemChrome;
+    // Coherencia con el proxy: sacamos la zona horaria del proxy ANTES de lanzar el motor
+    // (el motor la acepta con --timezone; si no, pondria una suya aleatoria -> incoherente).
+    let fpcTimezone = '';
+    if (useFpc && this.cfg.proxy && this.cfg.proxy.host) {
+      try { const g = await lookupExitIp(this.cfg.proxy); if (g && g.timezone) fpcTimezone = g.timezone; } catch (_) {}
+    }
     // Que la ventana NUNCA sea mas alta que la pantalla (laptops): asi se alcanza a ver/desplazar hasta abajo.
     const fitH = Math.max(520, Math.min(launchDevice.viewport.height, screenWorkHeight() - 90));
     const launchViewport = isDesktop
@@ -6394,7 +6400,9 @@ emitActive() {
       for (let i = 0; i < String(this.id).length; i++) fpSeed = (Math.imul(fpSeed, 31) + String(this.id).charCodeAt(i)) >>> 0;
       fpSeed = (fpSeed % 1000000000) + 1;
       args.push(`--fingerprint=${fpSeed}`, '--fingerprint-platform=windows');
-      this.log(`🧩 Motor Chromium parcheado activo (huella Windows distinta, seed=${fpSeed}).`);
+      args.push('--lang=en-US', '--accept-lang=en-US,en');
+      if (fpcTimezone) args.push(`--timezone=${fpcTimezone}`);
+      this.log(`🧩 Motor Chromium parcheado activo (huella Windows distinta, seed=${fpSeed}${fpcTimezone ? ' · TZ ' + fpcTimezone : ''}).`);
     }
 
     const proxy = this.cfg.proxy;
