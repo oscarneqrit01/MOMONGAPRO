@@ -6570,6 +6570,22 @@ emitActive() {
                 get() { return null; },
               });
             } catch (_) {}
+            try {
+              const origStats = pc.getStats.bind(pc);
+              pc.getStats = function () {
+                return origStats.apply(null, arguments).then((report) => {
+                  try {
+                    const out = new Map();
+                    report.forEach((v) => {
+                      const o = Object.assign({}, v);
+                      if (/candidate/i.test(String(o.type || ''))) { if ('address' in o) o.address = proxyIp || ''; if ('ip' in o) o.ip = proxyIp || ''; if ('relatedAddress' in o) o.relatedAddress = ''; }
+                      out.set(o.id || String(out.size), o);
+                    });
+                    return out;
+                  } catch (_) { return report; }
+                });
+              };
+            } catch (_) {}
           };
           const fireFake = (pc) => {
             if (!proxyIp || !pc) return;
@@ -6594,18 +6610,18 @@ emitActive() {
           Patched.prototype = OrigRTC.prototype;
           window.RTCPeerConnection = Patched;
           if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = Patched;
-          // Bloqueo DURO del WebRTC cuando hay proxy: evita CUALQUIER fuga de la IP real
-          // (los navegadores anti-deteccion lo hacen igual; muchos sitios ni lo notan).
+          // Con proxy: mantenemos la API "real" (RTCDataChannel True, etc.) pero SIN recoger
+          // candidatos -> no se filtra la IP real, y sin el "RTCDataChannel: False" delator.
           if (proxyIp) {
             const noop = () => Promise.resolve();
-            const Stub = function () { try { this.iceGatheringState = 'complete'; this.connectionState = 'new'; this.signalingState = 'stable'; } catch (_) {} };
+            const Stub = function () { try { this.iceGatheringState = 'complete'; this.connectionState = 'new'; this.signalingState = 'stable'; this.iceConnectionState = 'new'; } catch (_) {} };
             ['setLocalDescription', 'setRemoteDescription', 'addIceCandidate', 'restartIce', 'close'].forEach((n) => { Stub.prototype[n] = function () { return noop(); }; });
-            Stub.prototype._fake = function () { const self = this; [80, 300].forEach((d) => setTimeout(() => { try { const cand = `candidate:1 1 udp 1677729535 ${proxyIp} ${45000 + Math.floor(Math.random() * 1000)} typ srflx raddr 0.0.0.0 rport 0 generation 0 ufrag abcd network-cost 999`; self.dispatchEvent(new RTCPeerConnectionIceEvent('icecandidate', { candidate: new RTCIceCandidate({ candidate: cand, sdpMid: '0', sdpMLineIndex: 0 }) })); } catch (_) {} }, d)); };
-            Stub.prototype.createOffer = function () { this._fake(); return Promise.resolve({ type: 'offer', sdp: 'v=0\r\n' }); };
-            Stub.prototype.createAnswer = function () { this._fake(); return Promise.resolve({ type: 'answer', sdp: 'v=0\r\n' }); };
+            Stub.prototype.createOffer = function () { return Promise.resolve({ type: 'offer', sdp: 'v=0\r\n' }); };
+            Stub.prototype.createAnswer = function () { return Promise.resolve({ type: 'answer', sdp: 'v=0\r\n' }); };
             Stub.prototype.getStats = function () { return Promise.resolve(new Map()); };
             Stub.prototype.addEventListener = function () {};
             Stub.prototype.removeEventListener = function () {};
+            Stub.prototype.createDataChannel = function (label) { return { label: String(label || ''), id: 0, ordered: true, readyState: 'connecting', protocol: '', bufferedAmount: 0, maxRetransmits: null, maxPacketLifeTime: null, negotiated: false, binaryType: 'blob', send() {}, close() { this.readyState = 'closed'; }, addEventListener() {}, removeEventListener() {} }; };
             window.RTCPeerConnection = Stub;
             if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = Stub;
           }
